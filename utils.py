@@ -45,3 +45,7 @@ def print_portfolio(portfolio):
 # method round off decimal till 4 decimal places
 def round_off(value):
     return round(value, 4)
+
+
+def required_empty(args):
+    return not all(args)

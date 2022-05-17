@@ -1,12 +1,16 @@
 from smartapi import SmartConnect
 
 from utils import build_tick
-from utils import print_portfolio
+from utils import print_portfolio, required_empty
 from pprint import pprint
 
 
 class Client:
     def __init__(self, api_key, userid, password):
+        required = [api_key, userid, password]
+        if required_empty(required):
+            raise Exception("Please provide all the required client arguments")
+
         self.api_key = api_key
         self.userid = userid
         self.password = password
