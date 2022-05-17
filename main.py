@@ -11,12 +11,12 @@ from config import API_KEY, CLIENT_ID, PASSWORD
 
 def backtest(client, token, symbol):
     data = client.get_historical_data(
-        token, "2022-05-16 09:15", "2022-05-16 15:15", "ONE_MINUTE"
+        token, "2022-05-17 09:15", "2022-05-17 15:15", "ONE_MINUTE"
     )
 
     if data:
         closing_data = client.get_historical_data(
-            token, "2022-05-13 15:29", "2022-05-13 15:30", "ONE_MINUTE"
+            token, "2022-05-16 15:29", "2022-05-16 15:30", "ONE_MINUTE"
         )
 
         if closing_data:
@@ -48,4 +48,7 @@ def backtest_on_portfolio(client):
 
 client = Client(API_KEY, CLIENT_ID, PASSWORD)
 client.generate_session()
+
 backtest_on_portfolio(client)
+
+# client.print_portfolio()

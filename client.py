@@ -2,6 +2,7 @@ from smartapi import SmartConnect
 
 from utils import build_tick
 from utils import print_portfolio
+from pprint import pprint
 
 
 class Client:
@@ -36,6 +37,7 @@ class Client:
 
     def portfolio(self):
         res = self._client.holding()["data"]
+        pprint(res)
         return res
 
     def print_portfolio(self):

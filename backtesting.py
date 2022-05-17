@@ -120,3 +120,15 @@ class Backtesting:
             orders.append(o)
 
         print(tabulate(orders, headers=headers, tablefmt="fancy_grid"))
+
+    def pnl(self):
+        pnl = 0
+        last_order = None
+        for order in self._orders:
+            if order.order_type == "SELL" and last_order:
+                amt = (order.unit_price * order.quantity) - (
+                    last_order.unit_price * last_order.quantity
+                )
+                pnl += amt
+
+        return pnl
