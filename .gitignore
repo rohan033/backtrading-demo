@@ -1,2 +1,4 @@
 .ven/
 .env
+__pycache__/
+logs/
