@@ -19,6 +19,7 @@ class Strategy:
         self.short_percent = short_percent
         self.initial_threshold = initial_threshold
         self.initial = initial
+        self.last_decision = None
 
     def __repr__(self) -> str:
         headers = [
@@ -50,6 +51,14 @@ class Strategy:
 
             if has_crossed_threshold:
                 self.long_position = False
+                self.last_decision = {
+                    "action": "BUY",
+                    "pct_change": round(change_percentage, 4),
+                    "threshold": self.initial_threshold,
+                    "ref_price": self.last_tick.close,
+                    "close": data.close,
+                    "reason": f"chg={change_percentage:+.3f}% >= init={self.initial_threshold}% (ref={self.last_tick.close})",
+                }
 
             return has_crossed_threshold
 
@@ -70,5 +79,15 @@ class Strategy:
 
             if has_crossed_threshold:
                 self.long_position = True
+                side = "TP" if change_percentage >= 0 else "SL"
+                self.last_decision = {
+                    "action": "SELL",
+                    "pct_change": round(change_percentage, 4),
+                    "threshold": threshold,
+                    "ref_price": self.last_tick.close,
+                    "close": data.close,
+                    "side": side,
+                    "reason": f"{side} chg={change_percentage:+.3f}% vs thresh={threshold}% (ref={self.last_tick.close})",
+                }
 
             return has_crossed_threshold

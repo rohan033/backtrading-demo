@@ -1,23 +1,21 @@
-import imp
-from os import symlink
 import time
-from tabulate import tabulate
 
 from strategy import Strategy
 from backtesting import Backtesting
-from client import Client
-from config import API_KEY, CLIENT_ID, PASSWORD
 
 
 def backtest(client, token, symbol):
     data = client.get_historical_data(
-        token, "2022-05-17 09:15", "2022-05-17 15:15", "ONE_MINUTE"
+        token, "2026-04-17 09:15", "2026-04-17 15:15", "ONE_MINUTE"
     )
 
     if data:
         closing_data = client.get_historical_data(
-            token, "2022-05-16 15:29", "2022-05-16 15:30", "ONE_MINUTE"
+            token, "2026-04-16 15:29", "2026-04-16 15:30", "ONE_MINUTE"
         )
+        print("Closing data:")
+        print(closing_data)
+        exit()
 
         if closing_data:
             closing_tick = closing_data[0]
@@ -39,16 +37,32 @@ def backtest(client, token, symbol):
 
 def backtest_on_portfolio(client):
     p = client.portfolio()
-    for pp in p:
-        token = pp["symboltoken"]
-        symbol = pp["tradingsymbol"]
-        backtest(client, token, symbol)
-        time.sleep(2)
+    pp = p[0]
+    token = pp["symboltoken"]
+    symbol = pp["tradingsymbol"]
+    backtest(client, token, symbol)
+    time.sleep(2)
+
+# from client import Client
+# from config import API_KEY, CLIENT_ID, PASSWORD
+# client = Client(API_KEY, CLIENT_ID, PASSWORD)
+# client.generate_session()
+
+from client import TotpClient
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+API_KEY = os.getenv("API_KEY")
+CLIENT_ID = os.getenv("CLIENT_ID")
+MPIN = os.getenv("MPIN")
+TOTP_KEY = os.getenv("TOTP_KEY")
+totp_client = TotpClient(API_KEY, CLIENT_ID, MPIN, TOTP_KEY)
+totp_client.generate_session()
+
+totp_client.print_portfolio()
+
+backtest_on_portfolio(totp_client)
 
 
-client = Client(API_KEY, CLIENT_ID, PASSWORD)
-client.generate_session()
-
-backtest_on_portfolio(client)
-
-# client.print_portfolio()

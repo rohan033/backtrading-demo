@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Backtest Strategy Simulator</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  :root {
+    --bg-primary: #0f1923;
+    --bg-secondary: #1a2733;
+    --bg-card: #1e2d3d;
+    --border: #2a3f52;
+    --text-primary: #e1e8ed;
+    --text-secondary: #8899a6;
+    --accent: #1da1f2;
+    --green: #00c853;
+    --red: #ff1744;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: 'SF Mono','Fira Code','Consolas', monospace;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+  }
+  header {
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 { font-size: 16px; font-weight: 600; }
+  header h1 span { color: var(--accent); }
+  .badge {
+    background: var(--accent); color: #fff;
+    padding: 3px 10px; border-radius: 4px;
+    font-size: 10px; font-weight: 700; letter-spacing: 1px;
+  }
+
+  .layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    height: calc(100vh - 49px);
+  }
+
+  /* ── Sidebar ── */
+  .sidebar {
+    background: var(--bg-secondary);
+    border-right: 1px solid var(--border);
+    padding: 16px;
+    overflow-y: auto;
+  }
+  .sidebar h2 {
+    font-size: 9px; text-transform: uppercase;
+    letter-spacing: 1.5px; color: var(--text-secondary);
+    margin: 14px 0 10px;
+  }
+  .sidebar h2:first-child { margin-top: 0; }
+  .cg { margin-bottom: 10px; }
+  .cg label { display:block; font-size:10px; color:var(--text-secondary); margin-bottom:4px; }
+  .cg input, .cg select {
+    width:100%; padding:6px 8px;
+    background:var(--bg-primary); border:1px solid var(--border);
+    border-radius:4px; color:var(--text-primary);
+    font-family:inherit; font-size:11px; outline:none;
+  }
+  .cg input:focus, .cg select:focus { border-color:var(--accent); }
+  hr.div { border:none; border-top:1px solid var(--border); margin:14px 0; }
+  .preset-grid { display:grid; grid-template-columns:1fr 1fr; gap:5px; margin-bottom:10px; }
+  .preset-btn {
+    padding:5px; background:var(--bg-card); border:1px solid var(--border);
+    border-radius:3px; color:var(--text-secondary); font-family:inherit;
+    font-size:9px; cursor:pointer;
+  }
+  .preset-btn:hover { border-color:var(--accent); color:var(--text-primary); }
+
+  /* ── Main ── */
+  .main-content { display:flex; flex-direction:column; overflow:hidden; }
+
+  /* Stats bar */
+  .stats-bar {
+    display:grid; grid-template-columns:repeat(6,1fr);
+    gap:8px; padding:10px 14px;
+    background:var(--bg-secondary); border-bottom:1px solid var(--border);
+  }
+  .stat-card {
+    background:var(--bg-card); border-radius:6px; padding:8px 10px;
+    border:1px solid var(--border);
+  }
+  .stat-card .lbl { font-size:8px; text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary); margin-bottom:2px; }
+  .stat-card .val { font-size:15px; font-weight:700; transition: color .3s; }
+  .pos { color:var(--green); } .neg { color:var(--red); }
+
+  /* Chart */
+  #chart-container { flex:1; min-height:250px; position:relative; }
+
+  /* Timeline / playback bar */
+  .playback-bar {
+    display:flex; align-items:center; gap:10px;
+    padding:8px 14px; background:var(--bg-secondary);
+    border-top:1px solid var(--border); border-bottom:1px solid var(--border);
+  }
+  .pb-btn {
+    width:32px; height:32px; border-radius:50%;
+    border:1px solid var(--border); background:var(--bg-card);
+    color:var(--text-primary); font-size:14px; cursor:pointer;
+    display:flex; align-items:center; justify-content:center;
+    transition: background .2s;
+  }
+  .pb-btn:hover { background:var(--accent); border-color:var(--accent); }
+  .pb-btn.active { background:var(--accent); border-color:var(--accent); }
+  #timeline {
+    flex:1; -webkit-appearance:none; appearance:none;
+    height:6px; background:var(--bg-card); border-radius:3px;
+    outline:none; cursor:pointer;
+  }
+  #timeline::-webkit-slider-thumb {
+    -webkit-appearance:none; width:14px; height:14px;
+    border-radius:50%; background:var(--accent); cursor:pointer;
+    border:2px solid var(--bg-primary);
+  }
+  .pb-label { font-size:11px; color:var(--text-secondary); min-width:90px; text-align:right; }
+  .speed-select {
+    background:var(--bg-card); border:1px solid var(--border);
+    color:var(--text-primary); font-family:inherit; font-size:10px;
+    padding:4px 6px; border-radius:3px; outline:none;
+  }
+
+  /* Bottom panel */
+  .bottom-panel {
+    height:200px; background:var(--bg-secondary);
+    border-top:1px solid var(--border); overflow:auto;
+  }
+  .bottom-panel h3 {
+    font-size:9px; text-transform:uppercase; letter-spacing:1.5px;
+    color:var(--text-secondary); padding:8px 14px 4px;
+    position:sticky; top:0; background:var(--bg-secondary); z-index:1;
+  }
+  table { width:100%; border-collapse:collapse; font-size:10px; }
+  thead th {
+    text-align:left; padding:5px 12px; font-size:8px;
+    text-transform:uppercase; letter-spacing:1px; color:var(--text-secondary);
+    border-bottom:1px solid var(--border);
+    position:sticky; top:28px; background:var(--bg-secondary); z-index:1;
+  }
+  tbody td { padding:5px 12px; border-bottom:1px solid rgba(42,63,82,.3); }
+  tbody tr:hover { background:rgba(29,161,242,.04); }
+  .tag { display:inline-block; padding:1px 6px; border-radius:3px; font-size:8px; font-weight:700; letter-spacing:.5px; }
+  .tag-buy { background:rgba(0,200,83,.15); color:var(--green); }
+  .tag-sell { background:rgba(255,23,68,.15); color:var(--red); }
+
+  /* Toast notification */
+  .toast-container { position:fixed; top:60px; right:20px; z-index:999; display:flex; flex-direction:column; gap:8px; pointer-events:none; }
+  .toast {
+    padding:10px 16px; border-radius:8px; font-size:12px; font-weight:600;
+    animation: toastIn .35s ease, toastOut .4s ease 1.8s forwards;
+    box-shadow: 0 4px 20px rgba(0,0,0,.4);
+    display:flex; align-items:center; gap:8px;
+  }
+  .toast-buy { background:rgba(0,200,83,.9); color:#fff; }
+  .toast-sell { background:rgba(255,23,68,.9); color:#fff; }
+  .toast .icon { font-size:18px; }
+  @keyframes toastIn { from { opacity:0; transform:translateX(40px); } to { opacity:1; transform:translateX(0); } }
+  @keyframes toastOut { from { opacity:1; } to { opacity:0; transform:translateY(-10px); } }
+
+  /* Equity line label */
+  .equity-legend {
+    position:absolute; top:8px; left:12px; z-index:5;
+    font-size:9px; color:var(--text-secondary);
+    background:rgba(15,25,35,.7); padding:3px 8px; border-radius:3px;
+  }
+
+  .run-btn {
+    width:100%; padding:9px; border:none; border-radius:5px;
+    font-family:inherit; font-size:12px; font-weight:700;
+    cursor:pointer; transition:opacity .2s; letter-spacing:.3px;
+  }
+  .run-btn:hover { opacity:.85; }
+  .btn-play { background:var(--green); color:#fff; margin-bottom:6px; }
+  .btn-rand { background:var(--bg-card); color:var(--text-primary); border:1px solid var(--border); }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>&#9670;</span> Backtest Strategy — Live Replay</h1>
+  <div class="badge">ANIMATED</div>
+</header>
+<div class="layout">
+  <aside class="sidebar">
+    <h2>Market Data</h2>
+    <div class="cg"><label>Symbol</label><input id="inp-symbol" value="RELIANCE"/></div>
+    <div class="cg"><label>Previous Close (₹)</label><input id="inp-prev-close" type="number" value="2600" step="1"/></div>
+    <div class="cg"><label>Volatility</label>
+      <select id="inp-volatility"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select>
+    </div>
+    <div class="cg"><label>Trend Bias</label>
+      <select id="inp-trend"><option value="bullish">Bullish</option><option value="neutral" selected>Neutral</option><option value="bearish">Bearish</option></select>
+    </div>
+    <hr class="div"/>
+
+    <h2>Strategy Parameters</h2>
+    <div class="cg"><label>Initial Threshold (%)</label><input id="inp-init" type="number" value="0.1" step="0.01" min="0.01"/></div>
+    <div class="cg"><label>Take Profit — Long (%)</label><input id="inp-long" type="number" value="0.5" step="0.1" min="0.01"/></div>
+    <div class="cg"><label>Stop Loss — Short (%)</label><input id="inp-short" type="number" value="10" step="0.5" min="0.01"/></div>
+    <hr class="div"/>
+
+    <h2>Capital</h2>
+    <div class="cg"><label>Starting Funds (₹)</label><input id="inp-funds" type="number" value="110000" step="1000"/></div>
+    <div class="cg"><label>Base Funds / Min to Trade (₹)</label><input id="inp-base" type="number" value="100000" step="1000"/></div>
+    <hr class="div"/>
+
+    <h2>Presets</h2>
+    <div class="preset-grid">
+      <button class="preset-btn" onclick="applyPreset('scalper')">Scalper</button>
+      <button class="preset-btn" onclick="applyPreset('conservative')">Conservative</button>
+      <button class="preset-btn" onclick="applyPreset('aggressive')">Aggressive</button>
+      <button class="preset-btn" onclick="applyPreset('tight')">Tight SL</button>
+    </div>
+
+    <button class="run-btn btn-play" onclick="startAnimation()">&#9654; Animate Simulation</button>
+    <button class="run-btn btn-rand" onclick="randomizeAndAnimate()">&#8635; Randomize &amp; Animate</button>
+  </aside>
+
+  <div class="main-content">
+    <div class="stats-bar">
+      <div class="stat-card"><div class="lbl">Net P&amp;L</div><div class="val" id="s-pnl">₹0</div></div>
+      <div class="stat-card"><div class="lbl">Return %</div><div class="val" id="s-ret">0.00%</div></div>
+      <div class="stat-card"><div class="lbl">Trades</div><div class="val" id="s-trades">0</div></div>
+      <div class="stat-card"><div class="lbl">Win Rate</div><div class="val" id="s-wr">—</div></div>
+      <div class="stat-card"><div class="lbl">Shares Held</div><div class="val" id="s-shares">0</div></div>
+      <div class="stat-card"><div class="lbl">Funds</div><div class="val" id="s-funds">—</div></div>
+    </div>
+
+    <div id="chart-container">
+      <div class="equity-legend">— Equity Curve</div>
+    </div>
+
+    <div class="playback-bar">
+      <button class="pb-btn" id="btn-play" onclick="togglePlay()" title="Play / Pause">&#9654;</button>
+      <button class="pb-btn" onclick="stepBack()" title="Step back">&#9664;</button>
+      <button class="pb-btn" onclick="stepForward()" title="Step forward">&#9654;&#124;</button>
+      <button class="pb-btn" onclick="skipToEnd()" title="Skip to end">&#9654;&#9654;</button>
+      <input type="range" id="timeline" min="0" max="374" value="0" oninput="seekTo(+this.value)"/>
+      <div class="pb-label" id="time-label">09:15 — 0 / 375</div>
+      <select class="speed-select" id="speed-select" onchange="setSpeed(+this.value)">
+        <option value="80">0.5x</option>
+        <option value="40" selected>1x</option>
+        <option value="20">2x</option>
+        <option value="8">5x</option>
+        <option value="2">10x</option>
+      </select>
+    </div>
+
+    <div class="bottom-panel">
+      <h3>Order Log (live)</h3>
+      <table>
+        <thead><tr>
+          <th>#</th><th>Time</th><th>Type</th><th>Price</th><th>Qty</th><th>Amount</th><th>P&amp;L</th><th>Net</th>
+        </tr></thead>
+        <tbody id="order-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="toast-container" id="toast-container"></div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   DATA GENERATION
+   ═══════════════════════════════════════════════════════════════════ */
+function generateCandles(prevClose, volatility, trend) {
+  const volMap = { low:0.0015, medium:0.004, high:0.01 };
+  const trendMap = { bullish:0.00007, neutral:0, bearish:-0.00007 };
+  const vol = volMap[volatility] || 0.004;
+  const drift = trendMap[trend] || 0;
+  const candles = [];
+  let price = prevClose;
+  const base = new Date(2022, 4, 17, 9, 15, 0);
+
+  for (let i = 0; i < 375; i++) {
+    const t = new Date(base.getTime() + i * 60000);
+    const r = drift + vol * (Math.random() - 0.5) * 2;
+    const open = price;
+    const close = open * (1 + r);
+    const high = Math.max(open, close) * (1 + Math.random() * vol * 0.5);
+    const low  = Math.min(open, close) * (1 - Math.random() * vol * 0.5);
+    candles.push({
+      time: Math.floor(t.getTime() / 1000),
+      timeStr: t.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}),
+      open:+open.toFixed(2), high:+high.toFixed(2),
+      low:+low.toFixed(2), close:+close.toFixed(2),
+    });
+    price = close;
+  }
+  return candles;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   STRATEGY — incremental, one candle at a time
+   ═══════════════════════════════════════════════════════════════════ */
+class StrategyState {
+  constructor(prevClose, params) {
+    this.longPosition = true;
+    this.lastClose = prevClose;
+    this.funds = params.funds;
+    this.startFunds = params.funds;
+    this.baseFunds = params.baseFunds;
+    this.initThreshold = params.initThreshold;
+    this.longPercent = params.longPercent;
+    this.shortPercent = params.shortPercent;
+    this.totalShares = 0;
+    this.orders = [];
+    this.netPnl = 0;
+    this.wins = 0;
+    this.losses = 0;
+    this.equity = params.funds;
+    this.peak = params.funds;
+    this.maxDD = 0;
+  }
+  tick(c) {
+    const pct = ((c.close - this.lastClose) / this.lastClose) * 100;
+    let event = null;
+
+    if (this.longPosition && this.funds >= this.baseFunds && this.funds >= c.close) {
+      if (pct >= this.initThreshold) {
+        this.totalShares = Math.floor(this.funds / c.close);
+        const amt = this.totalShares * c.close;
+        this.funds -= amt;
+        const order = { time:c.time, timeStr:c.timeStr, type:'BUY', price:c.close, qty:this.totalShares, amount:+amt.toFixed(2), pnl:0 };
+        this.orders.push(order);
+        this.longPosition = false;
+        this.lastClose = c.close;
+        event = order;
+      }
+    } else if (!this.longPosition) {
+      let sell = false;
+      if (pct >= 0 && pct >= this.longPercent) sell = true;
+      if (pct < 0 && Math.abs(pct) >= this.shortPercent) sell = true;
+      if (sell) {
+        const amt = this.totalShares * c.close;
+        this.funds += amt;
+        const prev = this.orders[this.orders.length - 1];
+        const pnl = (c.close * this.totalShares) - (prev.price * prev.qty);
+        this.netPnl += pnl;
+        this.equity += pnl;
+        if (pnl >= 0) this.wins++; else this.losses++;
+        if (this.equity > this.peak) this.peak = this.equity;
+        const dd = ((this.peak - this.equity) / this.peak) * 100;
+        if (dd > this.maxDD) this.maxDD = dd;
+        const order = { time:c.time, timeStr:c.timeStr, type:'SELL', price:c.close, qty:this.totalShares, amount:+amt.toFixed(2), pnl:+pnl.toFixed(0) };
+        this.orders.push(order);
+        this.totalShares = 0;
+        this.longPosition = true;
+        this.lastClose = c.close;
+        event = order;
+      }
+    }
+    return event;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CHART
+   ═══════════════════════════════════════════════════════════════════ */
+let chart, candleSeries, equitySeries;
+
+function createChart() {
+  const el = document.getElementById('chart-container');
+  if (chart) { chart.remove(); chart = null; }
+  const w = el.clientWidth || 800, h = el.clientHeight || 400;
+  chart = LightweightCharts.createChart(el, {
+    width:w, height:h,
+    layout:{ background:{color:'#0f1923'}, textColor:'#8899a6' },
+    grid:{ vertLines:{color:'#1a2733'}, horzLines:{color:'#1a2733'} },
+    timeScale:{ timeVisible:true, secondsVisible:false, borderColor:'#2a3f52' },
+    rightPriceScale:{ borderColor:'#2a3f52' },
+  });
+  candleSeries = chart.addCandlestickSeries({
+    upColor:'#00c853', downColor:'#ff1744',
+    borderUpColor:'#00c853', borderDownColor:'#ff1744',
+    wickUpColor:'#00c853', wickDownColor:'#ff1744',
+  });
+  equitySeries = chart.addLineSeries({
+    color:'rgba(29,161,242,0.5)', lineWidth:1,
+    priceScaleId:'equity', lastValueVisible:false, priceLineVisible:false,
+  });
+  chart.priceScale('equity').applyOptions({ scaleMargins:{top:0.7,bottom:0}, visible:false });
+
+  const ro = new ResizeObserver(()=> { chart.resize(el.clientWidth, el.clientHeight); });
+  ro.observe(el);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ANIMATION ENGINE
+   ═══════════════════════════════════════════════════════════════════ */
+let allCandles = null;
+let strategy = null;
+let currentIdx = 0;
+let playing = false;
+let intervalId = null;
+let speed = 40;
+let displayedCandles = [];
+let markers = [];
+let equityData = [];
+let orderTableNet = 0;
+
+function getParams() {
+  return {
+    prevClose: +document.getElementById('inp-prev-close').value,
+    volatility: document.getElementById('inp-volatility').value,
+    trend: document.getElementById('inp-trend').value,
+    initThreshold: +document.getElementById('inp-init').value,
+    longPercent: +document.getElementById('inp-long').value,
+    shortPercent: +document.getElementById('inp-short').value,
+    funds: +document.getElementById('inp-funds').value,
+    baseFunds: +document.getElementById('inp-base').value,
+  };
+}
+
+function resetState() {
+  stop();
+  const p = getParams();
+  strategy = new StrategyState(p.prevClose, p);
+  currentIdx = 0;
+  displayedCandles = [];
+  markers = [];
+  equityData = [];
+  orderTableNet = 0;
+  document.getElementById('order-body').innerHTML = '';
+  document.getElementById('timeline').value = 0;
+  updateStats();
+  createChart();
+}
+
+function showCandle(idx) {
+  if (idx >= allCandles.length) return;
+  const c = allCandles[idx];
+
+  displayedCandles.push({ time:c.time, open:c.open, high:c.high, low:c.low, close:c.close });
+  candleSeries.setData(displayedCandles);
+
+  const event = strategy.tick(c);
+  equityData.push({ time:c.time, value: strategy.equity });
+  equitySeries.setData(equityData);
+
+  if (event) {
+    markers.push({
+      time: event.time,
+      position: event.type === 'BUY' ? 'belowBar' : 'aboveBar',
+      color: event.type === 'BUY' ? '#00c853' : '#ff1744',
+      shape: event.type === 'BUY' ? 'arrowUp' : 'arrowDown',
+      text: event.type + ' ₹' + event.price.toFixed(2),
+    });
+    candleSeries.setMarkers([...markers]);
+    showToast(event);
+    addOrderRow(event);
+  }
+
+  updateStats();
+  document.getElementById('timeline').value = idx;
+  document.getElementById('time-label').textContent = c.timeStr + ' — ' + (idx+1) + ' / ' + allCandles.length;
+
+  // auto-scroll chart to keep latest candle visible
+  chart.timeScale().scrollToPosition(2, false);
+}
+
+function addOrderRow(o) {
+  const tbody = document.getElementById('order-body');
+  const n = strategy.orders.length;
+  let pnlStr = '', netStr = '';
+  if (o.type === 'SELL') {
+    orderTableNet += +o.pnl;
+    pnlStr = '₹' + o.pnl;
+    netStr = '₹' + orderTableNet.toFixed(0);
+  }
+  const tr = document.createElement('tr');
+  tr.style.animation = 'toastIn .3s ease';
+  const pnlCls = o.pnl >= 0 ? 'pos' : 'neg';
+  const netCls = orderTableNet >= 0 ? 'pos' : 'neg';
+  tr.innerHTML = `
+    <td>${n}</td><td>${o.timeStr}</td>
+    <td><span class="tag tag-${o.type.toLowerCase()}">${o.type}</span></td>
+    <td>₹${o.price.toFixed(2)}</td><td>${o.qty}</td><td>₹${o.amount.toFixed(0)}</td>
+    <td class="${pnlCls}">${pnlStr}</td><td class="${netCls}">${netStr}</td>`;
+  tbody.appendChild(tr);
+  tr.scrollIntoView({ behavior:'smooth', block:'end' });
+}
+
+function updateStats() {
+  const s = strategy;
+  const el = id => document.getElementById(id);
+  const cls = v => v >= 0 ? 'pos' : 'neg';
+  const total = s.wins + s.losses;
+
+  el('s-pnl').textContent = '₹' + s.netPnl.toFixed(0);
+  el('s-pnl').className = 'val ' + cls(s.netPnl);
+  el('s-ret').textContent = ((s.netPnl / s.startFunds) * 100).toFixed(2) + '%';
+  el('s-ret').className = 'val ' + cls(s.netPnl);
+  el('s-trades').textContent = total;
+  el('s-wr').textContent = total > 0 ? ((s.wins/total)*100).toFixed(0)+'%' : '—';
+  el('s-wr').className = 'val ' + (total > 0 && s.wins/total >= .5 ? 'pos' : 'neg');
+  el('s-shares').textContent = s.totalShares;
+  el('s-funds').textContent = '₹' + s.funds.toFixed(0);
+}
+
+/* ── Toast ── */
+function showToast(order) {
+  const container = document.getElementById('toast-container');
+  const div = document.createElement('div');
+  const icon = order.type === 'BUY' ? '▲' : '▼';
+  const pnlBit = order.type === 'SELL' ? ` &nbsp;P&L: ₹${order.pnl}` : '';
+  div.className = 'toast toast-' + order.type.toLowerCase();
+  div.innerHTML = `<span class="icon">${icon}</span> ${order.type} ${order.qty} @ ₹${order.price.toFixed(2)}${pnlBit}`;
+  container.appendChild(div);
+  setTimeout(() => div.remove(), 2400);
+}
+
+/* ── Playback controls ── */
+function play() {
+  if (playing) return;
+  playing = true;
+  document.getElementById('btn-play').innerHTML = '&#10074;&#10074;';
+  document.getElementById('btn-play').classList.add('active');
+  intervalId = setInterval(() => {
+    if (currentIdx >= allCandles.length) { stop(); return; }
+    showCandle(currentIdx);
+    currentIdx++;
+  }, speed);
+}
+
+function stop() {
+  playing = false;
+  clearInterval(intervalId);
+  document.getElementById('btn-play').innerHTML = '&#9654;';
+  document.getElementById('btn-play').classList.remove('active');
+}
+
+function togglePlay() {
+  if (currentIdx >= allCandles.length) {
+    // restart
+    resetState();
+    play();
+  } else {
+    playing ? stop() : play();
+  }
+}
+
+function stepForward() {
+  stop();
+  if (currentIdx < allCandles.length) { showCandle(currentIdx); currentIdx++; }
+}
+
+function stepBack() {
+  stop();
+  if (currentIdx > 0) {
+    currentIdx = Math.max(0, currentIdx - 10);
+    rebuildTo(currentIdx);
+  }
+}
+
+function seekTo(idx) {
+  stop();
+  rebuildTo(idx);
+}
+
+function skipToEnd() {
+  stop();
+  rebuildTo(allCandles.length);
+}
+
+function rebuildTo(targetIdx) {
+  const p = getParams();
+  strategy = new StrategyState(p.prevClose, p);
+  displayedCandles = [];
+  markers = [];
+  equityData = [];
+  orderTableNet = 0;
+  document.getElementById('order-body').innerHTML = '';
+  createChart();
+
+  for (let i = 0; i < targetIdx && i < allCandles.length; i++) {
+    const c = allCandles[i];
+    displayedCandles.push({ time:c.time, open:c.open, high:c.high, low:c.low, close:c.close });
+    const event = strategy.tick(c);
+    equityData.push({ time:c.time, value: strategy.equity });
+    if (event) {
+      markers.push({
+        time:event.time,
+        position: event.type==='BUY'?'belowBar':'aboveBar',
+        color: event.type==='BUY'?'#00c853':'#ff1744',
+        shape: event.type==='BUY'?'arrowUp':'arrowDown',
+        text: event.type+' ₹'+event.price.toFixed(2),
+      });
+      addOrderRow(event);
+    }
+  }
+  candleSeries.setData(displayedCandles);
+  equitySeries.setData(equityData);
+  candleSeries.setMarkers([...markers]);
+  chart.timeScale().fitContent();
+  currentIdx = targetIdx;
+  updateStats();
+
+  const c = allCandles[Math.min(targetIdx, allCandles.length-1)];
+  document.getElementById('timeline').value = Math.min(targetIdx, allCandles.length-1);
+  document.getElementById('time-label').textContent = c.timeStr + ' — ' + Math.min(targetIdx, allCandles.length) + ' / ' + allCandles.length;
+}
+
+function setSpeed(ms) { speed = ms; if (playing) { stop(); play(); } }
+
+/* ── Entry points ── */
+function startAnimation() {
+  const p = getParams();
+  if (!allCandles) allCandles = generateCandles(p.prevClose, p.volatility, p.trend);
+  resetState();
+  play();
+}
+
+function randomizeAndAnimate() {
+  const p = getParams();
+  allCandles = generateCandles(p.prevClose, p.volatility, p.trend);
+  resetState();
+  play();
+}
+
+function applyPreset(name) {
+  const presets = {
+    scalper:{init:0.05,long:0.2,short:0.3},
+    conservative:{init:0.3,long:1.0,short:5.0},
+    aggressive:{init:0.05,long:0.3,short:15.0},
+    tight:{init:0.1,long:0.5,short:1.0},
+  };
+  const pr = presets[name]; if(!pr) return;
+  document.getElementById('inp-init').value = pr.init;
+  document.getElementById('inp-long').value = pr.long;
+  document.getElementById('inp-short').value = pr.short;
+}
+
+/* ── Boot ── */
+window.addEventListener('load', () => {
+  startAnimation();
+});
+</script>
+</body>
+</html>
