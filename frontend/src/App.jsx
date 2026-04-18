@@ -74,6 +74,9 @@ export default function App() {
   const wsRef = useRef(null)
   const startFundsRef = useRef(0)
   const equityRef = useRef(0)
+  const tpLineRef = useRef(null)
+  const slLineRef = useRef(null)
+  const buyLineRef = useRef(null)
 
   // ── Fetch portfolio on mount ──
   useEffect(() => {
@@ -124,7 +127,7 @@ export default function App() {
   }, [])
 
   // ── Render a single tick from the server ──
-  const renderTick = useCallback((candle, order, serverStats) => {
+  const renderTick = useCallback((candle, order, serverStats, levels) => {
     const cs = candleSeriesRef.current
     const es = equitySeriesRef.current
     if (!cs || !es) return
@@ -158,6 +161,45 @@ export default function App() {
       const tid = ++toastIdRef.current
       setToasts(prev => [...prev, { ...order, id: tid }])
       setTimeout(() => setToasts(prev => prev.filter(t => t.id !== tid)), 2400)
+    }
+
+    // Update strategy price lines
+    if (levels) {
+      // TP line
+      if (levels.tp != null) {
+        if (tpLineRef.current) { cs.removePriceLine(tpLineRef.current) }
+        tpLineRef.current = cs.createPriceLine({
+          price: levels.tp, color: '#00c853', lineWidth: 1,
+          lineStyle: 2, axisLabelVisible: true, title: `TP ₹${levels.tp.toFixed(2)}`,
+        })
+      } else if (tpLineRef.current) {
+        cs.removePriceLine(tpLineRef.current)
+        tpLineRef.current = null
+      }
+
+      // SL line
+      if (levels.sl != null) {
+        if (slLineRef.current) { cs.removePriceLine(slLineRef.current) }
+        slLineRef.current = cs.createPriceLine({
+          price: levels.sl, color: '#ff1744', lineWidth: 1,
+          lineStyle: 2, axisLabelVisible: true, title: `SL ₹${levels.sl.toFixed(2)}`,
+        })
+      } else if (slLineRef.current) {
+        cs.removePriceLine(slLineRef.current)
+        slLineRef.current = null
+      }
+
+      // Buy trigger line
+      if (levels.buyTrigger != null) {
+        if (buyLineRef.current) { cs.removePriceLine(buyLineRef.current) }
+        buyLineRef.current = cs.createPriceLine({
+          price: levels.buyTrigger, color: '#1da1f2', lineWidth: 1,
+          lineStyle: 2, axisLabelVisible: true, title: `BUY ₹${levels.buyTrigger.toFixed(2)}`,
+        })
+      } else if (buyLineRef.current) {
+        cs.removePriceLine(buyLineRef.current)
+        buyLineRef.current = null
+      }
     }
 
     const oc = serverStats.orderCount || 0
@@ -216,6 +258,14 @@ export default function App() {
       wsRef.current = null
     }
 
+    // Destroy old chart so a fresh one is created
+    if (chartRef.current) {
+      chartRef.current.remove()
+      chartRef.current = null
+      candleSeriesRef.current = null
+      equitySeriesRef.current = null
+    }
+
     // Reset chart state
     setBacktestLoading(true)
     setBacktestError(null)
@@ -229,6 +279,9 @@ export default function App() {
     equityDataRef.current = []
     startFundsRef.current = funds
     equityRef.current = funds
+    tpLineRef.current = null
+    slLineRef.current = null
+    buyLineRef.current = null
     setStats({ netPnl: 0, returnPct: 0, totalTrades: 0, wins: 0, winRate: 0, shares: 0, funds: funds, totalFees: 0 })
     setView('backtest')
 
@@ -262,7 +315,7 @@ export default function App() {
         setPlaying(true)
       } else if (msg.type === 'tick') {
         setCurrentIdx(msg.index + 1)
-        renderTick(msg.candle, msg.order, msg.stats)
+        renderTick(msg.candle, msg.order, msg.stats, msg.levels)
       } else if (msg.type === 'done') {
         setPlaying(false)
         setStreaming(false)

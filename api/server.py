@@ -385,6 +385,7 @@ async def ws_backtest(ws: WebSocket):
         last_trade_price = closing_tick.close
         sell_target_profit = None
         sell_target_loss = None
+        buy_trigger_price = round(closing_tick.close * (1 + initial_threshold / 100), 4)
 
         for i, tick in enumerate(data):
             candle = tick_to_dict(tick)
@@ -474,6 +475,14 @@ async def ws_backtest(ws: WebSocket):
             )
             price_log.flush()
 
+            # Update strategy levels after trade
+            if transaction:
+                evt_type = model._orders[-1].order_type
+                if evt_type == "BUY":
+                    buy_trigger_price = None
+                else:
+                    buy_trigger_price = round(tick.close * (1 + initial_threshold / 100), 4)
+
             # Send tick to frontend
             await ws.send_json({
                 "type": "tick",
@@ -486,6 +495,11 @@ async def ws_backtest(ws: WebSocket):
                     "netPnl": round(net_pnl, 2),
                     "totalFees": round(total_fees, 2),
                     "orderCount": order_count,
+                },
+                "levels": {
+                    "tp": sell_target_profit,
+                    "sl": sell_target_loss,
+                    "buyTrigger": buy_trigger_price,
                 },
             })
 
