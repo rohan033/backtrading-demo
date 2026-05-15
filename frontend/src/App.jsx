@@ -33,10 +33,16 @@ export default function App() {
   const [portfolioLoading, setPortfolioLoading] = useState(true)
   const [portfolioError, setPortfolioError] = useState(null)
   const [selected, setSelected] = useState(null)
-  const [view, setView] = useState('portfolio') // 'portfolio' | 'backtest'
+  const [view, setView] = useState('portfolio') // 'portfolio' | 'backtest' | 'compound'
 
   // Portfolio sorting state
   const [portfolioSort, setPortfolioSort] = useState({ column: 'tradingsymbol', direction: 'asc' })
+
+  // Compound calculator state
+  const [compoundInitial, setCompoundInitial] = useState(100000)
+  const [compoundDays, setCompoundDays] = useState(30)
+  const [compoundPercentage, setCompoundPercentage] = useState(1)
+  const [compoundResults, setCompoundResults] = useState(null)
 
   // Backtest form - auto-set to today's date
   const today = new Date()
@@ -77,6 +83,45 @@ export default function App() {
       setClosingStart(formatDate(dayBefore, '15:29'))
       setClosingEnd(formatDate(dayBefore, '15:30'))
     }
+  }
+
+  // Compound calculator function
+  const calculateCompound = () => {
+    const dailyReturn = compoundPercentage / 100 // Convert percentage to decimal
+    const results = []
+    let currentAmount = compoundInitial
+    let cumulativeProfit = 0
+    
+    for (let day = 1; day <= compoundDays; day++) {
+      const dailyProfit = currentAmount * dailyReturn
+      const dayEndAmount = currentAmount + dailyProfit
+      cumulativeProfit += dailyProfit
+      
+      results.push({
+        day,
+        investment: currentAmount,
+        profitPercentage: compoundPercentage,
+        dailyProfit,
+        netProfitTillNow: cumulativeProfit,
+        finalAmount: dayEndAmount
+      })
+      
+      currentAmount = dayEndAmount
+    }
+    
+    const totalProfit = currentAmount - compoundInitial
+    const totalReturnPercentage = ((currentAmount / compoundInitial - 1) * 100)
+    
+    setCompoundResults({
+      dailyData: results,
+      summary: {
+        initialInvestment: compoundInitial,
+        finalAmount: currentAmount,
+        totalProfit,
+        totalReturnPercentage,
+        days: compoundDays
+      }
+    })
   }
 
   const getSortedPortfolio = () => {
@@ -468,6 +513,12 @@ export default function App() {
           >
             Backtesting
           </button>
+          <button
+            onClick={() => { setSelected(null); setView('compound') }}
+            className="px-3 py-1 bg-accent/20 text-accent rounded text-[10px] font-bold hover:bg-accent/30 transition-colors"
+          >
+            Compound
+          </button>
           <span className="bg-accent text-white px-2.5 py-0.5 rounded text-[10px] font-bold tracking-wider">
             LIVE
           </span>
@@ -507,7 +558,102 @@ export default function App() {
 
         {/* ── Main Content ── */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {!selected ? (
+          {view === 'compound' ? (
+            /* Compound Calculator View */
+            <div className="flex-1 overflow-auto p-6">
+              <h2 className="text-sm font-semibold mb-6">Compound Investment Calculator ({compoundPercentage}% Daily)</h2>
+              
+              <div className="max-w-4xl">
+                {/* Input Section */}
+                <div className="grid grid-cols-3 gap-6 mb-8">
+                  <div>
+                    <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-2">Initial Investment (₹)</label>
+                    <input
+                      type="number"
+                      value={compoundInitial}
+                      onChange={(e) => setCompoundInitial(Number(e.target.value))}
+                      className="w-full px-3 py-2 bg-card border border-border rounded text-[11px] font-medium focus:outline-none focus:border-accent"
+                      min="1000"
+                      step="1000"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-2">Daily Profit (%)</label>
+                    <input
+                      type="number"
+                      value={compoundPercentage}
+                      onChange={(e) => setCompoundPercentage(Number(e.target.value))}
+                      className="w-full px-3 py-2 bg-card border border-border rounded text-[11px] font-medium focus:outline-none focus:border-accent"
+                      min="0.1"
+                      max="10"
+                      step="0.1"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-2">Trading Days</label>
+                    <input
+                      type="number"
+                      value={compoundDays}
+                      onChange={(e) => setCompoundDays(Number(e.target.value))}
+                      className="w-full px-3 py-2 bg-card border border-border rounded text-[11px] font-medium focus:outline-none focus:border-accent"
+                      min="1"
+                      max="365"
+                    />
+                  </div>
+                </div>
+
+                <button
+                  onClick={calculateCompound}
+                  className="mb-8 px-6 py-2.5 rounded-md font-bold text-xs tracking-wide text-white bg-green hover:opacity-85 transition-opacity"
+                >
+                  Calculate Compound Returns
+                </button>
+
+                {compoundResults && (
+                  <>
+                    {/* Summary Section */}
+                    <div className="grid grid-cols-4 gap-4 mb-8">
+                      <StatCard label="Initial Investment" value={`₹${compoundResults.summary.initialInvestment.toLocaleString()}`} />
+                      <StatCard label="Final Amount" value={`₹${compoundResults.summary.finalAmount.toLocaleString()}`} colorClass="text-green" />
+                      <StatCard label="Total Profit" value={`₹${compoundResults.summary.totalProfit.toLocaleString()}`} colorClass="text-green" />
+                      <StatCard label="Total Return %" value={`${compoundResults.summary.totalReturnPercentage.toFixed(2)}%`} colorClass="text-green" />
+                    </div>
+
+                    {/* Daily Breakdown Table */}
+                    <div>
+                      <h3 className="text-[11px] uppercase tracking-[1.5px] text-text-secondary mb-3">Daily Breakdown</h3>
+                      <div className="max-h-96 overflow-auto border border-border rounded">
+                        <table className="w-full border-collapse text-[10px]">
+                          <thead className="bg-secondary sticky top-0">
+                            <tr className="text-text-secondary text-[8px] uppercase tracking-wider border-b border-border">
+                              <th className="text-left py-2 px-3">Day</th>
+                              <th className="text-right py-2 px-3">Investment</th>
+                              <th className="text-right py-2 px-3">Profit %</th>
+                              <th className="text-right py-2 px-3">Daily Profit</th>
+                              <th className="text-right py-2 px-3">Net Profit Till Now</th>
+                              <th className="text-right py-2 px-3">Final Amount</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {compoundResults.dailyData.map((row) => (
+                              <tr key={row.day} className="border-b border-border/30 hover:bg-accent/5 transition-colors">
+                                <td className="py-1.5 px-3 font-semibold">{row.day}</td>
+                                <td className="py-1.5 px-3 text-right">₹{row.investment.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                                <td className="py-1.5 px-3 text-right text-green">{row.profitPercentage}%</td>
+                                <td className="py-1.5 px-3 text-right text-green">₹{row.dailyProfit.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                                <td className="py-1.5 px-3 text-right text-green font-semibold">₹{row.netProfitTillNow.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                                <td className="py-1.5 px-3 text-right font-semibold">₹{row.finalAmount.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          ) : !selected ? (
             /* Portfolio Table View */
             <div className="flex-1 overflow-auto p-6">
               <h2 className="text-sm font-semibold mb-4">Portfolio Overview</h2>
