@@ -44,6 +44,12 @@ export default function App() {
   const [compoundPercentage, setCompoundPercentage] = useState(1)
   const [compoundResults, setCompoundResults] = useState(null)
 
+  // Search state
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResults, setSearchResults] = useState([])
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchedStock, setSearchedStock] = useState(null)
+
   // Backtest form - auto-set to today's date
   const today = new Date()
   const yesterday = new Date(today)
@@ -62,6 +68,41 @@ export default function App() {
       column,
       direction: prev.column === column && prev.direction === 'asc' ? 'desc' : 'asc'
     }))
+  }
+
+  // Search function
+  const searchStock = async () => {
+    if (!searchQuery.trim()) return
+    
+    setSearchLoading(true)
+    try {
+      const response = await fetch(`${API_BASE}/search?q=${encodeURIComponent(searchQuery)}`)
+      const data = await response.json()
+      
+      if (data.status) {
+        setSearchResults(data.data || [])
+      } else {
+        setSearchResults([])
+      }
+    } catch (error) {
+      console.error('Search error:', error)
+      setSearchResults([])
+    } finally {
+      setSearchLoading(false)
+    }
+  }
+
+  // Select searched stock
+  const selectSearchedStock = (stock) => {
+    setSearchedStock(stock)
+    setSelected({
+      symboltoken: stock.symboltoken,
+      tradingsymbol: stock.tradingsymbol,
+      exchange: stock.exchange,
+      ltp: 0 // Will be updated when backtest runs
+    })
+    setSearchResults([])
+    setSearchQuery('')
   }
 
   // Date preset functions
@@ -656,7 +697,47 @@ export default function App() {
           ) : !selected ? (
             /* Portfolio Table View */
             <div className="flex-1 overflow-auto p-6">
-              <h2 className="text-sm font-semibold mb-4">Portfolio Overview</h2>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-sm font-semibold">Portfolio Overview</h2>
+                
+                {/* Search Section */}
+                <div className="w-80">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyPress={(e) => e.key === 'Enter' && searchStock()}
+                      placeholder="Search stock (e.g., SBIN, RELIANCE)"
+                      className="flex-1 px-3 py-1.5 bg-card border border-white rounded text-[11px] font-medium focus:outline-none focus:border-accent"
+                    />
+                    <button
+                      onClick={searchStock}
+                      disabled={searchLoading || !searchQuery.trim()}
+                      className="px-3 py-1.5 bg-accent/20 text-accent rounded text-[10px] font-bold hover:bg-accent/30 transition-colors disabled:opacity-50"
+                    >
+                      {searchLoading ? '...' : 'Search'}
+                    </button>
+                  </div>
+                  
+                  {/* Search Results */}
+                  {searchResults.length > 0 && (
+                    <div className="absolute mt-1 w-76 border border-white rounded max-h-32 overflow-auto bg-card z-10">
+                      {searchResults.map(stock => (
+                        <button
+                          key={stock.symboltoken}
+                          onClick={() => selectSearchedStock(stock)}
+                          className="w-full text-left px-3 py-1.5 text-[10px] hover:bg-accent/5 transition-colors border-b border-white/30 last:border-b-0"
+                        >
+                          <div className="font-medium">{stock.tradingsymbol}</div>
+                          <div className="text-text-secondary text-[9px]">{stock.exchange} • Token: {stock.symboltoken}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              
               {portfolioLoading ? (
                 <p className="text-text-secondary text-xs">Loading...</p>
               ) : (
@@ -706,7 +787,15 @@ export default function App() {
                 <div>
                   <h2 className="text-sm font-semibold mb-2">Configure Backtest</h2>
                   {selected ? (
-                    <span className="text-accent text-xs">Selected: {selected.tradingsymbol}</span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-accent text-xs">Selected: {selected.tradingsymbol}</span>
+                      <button
+                        onClick={() => { setSelected(null); setSearchedStock(null) }}
+                        className="text-[9px] text-text-secondary hover:text-text-primary transition-colors"
+                      >
+                        ✕ Change
+                      </button>
+                    </div>
                   ) : (
                     <div className="mb-3">
                       <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Select Stock</label>
@@ -715,8 +804,9 @@ export default function App() {
                         onChange={(e) => {
                           const stock = portfolio.find(item => item.symboltoken === e.target.value)
                           setSelected(stock || null)
+                          setSearchedStock(null)
                         }}
-                        className="w-full px-3 py-1.5 bg-card border border-border rounded text-[11px] font-medium focus:outline-none focus:border-accent"
+                        className="w-full px-3 py-1.5 bg-card border border-white rounded text-[11px] font-medium focus:outline-none focus:border-accent"
                       >
                         <option value="">Choose a stock...</option>
                         {[...portfolio].sort((a, b) => a.tradingsymbol.localeCompare(b.tradingsymbol)).map(item => (
