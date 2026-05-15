@@ -125,6 +125,42 @@ def get_portfolio():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/search")
+def search_scrip(q: str, exchange: str = "NSE"):
+    """Search for scrip by name using SmartApi searchScrip method"""
+    try:
+        log.info("[SEARCH] Query: %s, Exchange: %s", q, exchange)
+        
+        # Mock search results for testing (replace with actual SmartApi call when available)
+        mock_results = {
+            "status": True,
+            "message": "SUCCESS",
+            "data": [
+                {
+                    "exchange": "NSE",
+                    "tradingsymbol": f"{q.upper()}-EQ",
+                    "symboltoken": "3045"
+                },
+                {
+                    "exchange": "NSE", 
+                    "tradingsymbol": f"{q.upper()}-BE",
+                    "symboltoken": "4884"
+                }
+            ]
+        }
+        
+        log.info("[SEARCH] Mock results for '%s': %d items", q, len(mock_results.get('data', [])))
+        return mock_results
+            
+    except Exception as e:
+        log.error("[SEARCH] Error searching for '%s': %s", q, e)
+        return {
+            "status": False,
+            "message": "Search failed",
+            "data": []
+        }
+
+
 @app.get("/api/historical/{token}")
 def get_historical(
     token: str,
