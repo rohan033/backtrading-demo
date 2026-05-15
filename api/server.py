@@ -131,26 +131,28 @@ def search_scrip(q: str, exchange: str = "NSE"):
     try:
         log.info("[SEARCH] Query: %s, Exchange: %s", q, exchange)
         
-        # Mock search results for testing (replace with actual SmartApi call when available)
-        mock_results = {
-            "status": True,
-            "message": "SUCCESS",
-            "data": [
-                {
-                    "exchange": "NSE",
-                    "tradingsymbol": f"{q.upper()}-EQ",
-                    "symboltoken": "3045"
-                },
-                {
-                    "exchange": "NSE", 
-                    "tradingsymbol": f"{q.upper()}-BE",
-                    "symboltoken": "4884"
-                }
-            ]
-        }
+        client = get_client()
         
-        log.info("[SEARCH] Mock results for '%s': %d items", q, len(mock_results.get('data', [])))
-        return mock_results
+        # Use SmartApi searchScrip method
+        search_result = client._client.searchScrip(exchange, q)
+        
+        if search_result and search_result.get('status', False):
+            log.info("[SEARCH] Found %d results for '%s'", len(search_result.get('data', [])), q)
+            # Print all tokens in logs
+            for item in search_result.get('data', []):
+                log.info("[SEARCH] Token: %s -> %s", item['tradingsymbol'], item['symboltoken'])
+            return {
+                "status": True,
+                "message": "SUCCESS",
+                "data": search_result.get('data', [])
+            }
+        else:
+            log.warning("[SEARCH] No results found for '%s'", q)
+            return {
+                "status": False,
+                "message": "No results found",
+                "data": []
+            }
             
     except Exception as e:
         log.error("[SEARCH] Error searching for '%s': %s", q, e)
