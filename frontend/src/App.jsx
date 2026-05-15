@@ -35,11 +35,75 @@ export default function App() {
   const [selected, setSelected] = useState(null)
   const [view, setView] = useState('portfolio') // 'portfolio' | 'backtest'
 
-  // Backtest form
-  const [startDate, setStartDate] = useState('2026-04-17 09:15')
-  const [endDate, setEndDate] = useState('2026-04-17 15:15')
-  const [closingStart, setClosingStart] = useState('2026-04-16 15:29')
-  const [closingEnd, setClosingEnd] = useState('2026-04-16 15:30')
+  // Portfolio sorting state
+  const [portfolioSort, setPortfolioSort] = useState({ column: 'tradingsymbol', direction: 'asc' })
+
+  // Backtest form - auto-set to today's date
+  const today = new Date()
+  const yesterday = new Date(today)
+  yesterday.setDate(yesterday.getDate() - 1)
+  
+  const formatDate = (date, time) => {
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day} ${time}`
+  }
+
+  // Portfolio sorting function
+  const handleSort = (column) => {
+    setPortfolioSort(prev => ({
+      column,
+      direction: prev.column === column && prev.direction === 'asc' ? 'desc' : 'asc'
+    }))
+  }
+
+  // Date preset functions
+  const applyDatePreset = (preset) => {
+    const today = new Date()
+    const yesterday = new Date(today)
+    yesterday.setDate(yesterday.getDate() - 1)
+    const dayBefore = new Date(today)
+    dayBefore.setDate(dayBefore.getDate() - 2)
+    
+    if (preset === 'today') {
+      setStartDate(formatDate(today, '09:15'))
+      setEndDate(formatDate(today, '15:15'))
+      setClosingStart(formatDate(yesterday, '15:29'))
+      setClosingEnd(formatDate(yesterday, '15:30'))
+    } else if (preset === 'yesterday') {
+      setStartDate(formatDate(yesterday, '09:15'))
+      setEndDate(formatDate(yesterday, '15:15'))
+      setClosingStart(formatDate(dayBefore, '15:29'))
+      setClosingEnd(formatDate(dayBefore, '15:30'))
+    }
+  }
+
+  const getSortedPortfolio = () => {
+    if (!portfolio.length) return []
+    
+    return [...portfolio].sort((a, b) => {
+      let aVal = a[portfolioSort.column]
+      let bVal = b[portfolioSort.column]
+      
+      // Handle numeric columns
+      if (portfolioSort.column === 'quantity' || portfolioSort.column === 'ltp') {
+        aVal = parseFloat(aVal) || 0
+        bVal = parseFloat(bVal) || 0
+      }
+      
+      if (portfolioSort.direction === 'asc') {
+        return aVal > bVal ? 1 : aVal < bVal ? -1 : 0
+      } else {
+        return aVal < bVal ? 1 : aVal > bVal ? -1 : 0
+      }
+    })
+  }
+  
+  const [startDate, setStartDate] = useState(formatDate(today, '09:15'))
+  const [endDate, setEndDate] = useState(formatDate(today, '15:15'))
+  const [closingStart, setClosingStart] = useState(formatDate(yesterday, '15:29'))
+  const [closingEnd, setClosingEnd] = useState(formatDate(yesterday, '15:30'))
   const [longPercent, setLongPercent] = useState(0.5)
   const [shortPercent, setShortPercent] = useState(10)
   const [initThreshold, setInitThreshold] = useState(0.1)
@@ -398,6 +462,12 @@ export default function App() {
               {selected.tradingsymbol} — ₹{selected.ltp}
             </span>
           )}
+          <button
+            onClick={() => { setSelected(null); setView('backtest') }}
+            className="px-3 py-1 bg-accent/20 text-accent rounded text-[10px] font-bold hover:bg-accent/30 transition-colors"
+          >
+            Backtesting
+          </button>
           <span className="bg-accent text-white px-2.5 py-0.5 rounded text-[10px] font-bold tracking-wider">
             LIVE
           </span>
@@ -415,7 +485,7 @@ export default function App() {
             {portfolioError && <p className="text-xs text-red">{portfolioError}</p>}
 
             <div className="space-y-0.5">
-              {portfolio.map((item) => {
+              {[...portfolio].sort((a, b) => a.tradingsymbol.localeCompare(b.tradingsymbol)).map((item) => {
                 const isSelected = selected?.symboltoken === item.symboltoken
                 return (
                   <button
@@ -447,15 +517,23 @@ export default function App() {
                 <table className="w-full border-collapse text-[11px]">
                   <thead>
                     <tr className="text-text-secondary text-[8px] uppercase tracking-wider border-b border-border">
-                      <th className="text-left py-2 px-3">Symbol</th>
-                      <th className="text-left py-2 px-3">Exchange</th>
-                      <th className="text-right py-2 px-3">Qty</th>
-                      <th className="text-right py-2 px-3">LTP</th>
+                      <th className="text-left py-2 px-3 cursor-pointer hover:text-text-primary" onClick={() => handleSort('tradingsymbol')}>
+                        Symbol {portfolioSort.column === 'tradingsymbol' && (portfolioSort.direction === 'asc' ? '▲' : '▼')}
+                      </th>
+                      <th className="text-left py-2 px-3 cursor-pointer hover:text-text-primary" onClick={() => handleSort('exchange')}>
+                        Exchange {portfolioSort.column === 'exchange' && (portfolioSort.direction === 'asc' ? '▲' : '▼')}
+                      </th>
+                      <th className="text-right py-2 px-3 cursor-pointer hover:text-text-primary" onClick={() => handleSort('quantity')}>
+                        Qty {portfolioSort.column === 'quantity' && (portfolioSort.direction === 'asc' ? '▲' : '▼')}
+                      </th>
+                      <th className="text-right py-2 px-3 cursor-pointer hover:text-text-primary" onClick={() => handleSort('ltp')}>
+                        LTP {portfolioSort.column === 'ltp' && (portfolioSort.direction === 'asc' ? '▲' : '▼')}
+                      </th>
                       <th className="text-center py-2 px-3">Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {portfolio.map((item) => (
+                    {getSortedPortfolio().map((item) => (
                       <tr key={item.symboltoken} className="border-b border-border/30 hover:bg-accent/5 transition-colors">
                         <td className="py-2 px-3 font-semibold">{item.tradingsymbol}</td>
                         <td className="py-2 px-3 text-text-secondary">{item.exchange}</td>
@@ -479,9 +557,31 @@ export default function App() {
             /* Backtest Config View — shown when stock is selected but no data yet */
             <div className="flex-1 overflow-auto p-6">
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-sm font-semibold">
-                  Configure Backtest — <span className="text-accent">{selected.tradingsymbol}</span>
-                </h2>
+                <div>
+                  <h2 className="text-sm font-semibold mb-2">Configure Backtest</h2>
+                  {selected ? (
+                    <span className="text-accent text-xs">Selected: {selected.tradingsymbol}</span>
+                  ) : (
+                    <div className="mb-3">
+                      <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Select Stock</label>
+                      <select
+                        value={selected?.symboltoken || ''}
+                        onChange={(e) => {
+                          const stock = portfolio.find(item => item.symboltoken === e.target.value)
+                          setSelected(stock || null)
+                        }}
+                        className="w-full px-3 py-1.5 bg-card border border-border rounded text-[11px] font-medium focus:outline-none focus:border-accent"
+                      >
+                        <option value="">Choose a stock...</option>
+                        {[...portfolio].sort((a, b) => a.tradingsymbol.localeCompare(b.tradingsymbol)).map(item => (
+                          <option key={item.symboltoken} value={item.symboltoken}>
+                            {item.tradingsymbol} — ₹{item.ltp}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
                 <button onClick={() => { setSelected(null); setView('portfolio') }}
                   className="text-[10px] text-text-secondary hover:text-text-primary transition-colors">
                   ← Back to Portfolio
@@ -496,6 +596,20 @@ export default function App() {
                 {/* Date Range */}
                 <div>
                   <h3 className="text-[9px] uppercase tracking-[1.5px] text-text-secondary mb-3">Date Range</h3>
+                  <div className="flex gap-2 mb-3">
+                    <button
+                      onClick={() => applyDatePreset('yesterday')}
+                      className="px-3 py-1 bg-card border border-border rounded text-[9px] text-text-secondary hover:border-accent hover:text-text-primary transition-colors"
+                    >
+                      Yesterday
+                    </button>
+                    <button
+                      onClick={() => applyDatePreset('today')}
+                      className="px-3 py-1 bg-card border border-border rounded text-[9px] text-text-secondary hover:border-accent hover:text-text-primary transition-colors"
+                    >
+                      Today
+                    </button>
+                  </div>
                   <div className="space-y-2">
                     <Field label="Start" value={startDate} onChange={setStartDate} />
                     <Field label="End" value={endDate} onChange={setEndDate} />
@@ -536,10 +650,10 @@ export default function App() {
               <div className="mt-6 max-w-3xl flex gap-3">
                 <button
                   onClick={runBacktest}
-                  disabled={backtestLoading}
+                  disabled={backtestLoading || !selected}
                   className="px-8 py-2.5 rounded-md font-bold text-xs tracking-wide text-white bg-green hover:opacity-85 transition-opacity disabled:opacity-50"
                 >
-                  {backtestLoading ? '⏳ Running...' : '▶ Run Backtest'}
+                  {backtestLoading ? '⏳ Running...' : !selected ? 'Select a stock first' : '▶ Run Backtest'}
                 </button>
               </div>
             </div>
