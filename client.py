@@ -68,7 +68,6 @@ class TotpClient():
             logger.error("Invalid Token: The provided token is not valid.")
             raise e
 
-        correlation_id = "abcde"
         data = self._client.generateSession(self.userid, self.password, totp)
 
         if data['status'] == False:

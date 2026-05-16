@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { createChart } from 'lightweight-charts'
+import ManualRobo from './ManualRobo'
 
 const API_BASE = '/api'
 const WS_BASE = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
@@ -555,6 +556,12 @@ export default function App() {
             Backtesting
           </button>
           <button
+            onClick={() => { setSelected(null); setView('robo') }}
+            className="px-3 py-1 bg-green/20 text-green rounded text-[10px] font-bold hover:bg-green/30 transition-colors"
+          >
+            ManualRobo
+          </button>
+          <button
             onClick={() => { setSelected(null); setView('compound') }}
             className="px-3 py-1 bg-accent/20 text-accent rounded text-[10px] font-bold hover:bg-accent/30 transition-colors"
           >
@@ -599,7 +606,9 @@ export default function App() {
 
         {/* ── Main Content ── */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {view === 'compound' ? (
+          {view === 'robo' ? (
+            <ManualRobo />
+          ) : view === 'compound' ? (
             /* Compound Calculator View */
             <div className="flex-1 overflow-auto p-6">
               <h2 className="text-sm font-semibold mb-6">Compound Investment Calculator ({compoundPercentage}% Daily)</h2>

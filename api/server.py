@@ -16,6 +16,7 @@ import json
 from client import TotpClient
 from strategy import Strategy
 from backtesting import Backtesting
+from api.manual_robo_routes import router as manual_robo_router
 
 load_dotenv()
 
@@ -35,6 +36,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(manual_robo_router)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 TRADE_FEE = 25  # ₹25 per buy-sell round trip
