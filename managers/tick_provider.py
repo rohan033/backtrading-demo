@@ -1,16 +1,7 @@
 import asyncio
-from dataclasses import dataclass
 
 from logzero import logger
-from brokers.interfaces import TickClient, TickListener, Subscription
-
-
-@dataclass
-class TickData:
-    symbol: str
-    token: str
-    ltp: float
-    exchange: str
+from brokers.interfaces import TickClient, TickListener, Subscription, TickData
 
 
 class TickProvider:
@@ -34,28 +25,28 @@ class TickProvider:
         self._update_subscriptions()
 
     def _update_subscriptions(self):
-        """Update subscriptions based on all registered listeners' requirements"""
-        subscription_set = set()  # To avoid duplicates
-        
+        subscription_set = set()
+
         for listener in self._listeners.values():
             required_subs = listener.get_required_subscriptions()
             for sub in required_subs:
                 sub_key = (sub.exchange, sub.symbol, sub.token)
                 subscription_set.add(sub_key)
-        
+
         self._subscriptions = [
-            Subscription(exchange=key[0], symbol=key[1], token=key[2]) 
+            Subscription(exchange=key[0], symbol=key[1], token=key[2])
             for key in subscription_set
         ]
-        logger.info("Updated subscriptions: %d active, %d listeners", 
-                   len(self._subscriptions), len(self._listeners))
+        logger.info("Updated subscriptions: %d active, %d listeners",
+                    len(self._subscriptions), len(self._listeners))
 
     async def start(self):
         if self._running:
             return
         self._running = True
         self._task = asyncio.create_task(self._poll_loop())
-        logger.info("TickProvider started with interval=%.2fs, %d subscriptions", self._interval, len(self._subscriptions))
+        logger.info("TickProvider started with interval=%.2fs, %d subscriptions",
+                    self._interval, len(self._subscriptions))
 
     async def stop(self):
         self._running = False
@@ -76,7 +67,7 @@ class TickProvider:
     async def _fetch_and_dispatch(self):
         if not self._subscriptions:
             return
-        
+
         ltp_data_list = await self._client.aget_ltp_bulk(self._subscriptions)
         for ltp_data in ltp_data_list:
             tick = TickData(
@@ -85,12 +76,12 @@ class TickProvider:
                 ltp=ltp_data.ltp,
                 exchange=ltp_data.exchange,
             )
-            await self._dispatch(tick)
+            self._dispatch(tick)
 
-    async def _dispatch(self, tick: TickData):
+    def _dispatch(self, tick: TickData):
         listener = self._listeners.get(tick.token)
         if listener:
             try:
-                await listener.handle_tick(tick)
+                listener.enqueue_tick(tick)
             except Exception as e:
-                logger.error("Listener error for %s: %s", tick.symbol, e)
+                logger.error("Dispatch error for %s: %s", tick.symbol, e)

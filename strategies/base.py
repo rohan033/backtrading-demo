@@ -1,19 +1,19 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from managers.tick_provider import TickData
+from brokers.interfaces import TickData
 
 
 @dataclass
 class TradeSignal:
     decision: str  # "BUY" or "SELL" or "NOTHING"
-    entry_price: float  
-    take_profit_price: float
-    stop_loss_price: float
-    quantity: int
-    pct_change: float
-    threshold: float
-    ref_price: float
-    reason: str
+    entry_price: float = 0.0
+    take_profit_price: float = 0.0
+    stop_loss_price: float = 0.0
+    quantity: int = 0
+    pct_change: float = 0.0
+    threshold: float = 0.0
+    ref_price: float = 0.0
+    reason: str = ""
 
 
 class BaseStrategy(ABC):

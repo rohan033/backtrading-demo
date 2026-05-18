@@ -46,14 +46,14 @@ class DbEventWriter:
                 threshold REAL,
                 reason TEXT,
                 status TEXT DEFAULT '',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                INDEX(timestamp),
-                INDEX(order_id),
-                INDEX(executor_id),
-                INDEX(symbol),
-                INDEX(action)
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_trading_events_timestamp ON trading_events(timestamp)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_trading_events_order_id ON trading_events(order_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_trading_events_executor_id ON trading_events(executor_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_trading_events_symbol ON trading_events(symbol)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_trading_events_action ON trading_events(action)')
         
         conn.commit()
         conn.close()
@@ -104,7 +104,7 @@ class DbEventWriter:
             conn.commit()
             conn.close()
             
-            logger.debug(f"Event logged: {action}")
+            logger.info(f"\033[35m[DB]\033[0m Event persisted: \033[1m{action}\033[0m  order_id={order_id}")
             
         except Exception as e:
             logger.error(f"Failed to log event: {e}")

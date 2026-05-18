@@ -1,7 +1,13 @@
 from dataclasses import dataclass
 from typing import Protocol
 
-from managers.tick_provider import TickData
+
+@dataclass
+class TickData:
+    symbol: str
+    token: str
+    ltp: float
+    exchange: str
 
 
 @dataclass
@@ -25,8 +31,11 @@ class TickClient(Protocol):
 
 
 class TickListener(Protocol):
+    def enqueue_tick(self, tick: TickData) -> None:
+        ...
+
     async def handle_tick(self, tick: TickData) -> None:
         ...
-    
+
     def get_required_subscriptions(self) -> list[Subscription]:
         ...

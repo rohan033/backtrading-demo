@@ -1,4 +1,4 @@
-from managers.tick_provider import TickData
+from brokers.interfaces import TickData
 from utils import round_off
 from .base import BaseStrategy, TradeSignal
 

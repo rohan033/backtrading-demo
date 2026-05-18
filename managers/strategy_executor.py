@@ -1,7 +1,20 @@
+import asyncio
+
+from logzero import logger
 from managers.trading_manager import TradingManager
-from managers.tick_provider import TickData
-from brokers.interfaces import TickListener, Subscription
+from brokers.interfaces import TickData, TickListener, Subscription
 from strategies import OnePercentStrategy
+
+QUEUE_MAX_SIZE = 1000
+
+# ANSI color codes
+GREEN = "\033[32m"
+RED = "\033[31m"
+YELLOW = "\033[33m"
+CYAN = "\033[36m"
+DIM = "\033[2m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
 
 
 class StrategyExecutor(TickListener):
@@ -14,6 +27,8 @@ class StrategyExecutor(TickListener):
         self.trading_manager = trading_manager
         self.executor_id = executor_id
         self._required_subscription: Subscription | None = None
+        self._queue: asyncio.Queue[TickData] = asyncio.Queue(maxsize=QUEUE_MAX_SIZE)
+        self._consumer_task: asyncio.Task | None = None
 
     def set_strategy_config(self, strategy_config):
         self.strategy_config = strategy_config
@@ -29,28 +44,99 @@ class StrategyExecutor(TickListener):
                 token=self.strategy_config.token
             )
 
-    async def handle_tick(self, tick: TickData):
+    def enqueue_tick(self, tick: TickData):
+        try:
+            self._queue.put_nowait(tick)
+        except asyncio.QueueFull:
+            logger.warning("[%s] Queue full, dropping oldest ticks", self.executor_id)
+            self._drain_keep_latest(tick)
+
+    def _drain_keep_latest(self, new_tick: TickData):
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+        try:
+            self._queue.put_nowait(new_tick)
+        except asyncio.QueueFull:
+            pass
+
+    async def start(self):
+        if self._consumer_task is None:
+            self._consumer_task = asyncio.create_task(self._consume_loop())
+            logger.info("[%s] Consumer loop started", self.executor_id)
+
+    async def stop(self):
+        if self._consumer_task:
+            self._consumer_task.cancel()
+            try:
+                await self._consumer_task
+            except asyncio.CancelledError:
+                pass
+            self._consumer_task = None
+            logger.info("[%s] Consumer loop stopped", self.executor_id)
+
+    async def _consume_loop(self):
+        while True:
+            tick = await self._queue.get()
+
+            # Drain to latest — only process the most recent tick
+            latest = tick
+            while not self._queue.empty():
+                try:
+                    latest = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+
+            await self._process_tick(latest)
+
+    async def _process_tick(self, tick: TickData):
         if not self.is_active or self.status != "RUNNING":
             return
         if self.strategy is None:
             return
-        
-        # Check for buy signal - only when not in position
+
         if not self.is_in_position:
             trade_signal = self.strategy.provide_signal(tick)
             if trade_signal.decision == "BUY":
+                logger.info(
+                    "%s[%s]%s %sSIGNAL  BUY%s  %s  ltp=%.2f  chg=%+.3f%%  threshold=%.2f%%",
+                    CYAN, self.executor_id, RESET,
+                    BOLD + CYAN, RESET,
+                    tick.symbol, tick.ltp,
+                    trade_signal.pct_change, trade_signal.threshold
+                )
                 res = await self.trading_manager.handle_signal(self.executor_id, trade_signal)
-                print(f"BUY signal sent to trading manager: Entry={trade_signal.entry_price}, TP={trade_signal.take_profit_price}, SL={trade_signal.stop_loss_price}, Qty={trade_signal.quantity}")
-                print(f"Reason: {trade_signal.reason}")
                 if res.has_executed:
                     self.is_in_position = True
                     self.status = "POSITION_OPEN"
-                    print(f"Order executed successfully, order_id={res.order_id}")
-                return
+                    logger.info(
+                        "%s[%s]%s %sORDER   PLACED%s  order_id=%s  entry=%.2f  TP=%.2f  SL=%.2f  qty=%d",
+                        CYAN, self.executor_id, RESET,
+                        BOLD + GREEN, RESET,
+                        res.order_id,
+                        trade_signal.entry_price, trade_signal.take_profit_price,
+                        trade_signal.stop_loss_price, trade_signal.quantity
+                    )
+                else:
+                    logger.warning(
+                        "%s[%s]%s %sORDER   FAILED%s  %s",
+                        CYAN, self.executor_id, RESET,
+                        BOLD + RED, RESET,
+                        res.error_message
+                    )
             else:
-                print(f"Signal received but not BUY: {trade_signal.decision}")
-                return
+                logger.debug(
+                    "%s[%s]%s %sTICK%s    %s  ltp=%.2f  chg=%+.3f%%",
+                    DIM, self.executor_id, RESET,
+                    DIM, RESET,
+                    tick.symbol, tick.ltp, trade_signal.pct_change
+                )
+
+    # TickListener protocol — kept for interface compatibility
+    async def handle_tick(self, tick: TickData):
+        self.enqueue_tick(tick)
 
     def get_required_subscriptions(self) -> list[Subscription]:
         return [self._required_subscription] if self._required_subscription else []
-        

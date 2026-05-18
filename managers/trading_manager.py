@@ -3,6 +3,13 @@ from typing import Dict, Optional
 from event.event_manager import EventManager
 from logzero import logger
 
+GREEN = "\033[32m"
+RED = "\033[31m"
+YELLOW = "\033[33m"
+MAGENTA = "\033[35m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
 
 @dataclass
 class OrderResult:
@@ -36,9 +43,12 @@ class TradingManager:
     
     async def _handle_buy_signal(self, executor_id: str, signal):
         """Handle BUY signal by placing buy order"""
-        logger.info(f"[TM] Processing BUY signal from {executor_id}: "
-                   f"Entry={signal.entry_price}, Qty={signal.quantity}, "
-                   f"TP={signal.take_profit_price}, SL={signal.stop_loss_price}")
+        logger.info(
+            "%s[TM]%s Placing BUY  executor=%s  entry=%.2f  qty=%d  TP=%.2f  SL=%.2f",
+            MAGENTA, RESET, executor_id,
+            signal.entry_price, signal.quantity,
+            signal.take_profit_price, signal.stop_loss_price
+        )
         
         # Place buy order
         buy_result = await self.client.abuy(
@@ -87,7 +97,7 @@ class TradingManager:
                 unique_order_id=buy_result.get('unique_order_id')
             )
         else:
-            logger.error(f"[TM] Buy order failed for executor {executor_id}: {buy_result}")
+            logger.error("%s[TM]%s %sBuy order REJECTED%s  executor=%s", MAGENTA, RESET, RED, RESET, executor_id)
             return OrderResult(
                 has_executed=False,
                 error_message="Buy order placement failed"
