@@ -169,9 +169,14 @@ export default function ExecutionWorkspace() {
     setActiveTab('strategy')
   }
 
-  const onRegistered = async () => {
+  const onRegistered = async (engine) => {
     setShowCreate(false)
-    await refreshExecutions()
+    if (engine?.id) {
+      setSelectedDataPlaneId(engine.id)
+      await refreshDataPlanes()
+    } else {
+      await refreshExecutions()
+    }
     setActiveTab('chart')
   }
 
@@ -202,7 +207,7 @@ export default function ExecutionWorkspace() {
 
         <section className="flex-1 overflow-auto">
           {showCreate ? (
-            <CreateExecutionPanel liveApi={liveApi} onRegistered={onRegistered} onCancel={() => setShowCreate(false)} />
+            <CreateExecutionPanel searchApi={liveApi} onRegistered={onRegistered} onCancel={() => setShowCreate(false)} />
           ) : (
             <>
               {activeTab === 'chart' && (
@@ -293,6 +298,9 @@ function ExecutionSidePanel({
                 <div className="text-[9px] text-text-secondary mt-1 truncate">
                   {ex.executor_id} · {envLabel(ex.account_env)}
                 </div>
+                <div className="text-[9px] text-text-secondary mt-1 truncate">
+                  {ex.symbol || '-'} · {instrumentLabel(ex.broker)} {ex.token || '-'}
+                </div>
               </div>
               <StatusBadge status={ex.status} />
             </div>
@@ -323,7 +331,7 @@ function WorkspaceHeader({ execution, dataPlane, wsConnected }) {
       <div>
         <div className="text-sm font-bold">{execution?.label || 'No execution selected'}</div>
         <div className="text-[10px] text-text-secondary mt-0.5">
-          {execution ? `${execution.symbol} (${execution.token}) · ${execution.strategy_name}` : 'Create an execution to begin'}
+          {execution ? `${execution.symbol} · ${instrumentLabel(execution.broker)} ${execution.token || '-'} · ${execution.strategy_name}` : 'Create an execution to begin'}
           <span className="ml-2">· Data plane: {dataPlane?.host || 'local'}:{dataPlane?.port || '-'}</span>
         </div>
       </div>
@@ -493,9 +501,9 @@ function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefresh }) {
       <div className="grid grid-cols-5 gap-3">
         <StatCard label="Status" value={execution.status || 'UNKNOWN'} />
         <StatCard label="Env" value={envLabel(execution.account_env)} colorClass={execution.account_env === 'demo' ? 'text-accent' : 'text-red'} />
+        <StatCard label="Symbol" value={execution.symbol || '-'} />
+        <StatCard label={instrumentLabel(execution.broker)} value={execution.token || '-'} colorClass="text-accent" />
         <StatCard label="LTP" value={latestTick ? latestTick.ltp.toFixed(2) : '-'} colorClass="text-accent" />
-        <StatCard label="Take Profit" value={`${execution.long_percent ?? '-'}%`} colorClass="text-green" />
-        <StatCard label="Stop Loss" value={`${execution.short_percent ?? '-'}%`} colorClass="text-red" />
       </div>
 
       <div className="bg-card border border-border rounded p-4">
@@ -632,12 +640,13 @@ function HistoricalEventsTab({ liveApi }) {
   )
 }
 
-function CreateExecutionPanel({ liveApi, onRegistered, onCancel }) {
+function CreateExecutionPanel({ searchApi, onRegistered, onCancel }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [selectedStock, setSelectedStock] = useState(null)
   const [form, setForm] = useState({
     broker: 'angel',
+    account_env: 'live',
     strategy_name: 'one-percent',
     executor_id: '',
     close_price: '',
@@ -645,13 +654,14 @@ function CreateExecutionPanel({ liveApi, onRegistered, onCancel }) {
     short_percent: '10.0',
     initial_threshold: '0.2',
     max_available_capital: '100000',
+    use_fake_client: false,
   })
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
   const search = async () => {
     if (!query.trim()) return
-    const res = await fetch(`${liveApi}/search?q=${encodeURIComponent(query)}`)
+    const res = await fetch(`${searchApi}/search?q=${encodeURIComponent(query)}`)
     const data = await res.json()
     setResults(data.data || [])
   }
@@ -671,11 +681,14 @@ function CreateExecutionPanel({ liveApi, onRegistered, onCancel }) {
     setSubmitting(true)
     setError('')
     try {
-      const res = await fetch(`${liveApi}/executors`, {
+      const res = await fetch(`${CONTROL_API}/executions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           executor_id: form.executor_id,
+          broker: form.broker,
+          account_env: form.account_env,
+          strategy_name: form.strategy_name,
           symbol: selectedStock.tradingsymbol,
           token: selectedStock.symboltoken,
           exchange: selectedStock.exchange || 'NSE',
@@ -684,14 +697,26 @@ function CreateExecutionPanel({ liveApi, onRegistered, onCancel }) {
           short_percent: Number(form.short_percent),
           initial_threshold: Number(form.initial_threshold),
           max_available_capital: Number(form.max_available_capital),
+          use_fake_client: form.use_fake_client,
         }),
       })
       const data = await res.json()
       if (!res.ok) {
-        setError(data.detail || 'Failed to create execution')
+        setError(data.detail || 'Failed to start data plane')
         return
       }
-      onRegistered()
+      const engine = await waitForEngine(data.data.engine.id)
+      const executorRes = await fetch(`${engine.api_base_url}/executors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data.data.executor),
+      })
+      const executorData = await executorRes.json()
+      if (!executorRes.ok) {
+        setError(executorData.detail || 'Data plane started, but executor registration failed')
+        return
+      }
+      onRegistered(engine)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -704,13 +729,24 @@ function CreateExecutionPanel({ liveApi, onRegistered, onCancel }) {
       <div className="flex items-center justify-between mb-5">
         <div>
           <h2 className="text-sm font-bold">Create Execution</h2>
-          <p className="text-[10px] text-text-secondary mt-1">For now this registers an executor on the shared FastAPI live server.</p>
+          <p className="text-[10px] text-text-secondary mt-1">This starts a dedicated data-plane engine, waits for heartbeat, then registers the executor.</p>
         </div>
         <button onClick={onCancel} className="text-xs text-text-secondary hover:text-text-primary">Cancel</button>
       </div>
 
       <div className="grid grid-cols-3 gap-4">
         <FormField label="Broker" value={form.broker} onChange={value => setForm(prev => ({ ...prev, broker: value }))} />
+        <div>
+          <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Environment</label>
+          <select
+            value={form.account_env}
+            onChange={e => setForm(prev => ({ ...prev, account_env: e.target.value }))}
+            className="w-full px-3 py-2 bg-card border border-border rounded text-xs outline-none focus:border-accent"
+          >
+            <option value="live">LIVE</option>
+            <option value="demo">DEMO</option>
+          </select>
+        </div>
         <FormField label="Strategy Name" value={form.strategy_name} onChange={value => setForm(prev => ({ ...prev, strategy_name: value }))} />
         <FormField label="Execution ID" value={form.executor_id} onChange={value => setForm(prev => ({ ...prev, executor_id: value }))} />
 
@@ -726,12 +762,16 @@ function CreateExecutionPanel({ liveApi, onRegistered, onCancel }) {
             />
             <button onClick={search} className="px-4 py-2 bg-accent text-white rounded text-xs font-bold">Search</button>
           </div>
-          {selectedStock && <p className="mt-2 text-xs text-green">Selected: {selectedStock.tradingsymbol} ({selectedStock.symboltoken})</p>}
+          {selectedStock && (
+            <p className="mt-2 text-xs text-green">
+              Selected: {selectedStock.tradingsymbol} · {instrumentLabel(form.broker)} {selectedStock.symboltoken}
+            </p>
+          )}
           {!!results.length && (
             <div className="mt-2 border border-border rounded bg-card max-h-40 overflow-auto">
               {results.slice(0, 20).map(stock => (
                 <button key={stock.symboltoken} onClick={() => selectStock(stock)} className="w-full text-left px-3 py-2 text-xs hover:bg-accent/10 border-b border-border/40">
-                  {stock.tradingsymbol} <span className="text-text-secondary">· {stock.exchange} · {stock.symboltoken}</span>
+                  {stock.tradingsymbol} <span className="text-text-secondary">· {stock.exchange} · {instrumentLabel(form.broker)} {stock.symboltoken}</span>
                 </button>
               ))}
             </div>
@@ -743,6 +783,14 @@ function CreateExecutionPanel({ liveApi, onRegistered, onCancel }) {
         <FormField label="Capital" type="number" value={form.max_available_capital} onChange={value => setForm(prev => ({ ...prev, max_available_capital: value }))} />
         <FormField label="Take Profit %" type="number" value={form.long_percent} onChange={value => setForm(prev => ({ ...prev, long_percent: value }))} />
         <FormField label="Stop Loss %" type="number" value={form.short_percent} onChange={value => setForm(prev => ({ ...prev, short_percent: value }))} />
+        <label className="flex items-center gap-2 text-xs text-text-secondary">
+          <input
+            type="checkbox"
+            checked={form.use_fake_client}
+            onChange={e => setForm(prev => ({ ...prev, use_fake_client: e.target.checked }))}
+          />
+          Use fake broker client
+        </label>
       </div>
 
       {error && <div className="mt-4 text-xs text-red">{error}</div>}
@@ -771,6 +819,9 @@ function EventList({ events, emptyTitle }) {
               {event.position_id || event.broker_position_id ? `position=${event.position_id || event.broker_position_id} ` : ''}
               {event.executor_id || details.executor_id ? `execution=${event.executor_id || details.executor_id} ` : ''}
               {event.symbol || details.symbol || ''}
+              {event.instrument_token || details.instrument_token || details.instrumentID || details.instrumentId
+                ? ` · instrument=${event.instrument_token || details.instrument_token || details.instrumentID || details.instrumentId}`
+                : ''}
             </span>
           </div>
         )
@@ -878,6 +929,30 @@ function EmptyState({ title, body, action }) {
 
 function envLabel(env) {
   return String(env || 'live').toLowerCase() === 'demo' ? 'DEMO' : 'LIVE'
+}
+
+function instrumentLabel(broker) {
+  return String(broker || '').toLowerCase() === 'etoro' ? 'Instrument ID' : 'Token'
+}
+
+async function waitForEngine(engineId, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const res = await fetch(`${CONTROL_API}/engines/${engineId}`)
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.detail || 'Failed to read data-plane engine')
+    const engine = data.data
+    if (engine.status === 'running') return engine
+    if (['failed', 'stopped', 'stale'].includes(engine.status)) {
+      throw new Error(`Data-plane engine is ${engine.status}`)
+    }
+    await sleep(500)
+  }
+  throw new Error('Timed out waiting for data-plane heartbeat')
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 function normalizeExecution(executor, dataPlane = DEFAULT_DATA_PLANE) {

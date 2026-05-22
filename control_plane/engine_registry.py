@@ -2,7 +2,7 @@ import json
 import os
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 
@@ -43,7 +43,11 @@ class EngineRegistry:
                 metadata_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                last_seen_at TEXT
+                last_seen_at TEXT,
+                started_at TEXT,
+                stopped_at TEXT,
+                heartbeat_count INTEGER NOT NULL DEFAULT 0,
+                last_heartbeat_json TEXT
             );
 
             CREATE INDEX IF NOT EXISTS idx_data_plane_engines_status
@@ -53,6 +57,10 @@ class EngineRegistry:
             """
         )
         self._ensure_column(conn, "data_plane_engines", "account_env", "TEXT NOT NULL DEFAULT 'live'")
+        self._ensure_column(conn, "data_plane_engines", "started_at", "TEXT")
+        self._ensure_column(conn, "data_plane_engines", "stopped_at", "TEXT")
+        self._ensure_column(conn, "data_plane_engines", "heartbeat_count", "INTEGER NOT NULL DEFAULT 0")
+        self._ensure_column(conn, "data_plane_engines", "last_heartbeat_json", "TEXT")
         conn.commit()
         conn.close()
 
@@ -102,8 +110,9 @@ class EngineRegistry:
             INSERT INTO data_plane_engines (
                 id, label, broker, symbol, token, strategy_name, account_env, host, port,
                 api_base_url, ws_url, status, pid, metadata_json,
-                created_at, updated_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, updated_at, last_seen_at, started_at, stopped_at,
+                heartbeat_count, last_heartbeat_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 label = excluded.label,
                 broker = excluded.broker,
@@ -119,7 +128,11 @@ class EngineRegistry:
                 pid = excluded.pid,
                 metadata_json = excluded.metadata_json,
                 updated_at = excluded.updated_at,
-                last_seen_at = excluded.last_seen_at
+                last_seen_at = excluded.last_seen_at,
+                started_at = excluded.started_at,
+                stopped_at = excluded.stopped_at,
+                heartbeat_count = excluded.heartbeat_count,
+                last_heartbeat_json = excluded.last_heartbeat_json
             """,
             (
                 engine_id,
@@ -139,6 +152,10 @@ class EngineRegistry:
                 data.get("created_at") or now,
                 now,
                 data.get("last_seen_at"),
+                data.get("started_at"),
+                data.get("stopped_at"),
+                int(data.get("heartbeat_count") or 0),
+                _json_dumps(data.get("last_heartbeat")),
             ),
         )
         conn.commit()
@@ -175,6 +192,51 @@ class EngineRegistry:
     def mark_seen(self, engine_id: str, status: str = "running") -> dict[str, Any] | None:
         return self.update_engine(engine_id, {"status": status, "last_seen_at": _now_utc()})
 
+    def record_heartbeat(self, engine_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        current = self.get_engine(engine_id)
+        if not current:
+            return None
+
+        now = _now_utc()
+        status = data.get("status") or "running"
+        heartbeat_count = int(current.get("heartbeat_count") or 0) + 1
+        metadata = current.get("metadata") or {}
+        heartbeat_metadata = data.get("metadata")
+        if isinstance(heartbeat_metadata, dict):
+            metadata = {**metadata, **heartbeat_metadata}
+
+        update = {
+            "status": status,
+            "last_seen_at": now,
+            "heartbeat_count": heartbeat_count,
+            "last_heartbeat": data,
+            "metadata": metadata,
+        }
+        if data.get("pid") is not None:
+            update["pid"] = data.get("pid")
+        if data.get("broker"):
+            update["broker"] = data.get("broker")
+        if data.get("account_env"):
+            update["account_env"] = data.get("account_env")
+        if status == "running" and not current.get("started_at"):
+            update["started_at"] = now
+        if status in {"stopped", "failed"}:
+            update["stopped_at"] = now
+        return self.update_engine(engine_id, update)
+
+    def mark_stale(self, timeout_seconds: int = 15) -> list[dict[str, Any]]:
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)
+        stale_engines = []
+        for engine in self.list_engines():
+            if engine.get("status") not in {"starting", "running"}:
+                continue
+            last_seen = _parse_datetime(engine.get("last_seen_at") or engine.get("updated_at"))
+            if last_seen and last_seen < cutoff:
+                updated = self.update_engine(engine["id"], {"status": "stale"})
+                if updated:
+                    stale_engines.append(updated)
+        return stale_engines
+
     def delete_engine(self, engine_id: str) -> bool:
         conn = self._connect()
         cur = conn.execute("DELETE FROM data_plane_engines WHERE id = ?", (engine_id,))
@@ -186,6 +248,16 @@ class EngineRegistry:
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def _normalize_env(value: Any) -> str:
@@ -209,4 +281,12 @@ def _row_to_dict(row) -> dict[str, Any]:
     else:
         result["metadata"] = None
     result.pop("metadata_json", None)
+    if result.get("last_heartbeat_json"):
+        try:
+            result["last_heartbeat"] = json.loads(result["last_heartbeat_json"])
+        except json.JSONDecodeError:
+            result["last_heartbeat"] = result["last_heartbeat_json"]
+    else:
+        result["last_heartbeat"] = None
+    result.pop("last_heartbeat_json", None)
     return result

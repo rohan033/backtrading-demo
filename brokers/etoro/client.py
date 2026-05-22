@@ -188,16 +188,7 @@ class EtoroClient:
         if not symbol:
             return None
 
-        response = await self.arequest(
-            "GET",
-            "/market-data/search",
-            params={"internalSymbolFull": symbol},
-        )
-        instruments = []
-        if isinstance(response, dict):
-            instruments = response.get("instruments") or response.get("Instrument") or response.get("data") or []
-        if isinstance(instruments, dict):
-            instruments = [instruments]
+        instruments = await self.asearch_instruments(symbol)
 
         symbol_upper = symbol.upper()
         for instrument in instruments:
@@ -213,6 +204,28 @@ class EtoroClient:
                 instrument_id = instrument.get("instrumentId") or instrument.get("instrumentID") or instrument.get("InstrumentID")
                 return int(instrument_id) if instrument_id is not None else None
         return None
+
+    async def asearch_instruments(self, symbol: str) -> list[dict[str, Any]]:
+        if not symbol:
+            return []
+
+        response = await self.arequest(
+            "GET",
+            "/market-data/search",
+            params={"internalSymbolFull": symbol},
+        )
+        instruments = []
+        if isinstance(response, dict):
+            instruments = (
+                response.get("items")
+                or response.get("instruments")
+                or response.get("Instrument")
+                or response.get("data")
+                or []
+            )
+        if isinstance(instruments, dict):
+            instruments = [instruments]
+        return [instrument for instrument in instruments if isinstance(instrument, dict)]
 
     def execution_base_path(self) -> str:
         return self._paths["execution"]

@@ -4,7 +4,7 @@ import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -18,6 +18,7 @@ from strategy import Strategy
 from backtesting import Backtesting
 from api.manual_robo_routes import router as manual_robo_router
 from control_plane.engine_registry import EngineRegistry
+from control_plane.engine_process_manager import EngineProcessManager
 
 load_dotenv()
 
@@ -44,6 +45,8 @@ IST = timezone(timedelta(hours=5, minutes=30))
 TRADE_FEE = 25  # ₹25 per buy-sell round trip
 engine_registry = EngineRegistry()
 engine_registry.ensure_default_engine()
+engine_process_manager = EngineProcessManager(engine_registry)
+_engine_sweeper_task: Optional[asyncio.Task] = None
 
 # ── Global client ──
 _client: Optional[TotpClient] = None
@@ -136,7 +139,50 @@ class DataPlaneEngineUpdate(BaseModel):
     metadata: Optional[dict] = None
 
 
+class ControlPlaneExecutionRequest(BaseModel):
+    executor_id: Optional[str] = None
+    broker: str = "angel"
+    account_env: str = "live"
+    strategy_name: str = "default"
+    symbol: str
+    token: str
+    exchange: str = "NSE"
+    close_price: float
+    long_percent: float = 1.0
+    short_percent: float = 10.0
+    initial_threshold: float = 0.2
+    max_available_capital: float = 100000
+    use_fake_client: bool = False
+
+
 # ── Endpoints ──
+
+@app.on_event("startup")
+async def start_engine_sweeper():
+    global _engine_sweeper_task
+    _engine_sweeper_task = asyncio.create_task(_mark_stale_engines_loop())
+
+
+@app.on_event("shutdown")
+async def stop_engine_sweeper():
+    if _engine_sweeper_task:
+        _engine_sweeper_task.cancel()
+        try:
+            await _engine_sweeper_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _mark_stale_engines_loop():
+    timeout_seconds = int(os.getenv("LIVE_ENGINE_HEARTBEAT_TIMEOUT_SECONDS", "15"))
+    while True:
+        await asyncio.sleep(timeout_seconds)
+        try:
+            stale = engine_registry.mark_stale(timeout_seconds=timeout_seconds)
+            if stale:
+                log.warning("[CONTROL] Marked %d data-plane engines stale", len(stale))
+        except Exception as e:
+            log.error("[CONTROL] Engine stale sweeper failed: %s", e)
 
 @app.get("/api/control/engines")
 def list_data_plane_engines(status: Optional[str] = None):
@@ -165,8 +211,16 @@ def update_data_plane_engine(engine_id: str, req: DataPlaneEngineUpdate):
 
 
 @app.post("/api/control/engines/{engine_id}/heartbeat")
-def heartbeat_data_plane_engine(engine_id: str):
-    engine = engine_registry.mark_seen(engine_id)
+def heartbeat_data_plane_engine(engine_id: str, payload: dict = Body(default_factory=dict)):
+    engine = engine_registry.record_heartbeat(engine_id, payload or {"status": "running"})
+    if not engine:
+        raise HTTPException(status_code=404, detail="Data-plane engine not found")
+    return {"status": True, "data": engine}
+
+
+@app.post("/api/control/engines/{engine_id}/stop")
+def stop_data_plane_engine(engine_id: str):
+    engine = engine_process_manager.stop_engine(engine_id)
     if not engine:
         raise HTTPException(status_code=404, detail="Data-plane engine not found")
     return {"status": True, "data": engine}
@@ -177,6 +231,47 @@ def delete_data_plane_engine(engine_id: str):
     if not engine_registry.delete_engine(engine_id):
         raise HTTPException(status_code=404, detail="Data-plane engine not found")
     return {"status": True}
+
+
+@app.post("/api/control/executions")
+def create_controlled_execution(req: ControlPlaneExecutionRequest):
+    executor_id = req.executor_id or _execution_id(req.broker, req.symbol, req.strategy_name)
+    executor_payload = {
+        "executor_id": executor_id,
+        "symbol": req.symbol,
+        "token": req.token,
+        "exchange": req.exchange,
+        "close_price": req.close_price,
+        "long_percent": req.long_percent,
+        "short_percent": req.short_percent,
+        "initial_threshold": req.initial_threshold,
+        "max_available_capital": req.max_available_capital,
+    }
+    try:
+        engine = engine_process_manager.start_engine(
+            {
+                "broker": "fake" if req.use_fake_client else req.broker,
+                "account_env": req.account_env,
+                "strategy_name": req.strategy_name,
+                "symbol": req.symbol,
+                "token": req.token,
+                "label": f"{req.broker}-{req.symbol}-strategy-{req.strategy_name}",
+                "use_fake_client": req.use_fake_client,
+                "metadata": {
+                    "executor_payload": executor_payload,
+                    "exchange": req.exchange,
+                },
+            }
+        )
+    except Exception as e:
+        log.error("[CONTROL] Failed to start data-plane engine: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": True, "data": {"engine": engine, "executor": executor_payload}}
+
+
+def _execution_id(broker: str, symbol: str, strategy_name: str) -> str:
+    raw = f"{broker}-{symbol}-strategy-{strategy_name}".lower()
+    return "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-")
 
 @app.get("/api/portfolio")
 def get_portfolio():

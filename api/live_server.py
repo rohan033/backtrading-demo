@@ -15,6 +15,8 @@ import asyncio
 import json
 import os
 import sys
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -65,10 +67,27 @@ class ConnectionManager:
 # ─── Live Engine ──────────────────────────────────────────────────────────────
 
 class LiveEngine:
-    def __init__(self, use_fake_client: bool = False, account_env: str = "live"):
-        self.use_fake_client = use_fake_client
+    def __init__(
+        self,
+        use_fake_client: bool = False,
+        account_env: str = "live",
+        broker: str = "angel",
+        engine_id: str | None = None,
+        control_url: str | None = None,
+        heartbeat_interval: float = 5.0,
+        symbol: str | None = None,
+        token: str | None = None,
+        strategy_name: str = "default",
+    ):
+        self.use_fake_client = use_fake_client or broker == "fake"
         self.account_env = "demo" if account_env == "demo" else "live"
-        self.broker = "fake" if use_fake_client else "angel"
+        self.broker = "fake" if self.use_fake_client else broker
+        self.engine_id = engine_id
+        self.control_url = control_url.rstrip("/") if control_url else None
+        self.heartbeat_interval = heartbeat_interval
+        self.symbol = symbol
+        self.token = token
+        self.strategy_name = strategy_name
         self.client = None
         self.db_writer: Optional[DbEventWriter] = None
         self.event_manager: Optional[EventManager] = None
@@ -78,6 +97,7 @@ class LiveEngine:
         self.ws_manager = ConnectionManager()
         self._broadcast_queue: asyncio.Queue = asyncio.Queue(maxsize=5000)
         self._broadcast_task: Optional[asyncio.Task] = None
+        self._heartbeat_task: Optional[asyncio.Task] = None
 
     async def start(self):
         if self.use_fake_client:
@@ -85,6 +105,11 @@ class LiveEngine:
             tick_gen = FakeTickGenerator(base_price=1000.0, mode="trending_up")
             self.client = FakeTradingClient(tick_gen)
             logger.info("[ENGINE] Using FakeTradingClient (test mode)")
+        elif self.broker == "etoro":
+            from brokers.etoro.trading_client import EtoroTradingClient
+            self.client = EtoroTradingClient(account_env=self.account_env)
+            self.client.generate_session()
+            logger.info("[ENGINE] EtoroTradingClient session established env=%s", self.account_env)
         else:
             if self.account_env != "live":
                 logger.warning("[ENGINE] Angel broker only supports live mode; requested env=%s", self.account_env)
@@ -106,13 +131,24 @@ class LiveEngine:
         await self.tick_provider.start()
 
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+        if self.engine_id and self.control_url:
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         logger.info("[ENGINE] Live engine started broker=%s env=%s", self.broker, self.account_env)
 
     async def shutdown(self):
-        await self.tick_provider.stop()
+        await self._send_heartbeat("stopped")
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        if self.tick_provider:
+            await self.tick_provider.stop()
         for executor in self.executors.values():
             await executor.stop()
-        self.event_manager.stop()
+        if self.event_manager:
+            self.event_manager.stop()
         if self._broadcast_task:
             self._broadcast_task.cancel()
             try:
@@ -157,6 +193,35 @@ class LiveEngine:
             msg = await self._broadcast_queue.get()
             if self.ws_manager.active_connections:
                 await self.ws_manager.broadcast(msg)
+
+    async def _heartbeat_loop(self):
+        while True:
+            await self._send_heartbeat("running")
+            await asyncio.sleep(self.heartbeat_interval)
+
+    async def _send_heartbeat(self, status: str):
+        if not (self.engine_id and self.control_url):
+            return
+
+        payload = {
+            "status": status,
+            "pid": os.getpid(),
+            "broker": self.broker,
+            "account_env": self.account_env,
+            "executor_count": len(self.executors),
+            "metadata": {
+                "symbol": self.symbol,
+                "token": self.token,
+                "strategy_name": self.strategy_name,
+                "use_fake_client": self.use_fake_client,
+                "ws_connections": len(self.ws_manager.active_connections),
+            },
+        }
+        url = f"{self.control_url}/api/control/engines/{self.engine_id}/heartbeat"
+        try:
+            await asyncio.to_thread(_post_json, url, payload)
+        except Exception as e:
+            logger.debug("[ENGINE] Heartbeat failed: %s", e)
 
     async def register_executor(self, req: "RegisterExecutorRequest") -> dict:
         if req.executor_id in self.executors:
@@ -204,10 +269,14 @@ class LiveEngine:
 
     def engine_info(self) -> dict:
         return {
+            "id": self.engine_id,
             "broker": self.broker,
             "account_env": self.account_env,
             "use_fake_client": self.use_fake_client,
             "executor_count": len(self.executors),
+            "symbol": self.symbol,
+            "token": self.token,
+            "strategy_name": self.strategy_name,
         }
 
     def _executor_state(self, executor: StrategyExecutor) -> dict:
@@ -242,7 +311,17 @@ async def lifespan(app: FastAPI):
     use_fake = "--fake" in sys.argv
     account_env = _arg_value("--env", os.getenv("BROKER_ENV", "live"))
     load_etoro_env(account_env)
-    engine = LiveEngine(use_fake_client=use_fake, account_env=account_env)
+    engine = LiveEngine(
+        use_fake_client=use_fake,
+        account_env=account_env,
+        broker=_arg_value("--broker", "angel"),
+        engine_id=_arg_value("--engine-id", ""),
+        control_url=_arg_value("--control-url", ""),
+        heartbeat_interval=float(_arg_value("--heartbeat-interval", "5")),
+        symbol=_arg_value("--symbol", ""),
+        token=_arg_value("--token", ""),
+        strategy_name=_arg_value("--strategy-name", "default"),
+    )
     await engine.start()
     yield
     await engine.shutdown()
@@ -272,6 +351,19 @@ def _arg_value(name: str, default: str) -> str:
     if idx + 1 >= len(sys.argv):
         return default
     return sys.argv[idx + 1]
+
+
+def _post_json(url: str, payload: dict) -> dict:
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=3) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw) if raw else {}
 
 
 # ─── REST Endpoints ───────────────────────────────────────────────────────────
@@ -306,6 +398,10 @@ async def get_portfolio():
 async def search_scrip(q: str, exchange: str = "NSE"):
     eng = get_engine()
     try:
+        if eng.broker == "etoro" and hasattr(eng.client, "asearch_instruments"):
+            instruments = await eng.client.asearch_instruments(q)
+            return {"status": True, "data": [_etoro_instrument_to_search_row(item) for item in instruments]}
+
         if hasattr(eng.client, '_client'):
             result = eng.client._client.searchScrip(exchange, q)
             if result and result.get("status"):
@@ -329,6 +425,34 @@ async def search_scrip(q: str, exchange: str = "NSE"):
         return {"status": True, "data": []}
     except Exception as e:
         return {"status": False, "data": [], "message": str(e)}
+
+
+def _etoro_instrument_to_search_row(instrument: dict) -> dict:
+    instrument_id = (
+        instrument.get("instrumentId")
+        or instrument.get("instrumentID")
+        or instrument.get("InstrumentID")
+    )
+    symbol = (
+        instrument.get("symbolFull")
+        or instrument.get("internalSymbolFull")
+        or instrument.get("symbol")
+        or instrument.get("displayName")
+        or str(instrument_id or "")
+    )
+    exchange = (
+        instrument.get("exchangeName")
+        or instrument.get("exchange")
+        or instrument.get("exchangeCode")
+        or "ETORO"
+    )
+    return {
+        "tradingsymbol": symbol,
+        "symboltoken": str(instrument_id) if instrument_id is not None else "",
+        "exchange": exchange,
+        "name": instrument.get("displayName") or instrument.get("instrumentDisplayName") or symbol,
+        "raw": instrument,
+    }
 
 
 @app.post("/api/live/executors")
@@ -438,6 +562,13 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=int(os.getenv("LIVE_PORT", "8080")))
     parser.add_argument("--fake", action="store_true", help="Use fake broker for testing")
     parser.add_argument("--env", choices=["demo", "live"], default=os.getenv("BROKER_ENV", "live"), help="Broker account environment")
+    parser.add_argument("--engine-id", default="", help="Control-plane engine ID for heartbeat registration")
+    parser.add_argument("--control-url", default="", help="Control-plane base URL for heartbeats")
+    parser.add_argument("--broker", default="angel", choices=["angel", "etoro", "fake"], help="Broker client to run")
+    parser.add_argument("--symbol", default="", help="Execution symbol metadata")
+    parser.add_argument("--token", default="", help="Execution token metadata")
+    parser.add_argument("--strategy-name", default="default", help="Strategy metadata")
+    parser.add_argument("--heartbeat-interval", type=float, default=5.0, help="Seconds between control-plane heartbeats")
     args = parser.parse_args()
 
     uvicorn.run(app, host="0.0.0.0", port=args.port)
