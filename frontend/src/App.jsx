@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { createChart } from 'lightweight-charts'
 import ManualRobo from './ManualRobo'
+import LiveTrading from './LiveTrading'
 
 const API_BASE = '/api'
 const WS_BASE = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
@@ -567,6 +568,14 @@ export default function App() {
           >
             Compound
           </button>
+          <button
+            onClick={() => { setSelected(null); setView('live') }}
+            className={`px-3 py-1 rounded text-[10px] font-bold transition-colors ${
+              view === 'live' ? 'bg-green text-white' : 'bg-green/20 text-green hover:bg-green/30'
+            }`}
+          >
+            Live Engine
+          </button>
           <span className="bg-accent text-white px-2.5 py-0.5 rounded text-[10px] font-bold tracking-wider">
             LIVE
           </span>
@@ -606,7 +615,9 @@ export default function App() {
 
         {/* ── Main Content ── */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {view === 'robo' ? (
+          {view === 'live' ? (
+            <LiveTrading />
+          ) : view === 'robo' ? (
             <ManualRobo />
           ) : view === 'compound' ? (
             /* Compound Calculator View */

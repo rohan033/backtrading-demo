@@ -1,4 +1,5 @@
 import asyncio
+from typing import Callable, Optional
 
 from logzero import logger
 from managers.trading_manager import TradingManager
@@ -7,7 +8,6 @@ from strategies import OnePercentStrategy
 
 QUEUE_MAX_SIZE = 1000
 
-# ANSI color codes
 GREEN = "\033[32m"
 RED = "\033[31m"
 YELLOW = "\033[33m"
@@ -18,7 +18,8 @@ RESET = "\033[0m"
 
 
 class StrategyExecutor(TickListener):
-    def __init__(self, trading_manager: TradingManager, executor_id: str):
+    def __init__(self, trading_manager: TradingManager, executor_id: str,
+                 on_status_change: Optional[Callable[[str, str, bool], None]] = None):
         self.status = "RUNNING"
         self.is_active = False
         self.is_in_position = False
@@ -29,11 +30,40 @@ class StrategyExecutor(TickListener):
         self._required_subscription: Subscription | None = None
         self._queue: asyncio.Queue[TickData] = asyncio.Queue(maxsize=QUEUE_MAX_SIZE)
         self._consumer_task: asyncio.Task | None = None
+        self._on_status_change = on_status_change
 
     def set_strategy_config(self, strategy_config):
         self.strategy_config = strategy_config
         self.strategy = OnePercentStrategy(strategy_config)
         self._update_required_subscriptions()
+
+    def _set_status(self, new_status: str):
+        self.status = new_status
+        if self._on_status_change:
+            try:
+                self._on_status_change(self.executor_id, self.status, self.is_in_position)
+            except Exception:
+                pass
+
+    def get_state(self) -> dict:
+        cfg = self.strategy_config
+        close_price = None
+        if self.strategy and hasattr(self.strategy, 'last_close_price'):
+            close_price = self.strategy.last_close_price
+        return {
+            'executor_id': self.executor_id,
+            'status': self.status,
+            'is_active': self.is_active,
+            'is_in_position': self.is_in_position,
+            'symbol': getattr(cfg, 'symbol', None) if cfg else None,
+            'token': getattr(cfg, 'token', None) if cfg else None,
+            'exchange': getattr(cfg, 'exchange', None) if cfg else None,
+            'long_percent': getattr(cfg, 'long_percent', None) if cfg else None,
+            'short_percent': getattr(cfg, 'short_percent', None) if cfg else None,
+            'initial_threshold': getattr(cfg, 'initial_threshold', None) if cfg else None,
+            'max_available_capital': getattr(cfg, 'max_available_capital', None) if cfg else None,
+            'close_price': close_price,
+        }
 
     def _update_required_subscriptions(self):
         self._required_subscription = None
@@ -110,7 +140,7 @@ class StrategyExecutor(TickListener):
                 res = await self.trading_manager.handle_signal(self.executor_id, trade_signal)
                 if res.has_executed:
                     self.is_in_position = True
-                    self.status = "POSITION_OPEN"
+                    self._set_status("POSITION_OPEN")
                     logger.info(
                         "%s[%s]%s %sORDER   PLACED%s  order_id=%s  entry=%.2f  TP=%.2f  SL=%.2f  qty=%d",
                         CYAN, self.executor_id, RESET,

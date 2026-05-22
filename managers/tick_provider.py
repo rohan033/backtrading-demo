@@ -1,17 +1,20 @@
 import asyncio
+from typing import Callable, Optional
 
 from logzero import logger
 from brokers.interfaces import TickClient, TickListener, Subscription, TickData
 
 
 class TickProvider:
-    def __init__(self, client: TickClient, interval_seconds: float = 1.0):
+    def __init__(self, client: TickClient, interval_seconds: float = 1.0,
+                 on_tick: Optional[Callable[[TickData], None]] = None):
         self._client = client
         self._interval = interval_seconds
         self._subscriptions: list[Subscription] = []
         self._listeners: dict[str, TickListener] = {}
         self._running = False
         self._task: asyncio.Task | None = None
+        self._on_tick = on_tick
 
     def subscribe(self, exchange: str, symbol: str, token: str):
         self._subscriptions.append(Subscription(exchange=exchange, symbol=symbol, token=token))
@@ -85,3 +88,8 @@ class TickProvider:
                 listener.enqueue_tick(tick)
             except Exception as e:
                 logger.error("Dispatch error for %s: %s", tick.symbol, e)
+        if self._on_tick:
+            try:
+                self._on_tick(tick)
+            except Exception as e:
+                logger.error("on_tick callback error: %s", e)

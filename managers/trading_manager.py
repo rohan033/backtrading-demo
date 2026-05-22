@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 from event.event_manager import EventManager
 from logzero import logger
 
@@ -20,11 +20,13 @@ class OrderResult:
 
 
 class TradingManager:
-    def __init__(self, client, event_manager: EventManager):
+    def __init__(self, client, event_manager: EventManager,
+                 on_event: Optional[Callable[[dict], None]] = None):
         self.client = client
         self.event_manager = event_manager
-        self.order_tracking: Dict[str, Dict] = {}  # executor_id -> order_details
+        self.order_tracking: Dict[str, Dict] = {}
         self.next_order_id = 1
+        self._on_event = on_event
     
     async def handle_signal(self, executor_id, signal):
         """Handle trading signal by placing appropriate orders"""
@@ -90,6 +92,23 @@ class TradingManager:
                     'reason': signal.reason
                 }
             )
+
+            if self._on_event:
+                try:
+                    self._on_event({
+                        'type': 'order',
+                        'action': 'BUY_ORDER_PLACED',
+                        'executor_id': executor_id,
+                        'order_id': buy_result['order_id'],
+                        'unique_order_id': buy_result.get('unique_order_id'),
+                        'symbol': getattr(signal, 'symbol', ''),
+                        'entry_price': signal.entry_price,
+                        'quantity': signal.quantity,
+                        'take_profit_price': signal.take_profit_price,
+                        'stop_loss_price': signal.stop_loss_price,
+                    })
+                except Exception:
+                    pass
             
             return OrderResult(
                 has_executed=True,
