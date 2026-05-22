@@ -153,6 +153,7 @@ class ControlPlaneExecutionRequest(BaseModel):
     initial_threshold: float = 0.2
     max_available_capital: float = 100000
     use_fake_client: bool = False
+    client_mode: str = "standard"
 
 
 # ── Endpoints ──
@@ -253,6 +254,7 @@ def create_controlled_execution(req: ControlPlaneExecutionRequest):
                 "broker": "fake" if req.use_fake_client else req.broker,
                 "account_env": req.account_env,
                 "strategy_name": req.strategy_name,
+                "client_mode": "bracket" if req.client_mode == "bracket" else "standard",
                 "symbol": req.symbol,
                 "token": req.token,
                 "label": f"{req.broker}-{req.symbol}-strategy-{req.strategy_name}",
@@ -260,6 +262,7 @@ def create_controlled_execution(req: ControlPlaneExecutionRequest):
                 "metadata": {
                     "executor_payload": executor_payload,
                     "exchange": req.exchange,
+                    "client_mode": req.client_mode,
                 },
             }
         )

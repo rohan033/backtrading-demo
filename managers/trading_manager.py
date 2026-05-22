@@ -1,5 +1,7 @@
+import asyncio
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
+from brokers.interfaces import OrderActivity
 from event.event_manager import EventManager
 from logzero import logger
 
@@ -21,12 +23,49 @@ class OrderResult:
 
 class TradingManager:
     def __init__(self, client, event_manager: EventManager,
-                 on_event: Optional[Callable[[dict], None]] = None):
+                 on_event: Optional[Callable[[dict], None]] = None,
+                 order_manager=None):
         self.client = client
         self.event_manager = event_manager
         self.order_tracking: Dict[str, Dict] = {}
+        self.order_tracking_by_executor: Dict[str, Dict] = {}
+        self.order_tracking_by_order_id: Dict[str, Dict] = {}
         self.next_order_id = 1
         self._on_event = on_event
+        self.order_manager = order_manager
+        self._activity_queue: asyncio.Queue[OrderActivity] = asyncio.Queue(maxsize=1000)
+        self._activity_task: asyncio.Task | None = None
+
+    def is_bo_client(self) -> bool:
+        checker = getattr(self.client, "is_bo_client", None)
+        return bool(checker()) if callable(checker) else False
+
+    async def start(self):
+        if self._activity_task is None:
+            self._activity_task = asyncio.create_task(self._order_activity_loop())
+
+    async def stop(self):
+        if self._activity_task:
+            self._activity_task.cancel()
+            try:
+                await self._activity_task
+            except asyncio.CancelledError:
+                pass
+            self._activity_task = None
+
+    def enqueue_order_activity(self, activity: OrderActivity) -> None:
+        try:
+            self._activity_queue.put_nowait(activity)
+        except asyncio.QueueFull:
+            logger.warning("[TM] Order activity queue full; dropping %s", activity.activity_type)
+
+    async def handle_order_activity(self, activity: OrderActivity) -> None:
+        await self._handle_order_activity(activity)
+
+    async def _order_activity_loop(self):
+        while True:
+            activity = await self._activity_queue.get()
+            await self._handle_order_activity(activity)
     
     async def handle_signal(self, executor_id, signal):
         """Handle trading signal by placing appropriate orders"""
@@ -52,14 +91,25 @@ class TradingManager:
             signal.take_profit_price, signal.stop_loss_price
         )
         
-        # Place buy order
-        buy_result = await self.client.abuy(
-            ltp=signal.entry_price,
-            available_capital=signal.entry_price * signal.quantity,
-            symbol=getattr(signal, 'symbol', ''),
-            token=getattr(signal, 'token', ''),
-            exchange=getattr(signal, 'exchange', 'NSE')
-        )
+        available_capital = signal.entry_price * signal.quantity
+        if self.is_bo_client() and hasattr(self.client, "abuy_with_take_profit_stop_loss"):
+            buy_result = await self.client.abuy_with_take_profit_stop_loss(
+                ltp=signal.entry_price,
+                available_capital=available_capital,
+                symbol=getattr(signal, 'symbol', ''),
+                token=getattr(signal, 'token', ''),
+                exchange=getattr(signal, 'exchange', 'NSE'),
+                take_profit_rate=signal.take_profit_price,
+                stop_loss_rate=signal.stop_loss_price,
+            )
+        else:
+            buy_result = await self.client.abuy(
+                ltp=signal.entry_price,
+                available_capital=available_capital,
+                symbol=getattr(signal, 'symbol', ''),
+                token=getattr(signal, 'token', ''),
+                exchange=getattr(signal, 'exchange', 'NSE')
+            )
         
         if buy_result and buy_result.get('order_id'):
             # Store order details
@@ -72,7 +122,22 @@ class TradingManager:
                 'status': 'placed'
             }
             
-            self.order_tracking[buy_result.get('unique_order_id')] = order_details
+            unique_order_id = buy_result.get('unique_order_id') or buy_result['order_id']
+            self.order_tracking[unique_order_id] = order_details
+            self.order_tracking_by_executor[executor_id] = order_details
+            self.order_tracking_by_order_id[str(buy_result['order_id'])] = order_details
+
+            if self.order_manager:
+                self.order_manager.register_protected_entry(
+                    executor_id=executor_id,
+                    order_id=buy_result.get('order_id'),
+                    unique_order_id=buy_result.get('unique_order_id'),
+                    signal=signal,
+                    broker=getattr(self.client, "broker", None),
+                    native_bracket_order=self.is_bo_client(),
+                )
+                if not self.is_bo_client() and hasattr(self.client, "await_position_ids_for_order"):
+                    asyncio.create_task(self._resolve_position_id_for_order(executor_id, buy_result.get('order_id')))
             
             self.event_manager.log_event(
                 order_id=buy_result['order_id'],
@@ -131,10 +196,135 @@ class TradingManager:
         # TODO: Add TP/SL order management logic
         
         return OrderResult(has_executed=False, error_message="Sell logic not implemented yet")
+
+    async def _handle_order_activity(self, activity: OrderActivity) -> None:
+        if activity.activity_type not in {"take_profit_triggered", "stop_loss_triggered"}:
+            return
+
+        raw = activity.raw or {}
+        executor_id = raw.get("executor_id")
+        order_details = (
+            self.order_tracking_by_executor.get(str(executor_id))
+            or self.order_tracking_by_order_id.get(str(activity.order_id))
+        )
+        if not order_details:
+            logger.warning("[TM] TP/SL trigger could not be correlated: %s", raw)
+            return
+
+        signal = order_details.get("signal")
+        trigger_price = raw.get("ltp") or getattr(signal, "entry_price", 0.0)
+        quantity = raw.get("quantity") or getattr(signal, "quantity", 0)
+        symbol = raw.get("symbol") or getattr(signal, "symbol", "")
+        token = raw.get("token") or getattr(signal, "token", "")
+        exchange = raw.get("exchange") or getattr(signal, "exchange", "NSE")
+        position_id = activity.position_id or raw.get("position_id")
+        reason = "TAKE_PROFIT" if activity.activity_type == "take_profit_triggered" else "STOP_LOSS"
+
+        exit_result = None
+        if position_id and hasattr(self.client, "aclose_position"):
+            closed = await self.client.aclose_position(position_id)
+            exit_result = {"order_id": activity.order_id, "unique_order_id": raw.get("unique_order_id")} if closed else {}
+        elif hasattr(self.client, "aclose_position"):
+            logger.error("[TM] TP/SL trigger for executor=%s has no position_id; refusing symbol SELL fallback", executor_id)
+            if self.order_manager and executor_id:
+                self.order_manager.rearm_protected_entry(str(executor_id))
+            return
+        elif hasattr(self.client, "asell"):
+            exit_result = await self.client.asell(
+                ltp=trigger_price,
+                quantity=quantity,
+                symbol=symbol,
+                token=token,
+                exchange=exchange,
+                orderType="MARKET",
+            )
+        else:
+            logger.error("[TM] Client cannot close TP/SL trigger for executor=%s", executor_id)
+            return
+
+        if not exit_result:
+            logger.error("[TM] TP/SL exit failed executor=%s trigger=%s", executor_id, activity.activity_type)
+            return
+
+        order_details["status"] = "closed"
+        order_details["exit_reason"] = reason
+        order_details["exit_price"] = trigger_price
+        await self._cancel_sibling_exit(raw, activity.activity_type)
+
+        self.event_manager.log_event(
+            order_id=exit_result.get("order_id") or activity.order_id,
+            action=f"{reason}_EXIT_PLACED",
+            details={
+                "executor_id": executor_id,
+                "entry_order_id": activity.order_id,
+                "position_id": position_id,
+                "symbol": symbol,
+                "token": token,
+                "exchange": exchange,
+                "quantity": quantity,
+                "exit_price": trigger_price,
+                "trigger_type": activity.activity_type,
+            }
+        )
+        self._emit({
+            "type": "order",
+            "action": f"{reason}_EXIT_PLACED",
+            "executor_id": executor_id,
+            "order_id": exit_result.get("order_id") or activity.order_id,
+            "position_id": position_id,
+            "symbol": symbol,
+            "token": token,
+            "exit_price": trigger_price,
+            "quantity": quantity,
+            "trigger_type": activity.activity_type,
+        })
+
+    async def _cancel_sibling_exit(self, raw: dict, trigger_type: str) -> None:
+        if not hasattr(self.client, "acancel_order"):
+            return
+
+        sibling_key = "stop_loss_order_id" if trigger_type == "take_profit_triggered" else "take_profit_order_id"
+        sibling_order_id = raw.get(sibling_key)
+        if not sibling_order_id:
+            return
+
+        try:
+            await self.client.acancel_order(sibling_order_id)
+            logger.info("[TM] Cancelled sibling TP/SL order %s", sibling_order_id)
+        except Exception as e:
+            logger.error("[TM] Failed cancelling sibling TP/SL order %s: %s", sibling_order_id, e)
+
+    async def _resolve_position_id_for_order(self, executor_id: str, order_id: str | None) -> None:
+        if not order_id:
+            return
+        try:
+            position_ids = await self.client.await_position_ids_for_order(order_id)
+        except Exception as e:
+            logger.error("[TM] Failed resolving position for order=%s: %s", order_id, e)
+            return
+
+        if not position_ids:
+            logger.warning("[TM] No position_id resolved for order=%s within timeout", order_id)
+            return
+
+        position_id = position_ids[0]
+        details = self.order_tracking_by_executor.get(executor_id)
+        if details:
+            details["position_id"] = position_id
+        if self.order_manager:
+            self.order_manager.set_protected_position_id(executor_id, position_id)
+        logger.info("[TM] Resolved position_id=%s for executor=%s order=%s", position_id, executor_id, order_id)
+
+    def _emit(self, event: dict) -> None:
+        if self._on_event:
+            try:
+                self._on_event(event)
+            except Exception:
+                pass
     
     def get_order_status(self, executor_id: str) -> Optional[Dict]:
         """Get order status for a specific executor"""
-        return self.order_tracking.get(executor_id)
+        return self.order_tracking_by_executor.get(executor_id)
     
     def get_all_orders(self) -> Dict:
         """Get all tracked orders"""

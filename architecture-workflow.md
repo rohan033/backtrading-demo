@@ -81,7 +81,8 @@ flowchart TB
     liveApi["Live REST API<br/>/api/live/*"]
     liveWs["Live WebSocket<br/>/ws/live"]
     strategyExecutor["Strategy Executor<br/>strategy state + signals"]
-    tickProvider["Tick Provider<br/>price feed"]
+    tickProvider["Feed Client / Tick Provider<br/>price feed updates"]
+    orderManager["Order Management System<br/>TP / SL monitoring + OCO cancel"]
     tradingManager["Trading Manager<br/>orders + positions"]
     etoro["eToro Client<br/>instrument IDs + demo/live keys"]
     angel["Angel Client<br/>symbol tokens"]
@@ -91,7 +92,12 @@ flowchart TB
 
     liveApi --> strategyExecutor
     tickProvider --> strategyExecutor
+    tickProvider -->|"feed update"| orderManager
     strategyExecutor --> tradingManager
+    strategyExecutor -->|"entry signal"| orderManager
+    orderManager -->|"native bracket order if available"| tradingManager
+    orderManager -->|"synthetic TP / SL order if needed"| tradingManager
+    orderManager -->|"TP or SL hit: cancel other leg"| tradingManager
     tradingManager --> etoro
     tradingManager --> angel
     tickProvider --> etoro
@@ -105,7 +111,7 @@ flowchart TB
     classDef broker fill:#ffe4e6,stroke:#e11d48,color:#881337,stroke-width:2px;
     classDef storage fill:#f3f4f6,stroke:#4b5563,color:#111827,stroke-width:2px;
 
-    class liveApi,liveWs,strategyExecutor,tickProvider,tradingManager api;
+    class liveApi,liveWs,strategyExecutor,tickProvider,orderManager,tradingManager api;
     class etoro,angel broker;
     class liveEventsDb,activityDb,executionLog storage;
 ```
@@ -118,5 +124,7 @@ flowchart TB
 4. The frontend reads the registry, gets the data-plane REST and WebSocket URLs, and connects to that engine.
 5. The data plane handles strategy execution, ticks, orders, positions, events, and broker calls.
 6. eToro executions use eToro instrument IDs as the broker token; Angel executions use Angel symbol tokens.
-7. Realtime data streams back over `/ws/live`, while history and current state are persisted in SQLite.
-8. Each spawned execution server writes logs to `logs/executions/<execution-name>.log`.
+7. Feed updates flow through the order management system. If the broker has a native bracket-order client, TP/SL are placed together; otherwise the order manager asks the trading manager to place synthetic TP and SL orders.
+8. When either TP or SL hits, the order management system immediately asks the trading manager to cancel the other pending leg.
+9. Realtime data streams back over `/ws/live`, while history and current state are persisted in SQLite.
+10. Each spawned execution server writes logs to `logs/executions/<execution-name>.log`.

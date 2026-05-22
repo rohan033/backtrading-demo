@@ -224,6 +224,155 @@
       background: rgba(7, 17, 31, 0.78);
     }
 
+    .tabs {
+      display: flex;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .tab-button {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 8px 14px;
+      background: rgba(255,255,255,0.04);
+      color: var(--muted);
+      cursor: pointer;
+      font-weight: 800;
+      font-size: 12px;
+    }
+
+    .tab-button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #082f49;
+    }
+
+    .view.hidden {
+      display: none;
+    }
+
+    .simulation-wrap {
+      display: grid;
+      grid-template-columns: 1fr 300px;
+      gap: 16px;
+      padding: 22px;
+      min-width: 1050px;
+    }
+
+    .simulation-panel {
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      background:
+        radial-gradient(circle at 30% 20%, rgba(56,189,248,0.12), transparent 22rem),
+        rgba(4, 12, 23, 0.72);
+      overflow: hidden;
+      min-height: 650px;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+    }
+
+    .simulation-side {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(255,255,255,0.04);
+      padding: 14px;
+      min-height: 650px;
+    }
+
+    .sim-controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    .sim-controls .mini-button {
+      flex: none;
+    }
+
+    .sim-step-list {
+      display: grid;
+      gap: 8px;
+      max-height: 520px;
+      overflow: auto;
+    }
+
+    .sim-step {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 9px;
+      align-items: center;
+      padding: 9px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(255,255,255,0.035);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .sim-step strong {
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      color: #fff;
+      background: #7f1d1d;
+      border: 2px solid rgba(255,255,255,0.7);
+      font-size: 14px;
+    }
+
+    .sim-step.active {
+      color: var(--text);
+      border-color: #ef4444;
+      background: rgba(239, 68, 68, 0.14);
+      box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.35);
+    }
+
+    .sim-step.active strong {
+      background: #dc2626;
+      box-shadow: 0 0 22px rgba(239, 68, 68, 0.75);
+    }
+
+    .sim-node rect {
+      filter: drop-shadow(0 15px 20px rgba(0, 0, 0, 0.28));
+    }
+
+    .sim-node text {
+      fill: #0f172a;
+      pointer-events: none;
+    }
+
+    .sim-node .sim-title {
+      font-size: 16px;
+      font-weight: 900;
+    }
+
+    .sim-node .sim-subtitle {
+      font-size: 11px;
+      font-weight: 700;
+      opacity: 0.78;
+    }
+
+    .sim-packet {
+      fill: #dc2626;
+      stroke: #fff;
+      stroke-width: 5;
+      filter: drop-shadow(0 0 18px rgba(239, 68, 68, 0.95));
+      animation: pulsePacket 1s ease-in-out infinite;
+    }
+
+    .sim-packet-text {
+      fill: #fff !important;
+      font-size: 18px;
+      font-weight: 900;
+      pointer-events: none;
+    }
+
+    @keyframes pulsePacket {
+      0%, 100% { transform: scale(1); opacity: 0.95; }
+      50% { transform: scale(1.18); opacity: 1; }
+    }
+
     .pill {
       display: inline-flex;
       align-items: center;
@@ -321,10 +470,35 @@
       <header>
         <h1 id="viewTitle">Full System</h1>
         <p id="viewDescription">Control plane starts and monitors data-plane execution engines while the frontend connects to the active engine.</p>
+        <div class="tabs">
+          <button class="tab-button active" data-view="architecture">Architecture Map</button>
+          <button class="tab-button" data-view="simulation">Animated Simulation</button>
+        </div>
       </header>
-      <div class="canvas-wrap">
+      <div id="architectureView" class="view canvas-wrap">
         <div class="canvas-card">
           <svg id="diagram" viewBox="0 0 1200 650" role="img" aria-label="Backtrading architecture diagram"></svg>
+        </div>
+      </div>
+      <div id="simulationView" class="view hidden">
+        <div class="simulation-wrap">
+          <div class="simulation-panel">
+            <svg id="simulationSvg" viewBox="0 0 1050 650" role="img" aria-label="Animated execution lifecycle simulation"></svg>
+          </div>
+          <div class="simulation-side">
+            <h1>Simulation</h1>
+            <p>Watch one execution move from frontend request to broker trading and persistence.</p>
+            <h2>Controls</h2>
+            <div class="sim-controls">
+              <button id="playSimulation" class="mini-button">Play</button>
+              <button id="pauseSimulation" class="mini-button">Pause</button>
+              <button id="prevSimulation" class="mini-button">Prev</button>
+              <button id="nextSimulation" class="mini-button">Next</button>
+              <button id="resetSimulation" class="mini-button">Reset</button>
+            </div>
+            <h2>Steps</h2>
+            <div id="simSteps" class="sim-step-list"></div>
+          </div>
         </div>
       </div>
       <div class="legend" id="legend"></div>
@@ -365,9 +539,10 @@
 
       { id: 'dataPlane', title: 'Data Plane Server', subtitle: 'api.live_server', layer: 'data', x: 360, y: 250, w: 200, h: 82, body: 'Dedicated FastAPI server for one broker plus symbol plus strategy execution.' },
       { id: 'heartbeat', title: 'Heartbeat Loop', subtitle: 'pid + env + status', layer: 'event', x: 670, y: 250, w: 180, h: 82, body: 'Runs inside each data plane and reports liveness back to the control plane.' },
-      { id: 'executor', title: 'Strategy Executor', subtitle: 'strategy state', layer: 'data', x: 70, y: 410, w: 190, h: 78, body: 'Consumes ticks and strategy config, then decides when orders should be placed or closed.' },
-      { id: 'tradingManager', title: 'Trading Manager', subtitle: 'orders + positions', layer: 'data', x: 360, y: 410, w: 190, h: 78, body: 'Normalizes trading actions and coordinates broker calls plus event persistence.' },
-      { id: 'broker', title: 'Broker APIs', subtitle: 'eToro / Angel / Fake', layer: 'broker', x: 650, y: 410, w: 190, h: 78, body: 'eToro uses instrument IDs and demo/live keys. Angel uses symbol tokens. Fake supports local testing.' },
+      { id: 'executor', title: 'Strategy Executor', subtitle: 'strategy state', layer: 'data', x: 50, y: 410, w: 170, h: 78, body: 'Consumes ticks and strategy config, then decides when entries should be opened.' },
+      { id: 'orderManager', title: 'Order Manager', subtitle: 'TP / SL + OCO cancel', layer: 'data', x: 285, y: 410, w: 190, h: 78, body: 'Owns post-entry TP/SL management. If native bracket orders are unavailable, it reacts to feed updates, asks the trading manager to place TP/SL orders, and cancels the other leg immediately when one hits.' },
+      { id: 'tradingManager', title: 'Trading Manager', subtitle: 'broker order calls', layer: 'data', x: 540, y: 410, w: 180, h: 78, body: 'Places, closes, and cancels broker orders on behalf of the strategy and order manager.' },
+      { id: 'broker', title: 'Broker APIs', subtitle: 'eToro / Angel / Fake', layer: 'broker', x: 790, y: 410, w: 190, h: 78, body: 'eToro uses instrument IDs and demo/live keys. Angel uses symbol tokens. Fake supports local testing.' },
       { id: 'realtime', title: 'Realtime WebSocket', subtitle: '/ws/live', layer: 'ui', x: 940, y: 250, w: 190, h: 78, body: 'Streams snapshots, ticks, executor status, and order events back to the frontend.' },
       { id: 'storage', title: 'Persistence + Logs', subtitle: 'SQLite + logs/executions', layer: 'storage', x: 940, y: 410, w: 190, h: 78, body: 'Stores runtime events, order activity, position history, and per-execution server logs.' }
     ];
@@ -383,11 +558,14 @@
       { from: 'frontend', to: 'dataPlane', type: 'request', label: '8 register executor' },
       { from: 'frontend', to: 'realtime', type: 'event', label: '9 connect ws' },
       { from: 'dataPlane', to: 'executor', type: 'request', label: '10 run strategy' },
-      { from: 'executor', to: 'tradingManager', type: 'request', label: '11 signals' },
-      { from: 'tradingManager', to: 'broker', type: 'broker', label: '12 trade + rates' },
-      { from: 'tradingManager', to: 'storage', type: 'persist', label: '13 history' },
-      { from: 'dataPlane', to: 'storage', type: 'persist', label: '14 logs' },
-      { from: 'realtime', to: 'frontend', type: 'event', label: '15 live updates' }
+      { from: 'executor', to: 'orderManager', type: 'request', label: '11 entry + TP/SL intent' },
+      { from: 'dataPlane', to: 'orderManager', type: 'event', label: '12 feed update' },
+      { from: 'orderManager', to: 'tradingManager', type: 'request', label: '13 bracket or synthetic TP/SL' },
+      { from: 'orderManager', to: 'tradingManager', type: 'event', label: '14 TP/SL hit: cancel other' },
+      { from: 'tradingManager', to: 'broker', type: 'broker', label: '15 place / cancel / close' },
+      { from: 'tradingManager', to: 'storage', type: 'persist', label: '16 history' },
+      { from: 'dataPlane', to: 'storage', type: 'persist', label: '17 logs' },
+      { from: 'realtime', to: 'frontend', type: 'event', label: '18 live updates' }
     ];
 
     const presets = {
@@ -405,9 +583,9 @@
       },
       broker: {
         title: 'Broker Flow',
-        description: 'Focus on strategy execution and broker communication.',
+        description: 'Focus on feed-driven order management, TP/SL handling, and broker communication.',
         layers: ['data', 'broker', 'storage'],
-        connections: ['request', 'broker', 'persist']
+        connections: ['request', 'event', 'broker', 'persist']
       },
       realtime: {
         title: 'Realtime Monitoring',
@@ -425,12 +603,61 @@
       broker: { color: '#f59e0b', label: 'Broker API' }
     };
 
+    const simulationSteps = [
+      { title: 'Frontend creates execution', subtitle: 'broker + env + symbol + strategy', node: 'simFrontend' },
+      { title: 'Control plane receives request', subtitle: 'POST /api/control/executions', node: 'simControl' },
+      { title: 'Process manager allocates port', subtitle: 'LIVE_ENGINE_PORT range', node: 'simManager' },
+      { title: 'Data-plane process starts', subtitle: 'python -m api.live_server', node: 'simEngine' },
+      { title: 'Registry row is created', subtitle: 'status = starting', node: 'simRegistry' },
+      { title: 'Heartbeat marks engine alive', subtitle: 'pid + broker + env + status', node: 'simHeartbeat' },
+      { title: 'Frontend registers executor', subtitle: 'POST /api/live/executors', node: 'simExecutor' },
+      { title: 'Feed updates order manager', subtitle: 'ticks / LTP drive TP and SL checks', node: 'simOrderManager' },
+      { title: 'Order manager chooses TP/SL path', subtitle: 'native bracket or synthetic orders', node: 'simOrderManager' },
+      { title: 'Trading manager calls broker', subtitle: 'place / cancel / close orders', node: 'simBroker' },
+      { title: 'TP or SL hits', subtitle: 'cancel the other pending leg immediately', node: 'simOrderManager' },
+      { title: 'Realtime stream connects', subtitle: 'ticks + snapshots + events', node: 'simRealtime' },
+      { title: 'History and logs persist', subtitle: 'SQLite + logs/executions/name.log', node: 'simStorage' }
+    ];
+
+    const simulationNodes = [
+      { id: 'simFrontend', title: 'Frontend', subtitle: 'React UI', x: 60, y: 70, w: 170, h: 76, color: '#bfdbfe' },
+      { id: 'simControl', title: 'Control API', subtitle: '/api/control', x: 330, y: 70, w: 170, h: 76, color: '#ddd6fe' },
+      { id: 'simManager', title: 'Process Manager', subtitle: 'port + spawn', x: 600, y: 70, w: 185, h: 76, color: '#ddd6fe' },
+      { id: 'simEngine', title: 'Data Plane', subtitle: 'live_server', x: 600, y: 250, w: 185, h: 76, color: '#bbf7d0' },
+      { id: 'simRegistry', title: 'Registry DB', subtitle: 'starting row', x: 850, y: 160, w: 160, h: 76, color: '#e5e7eb' },
+      { id: 'simHeartbeat', title: 'Heartbeat', subtitle: 'running', x: 330, y: 250, w: 170, h: 76, color: '#fecdd3' },
+      { id: 'simExecutor', title: 'Executor', subtitle: 'strategy', x: 60, y: 250, w: 170, h: 76, color: '#bbf7d0' },
+      { id: 'simOrderManager', title: 'Order Manager', subtitle: 'TP / SL + OCO', x: 60, y: 345, w: 170, h: 76, color: '#bbf7d0' },
+      { id: 'simBroker', title: 'Broker API', subtitle: 'eToro / Angel', x: 60, y: 440, w: 170, h: 76, color: '#fed7aa' },
+      { id: 'simRealtime', title: 'WebSocket', subtitle: '/ws/live', x: 330, y: 440, w: 170, h: 76, color: '#bfdbfe' },
+      { id: 'simStorage', title: 'Storage + Logs', subtitle: 'SQLite + files', x: 600, y: 440, w: 185, h: 76, color: '#e5e7eb' }
+    ];
+
+    const simulationLinks = [
+      ['simFrontend', 'simControl'],
+      ['simControl', 'simManager'],
+      ['simManager', 'simEngine'],
+      ['simManager', 'simRegistry'],
+      ['simEngine', 'simHeartbeat'],
+      ['simHeartbeat', 'simRegistry'],
+      ['simFrontend', 'simExecutor'],
+      ['simExecutor', 'simOrderManager'],
+      ['simEngine', 'simOrderManager'],
+      ['simOrderManager', 'simBroker'],
+      ['simEngine', 'simRealtime'],
+      ['simEngine', 'simStorage']
+    ];
+
     const state = {
       preset: 'full',
       zoom: 1,
       layers: {},
       connections: {},
-      selected: 'frontend'
+      selected: 'frontend',
+      view: 'architecture',
+      simIndex: 0,
+      simPlaying: false,
+      simTimer: null
     };
 
     const svg = document.getElementById('diagram');
@@ -439,6 +666,7 @@
     const presetEl = document.getElementById('presets');
     const legendEl = document.getElementById('legend');
     const promptOutput = document.getElementById('promptOutput');
+    const simulationSvg = document.getElementById('simulationSvg');
 
     function initialize() {
       Object.keys(colors).forEach(layer => state.layers[layer] = true);
@@ -454,7 +682,17 @@
           updateAll();
         });
       });
+      document.querySelectorAll('[data-view]').forEach(button => {
+        button.addEventListener('click', () => setView(button.dataset.view));
+      });
+      document.getElementById('playSimulation').addEventListener('click', playSimulation);
+      document.getElementById('pauseSimulation').addEventListener('click', pauseSimulation);
+      document.getElementById('prevSimulation').addEventListener('click', () => stepSimulation(-1));
+      document.getElementById('nextSimulation').addEventListener('click', () => stepSimulation(1));
+      document.getElementById('resetSimulation').addEventListener('click', resetSimulation);
       document.getElementById('copyPrompt').addEventListener('click', copyPrompt);
+      renderSimulationSteps();
+      renderSimulation();
     }
 
     function renderPresets() {
@@ -511,10 +749,25 @@
     }
 
     function updateAll() {
-      renderDiagram();
+      if (state.view === 'architecture') renderDiagram();
+      renderSimulation();
       renderDetails();
       updatePrompt();
       svg.style.transform = `scale(${state.zoom})`;
+    }
+
+    function setView(view) {
+      state.view = view;
+      document.getElementById('architectureView').classList.toggle('hidden', view !== 'architecture');
+      document.getElementById('simulationView').classList.toggle('hidden', view !== 'simulation');
+      document.querySelectorAll('[data-view]').forEach(button => {
+        button.classList.toggle('active', button.dataset.view === view);
+      });
+      document.getElementById('viewTitle').textContent = view === 'simulation' ? 'Animated Execution Simulation' : presets[state.preset].title;
+      document.getElementById('viewDescription').textContent = view === 'simulation'
+        ? 'Step through how a frontend execution request becomes a live data-plane server, broker calls, realtime events, and persisted history.'
+        : presets[state.preset].description;
+      updateAll();
     }
 
     function renderDiagram() {
@@ -579,6 +832,122 @@
       });
     }
 
+    function renderSimulation() {
+      const activeStep = simulationSteps[state.simIndex];
+      const activeNodeId = activeStep.node;
+      simulationSvg.innerHTML = simDefs();
+
+      simulationLinks.forEach((link, index) => drawSimLink(link[0], link[1], index));
+      simulationNodes.forEach(node => drawSimNode(node, node.id === activeNodeId));
+      drawPacket(activeNodeId);
+      highlightTimeline();
+    }
+
+    function simDefs() {
+      return `
+        <defs>
+          <marker id="simArrow" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+            <polygon points="0 0, 10 4, 0 8" fill="#38bdf8"></polygon>
+          </marker>
+          <marker id="simArrowDone" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+            <polygon points="0 0, 10 4, 0 8" fill="#ef4444"></polygon>
+          </marker>
+        </defs>
+      `;
+    }
+
+    function drawSimLink(fromId, toId, index) {
+      const from = simulationNodes.find(node => node.id === fromId);
+      const to = simulationNodes.find(node => node.id === toId);
+      const start = anchor(from, to);
+      const end = anchor(to, from);
+      const active = index < state.simIndex;
+      const color = active ? '#ef4444' : '#38bdf8';
+      const width = active ? 5 : 3;
+      const dx = Math.max(70, Math.abs(end.x - start.x) * 0.35);
+      const path = `M ${start.x} ${start.y} C ${start.x + dx} ${start.y}, ${end.x - dx} ${end.y}, ${end.x} ${end.y}`;
+      simulationSvg.insertAdjacentHTML('beforeend', `
+        <path d="${path}" fill="none" stroke="${color}" stroke-width="${width}" stroke-dasharray="${active ? '0' : '8 8'}" marker-end="url(#${active ? 'simArrowDone' : 'simArrow'})" opacity="${active ? '1' : '0.62'}">
+          ${active ? '<animate attributeName="stroke-opacity" values="0.55;1;0.55" dur="1.2s" repeatCount="indefinite"/>' : ''}
+        </path>
+      `);
+    }
+
+    function drawSimNode(node, active) {
+      simulationSvg.insertAdjacentHTML('beforeend', `
+        <g class="sim-node">
+          <rect x="${node.x}" y="${node.y}" width="${node.w}" height="${node.h}" rx="18" fill="${node.color}" stroke="${active ? '#ef4444' : '#0f172a'}" stroke-width="${active ? 6 : 2}"/>
+          <text class="sim-title" x="${node.x + 18}" y="${node.y + 31}">${node.title}</text>
+          <text class="sim-subtitle" x="${node.x + 18}" y="${node.y + 57}">${node.subtitle}</text>
+        </g>
+      `);
+    }
+
+    function drawPacket(nodeId) {
+      const node = simulationNodes.find(item => item.id === nodeId);
+      const cx = node.x + node.w - 22;
+      const cy = node.y + 22;
+      simulationSvg.insertAdjacentHTML('beforeend', `
+        <g style="transform-origin:${cx}px ${cy}px">
+          <circle class="sim-packet" cx="${cx}" cy="${cy}" r="22"></circle>
+          <text class="sim-packet-text" x="${cx}" y="${cy + 7}" text-anchor="middle">${state.simIndex + 1}</text>
+        </g>
+      `);
+    }
+
+    function renderSimulationSteps() {
+      document.getElementById('simSteps').innerHTML = simulationSteps.map((step, index) => `
+        <button class="sim-step" data-sim-step="${index}">
+          <strong>${index + 1}</strong>
+          <span>${step.title}<br><small>${step.subtitle}</small></span>
+        </button>
+      `).join('');
+      document.querySelectorAll('[data-sim-step]').forEach(button => {
+        button.addEventListener('click', () => {
+          state.simIndex = Number(button.dataset.simStep);
+          pauseSimulation();
+          renderSimulation();
+        });
+      });
+    }
+
+    function highlightTimeline() {
+      document.querySelectorAll('[data-sim-step]').forEach(button => {
+        button.classList.toggle('active', Number(button.dataset.simStep) === state.simIndex);
+      });
+    }
+
+    function playSimulation() {
+      if (state.simTimer) return;
+      state.simPlaying = true;
+      state.simTimer = setInterval(() => stepSimulation(1, true), 1250);
+      renderSimulation();
+    }
+
+    function pauseSimulation() {
+      state.simPlaying = false;
+      if (state.simTimer) clearInterval(state.simTimer);
+      state.simTimer = null;
+    }
+
+    function resetSimulation() {
+      pauseSimulation();
+      state.simIndex = 0;
+      renderSimulation();
+    }
+
+    function stepSimulation(delta, loop = false) {
+      const next = state.simIndex + delta;
+      if (next >= simulationSteps.length) {
+        state.simIndex = loop ? 0 : simulationSteps.length - 1;
+      } else if (next < 0) {
+        state.simIndex = 0;
+      } else {
+        state.simIndex = next;
+      }
+      renderSimulation();
+    }
+
     function renderDetails() {
       const node = nodes.find(item => item.id === state.selected) || nodes[0];
       document.getElementById('detailTitle').textContent = node.title;
@@ -591,7 +960,12 @@
       const visibleLayers = Object.entries(state.layers).filter(([, on]) => on).map(([layer]) => layer).join(', ');
       const visibleConnections = Object.entries(state.connections).filter(([, on]) => on).map(([type]) => connectionStyles[type].label).join(', ');
       const selected = nodes.find(node => node.id === state.selected);
-      promptOutput.value = `Review the Backtrading architecture using the ${preset.title} view. The visible layers are ${visibleLayers}. The visible connection types are ${visibleConnections}. Focus especially on ${selected.title} (${selected.subtitle}): ${selected.body}`;
+      if (state.view === 'simulation') {
+        const step = simulationSteps[state.simIndex];
+        promptOutput.value = `Review the Backtrading execution lifecycle simulation. The currently highlighted step is ${state.simIndex + 1}: ${step.title} (${step.subtitle}). Check that this step correctly fits the control-plane to data-plane runtime flow.`;
+      } else {
+        promptOutput.value = `Review the Backtrading architecture using the ${preset.title} view. The visible layers are ${visibleLayers}. The visible connection types are ${visibleConnections}. Focus especially on ${selected.title} (${selected.subtitle}): ${selected.body}`;
+      }
     }
 
     async function copyPrompt() {

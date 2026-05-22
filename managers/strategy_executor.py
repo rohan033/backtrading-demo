@@ -128,8 +128,12 @@ class StrategyExecutor(TickListener):
             return
 
         if not self.is_in_position:
-            trade_signal = self.strategy.provide_signal(tick)
+            available_capital = getattr(self.strategy_config, 'max_available_capital', None)
+            trade_signal = self.strategy.provide_signal(tick, available_capital=available_capital)
             if trade_signal.decision == "BUY":
+                trade_signal.symbol = tick.symbol
+                trade_signal.token = tick.token
+                trade_signal.exchange = tick.exchange
                 logger.info(
                     "%s[%s]%s %sSIGNAL  BUY%s  %s  ltp=%.2f  chg=%+.3f%%  threshold=%.2f%%",
                     CYAN, self.executor_id, RESET,

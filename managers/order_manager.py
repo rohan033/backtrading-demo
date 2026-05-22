@@ -1,27 +1,32 @@
+import asyncio
 from typing import Any
 
 from logzero import logger
 
-from brokers.interfaces import OrderActivity, OrderActivityListener
+from brokers.interfaces import OrderActivity, OrderActivityListener, TickData
 
 
 class OrderManager:
     """Dispatch order and position activity from a status client to listeners."""
 
-    def __init__(self, client, max_activity_history: int = 1000):
+    def __init__(self, client=None, max_activity_history: int = 1000):
         self.client = client
         self.max_activity_history = max_activity_history
         self._listeners: dict[str, OrderActivityListener] = {}
         self._orders_by_id: dict[str, dict[str, Any]] = {}
         self._positions_by_id: dict[str, dict[str, Any]] = {}
         self._order_to_position_ids: dict[str, set[str]] = {}
+        self._protected_entries: dict[str, dict[str, Any]] = {}
         self._activity_history: list[OrderActivity] = []
         self._last_status: dict[str, Any] | None = None
+        self._tick_queue: asyncio.Queue[TickData] = asyncio.Queue(maxsize=1000)
+        self._tick_task: asyncio.Task | None = None
         self._running = False
 
-        if not hasattr(client, "add_status_callback"):
+        if client is not None and not hasattr(client, "add_status_callback"):
             raise TypeError("OrderManager client must expose add_status_callback(callback)")
-        client.add_status_callback(self._handle_status)
+        if client is not None:
+            client.add_status_callback(self._handle_status)
 
     def register_listener(self, listener_id: str, listener: OrderActivityListener) -> None:
         self._listeners[listener_id] = listener
@@ -63,6 +68,47 @@ class OrderManager:
     def get_activity_history(self) -> list[OrderActivity]:
         return list(self._activity_history)
 
+    def register_protected_entry(
+        self,
+        *,
+        executor_id: str,
+        order_id: str | None,
+        unique_order_id: str | None,
+        signal,
+        broker: str | None = None,
+        native_bracket_order: bool = False,
+    ) -> None:
+        if native_bracket_order:
+            logger.info("[OrderManager] Native bracket order active for %s; synthetic TP/SL disabled", executor_id)
+            return
+
+        self._protected_entries[executor_id] = {
+            "executor_id": executor_id,
+            "order_id": order_id,
+            "unique_order_id": unique_order_id,
+            "position_id": None,
+            "broker": broker,
+            "symbol": getattr(signal, "symbol", ""),
+            "token": getattr(signal, "token", ""),
+            "exchange": getattr(signal, "exchange", ""),
+            "entry_price": getattr(signal, "entry_price", None),
+            "take_profit_price": getattr(signal, "take_profit_price", None),
+            "stop_loss_price": getattr(signal, "stop_loss_price", None),
+            "quantity": getattr(signal, "quantity", None),
+            "active": True,
+        }
+        logger.info("[OrderManager] Registered synthetic TP/SL guard for %s order=%s", executor_id, order_id)
+
+    def set_protected_position_id(self, executor_id: str, position_id: str | None) -> None:
+        entry = self._protected_entries.get(executor_id)
+        if entry and position_id:
+            entry["position_id"] = str(position_id)
+
+    def rearm_protected_entry(self, executor_id: str) -> None:
+        entry = self._protected_entries.get(executor_id)
+        if entry:
+            entry["active"] = True
+
     def get_state_snapshot(self) -> dict[str, Any]:
         return {
             "orders_by_id": dict(self._orders_by_id),
@@ -71,6 +117,7 @@ class OrderManager:
                 order_id: sorted(position_ids)
                 for order_id, position_ids in self._order_to_position_ids.items()
             },
+            "protected_entries": dict(self._protected_entries),
             "last_status": self._last_status,
         }
 
@@ -79,13 +126,75 @@ class OrderManager:
             return
 
         self._running = True
-        await self.client.start()
+        self._tick_task = asyncio.create_task(self._tick_loop())
+        if self.client is not None:
+            await self.client.start()
         logger.info("[OrderManager] Started with %d listeners", len(self._listeners))
 
     async def stop(self) -> None:
         self._running = False
-        await self.client.stop()
+        if self._tick_task:
+            self._tick_task.cancel()
+            try:
+                await self._tick_task
+            except asyncio.CancelledError:
+                pass
+            self._tick_task = None
+        if self.client is not None:
+            await self.client.stop()
         logger.info("[OrderManager] Stopped")
+
+    def enqueue_tick(self, tick: TickData) -> None:
+        if not self._running:
+            return
+        try:
+            self._tick_queue.put_nowait(tick)
+        except asyncio.QueueFull:
+            logger.warning("[OrderManager] Tick queue full; dropping TP/SL tick for %s", tick.symbol)
+
+    async def _tick_loop(self) -> None:
+        while True:
+            tick = await self._tick_queue.get()
+            await self.handle_tick(tick)
+
+    async def handle_tick(self, tick: TickData) -> None:
+        for executor_id, entry in list(self._protected_entries.items()):
+            if not entry.get("active"):
+                continue
+            if str(entry.get("token")) != str(tick.token):
+                continue
+
+            trigger_type = None
+            take_profit = _to_float(entry.get("take_profit_price"))
+            stop_loss = _to_float(entry.get("stop_loss_price"))
+            if take_profit is not None and tick.ltp >= take_profit:
+                trigger_type = "take_profit_triggered"
+            elif stop_loss is not None and tick.ltp <= stop_loss:
+                trigger_type = "stop_loss_triggered"
+
+            if not trigger_type:
+                continue
+
+            entry["active"] = False
+            activity = OrderActivity(
+                activity_type=trigger_type,
+                order_id=entry.get("order_id"),
+                position_id=entry.get("position_id"),
+                status="triggered",
+                instrument_id=str(tick.token),
+                source="feed",
+                raw={
+                    **entry,
+                    "executor_id": executor_id,
+                    "trigger_type": trigger_type,
+                    "ltp": tick.ltp,
+                    "symbol": tick.symbol,
+                    "token": tick.token,
+                    "exchange": tick.exchange,
+                },
+            )
+            self._apply_activity(activity)
+            await self._dispatch(activity)
 
     async def _handle_status(self, status: dict[str, Any]) -> None:
         self._last_status = status
@@ -138,6 +247,11 @@ class OrderManager:
 
         if activity.order_id and activity.position_id:
             self._order_to_position_ids.setdefault(activity.order_id, set()).add(activity.position_id)
+
+        if activity.order_id and activity.position_id:
+            for entry in self._protected_entries.values():
+                if str(entry.get("order_id")) == str(activity.order_id):
+                    entry["position_id"] = activity.position_id
 
     def _rebuild_snapshot_state(self, snapshot: dict[str, Any]) -> None:
         orders_by_id: dict[str, dict[str, Any]] = {}
@@ -313,4 +427,11 @@ class OrderManager:
             value = data.get(key)
             if value is not None:
                 return str(value)
+        return None
+
+
+def _to_float(value) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
         return None

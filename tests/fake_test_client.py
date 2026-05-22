@@ -54,6 +54,9 @@ class FakeTradingClient(TickClient):
         self._order_counter = 0
         self._should_fail_orders = False
 
+    def is_bo_client(self) -> bool:
+        return False
+
     async def aget_ltp_bulk(self, subscriptions: list[Subscription]) -> list[LTPData]:
         results = []
         for sub in subscriptions:
@@ -99,6 +102,30 @@ class FakeTradingClient(TickClient):
             symbol, quantity, ltp, order_id
         )
 
+        return {"order_id": order_id, "unique_order_id": unique_order_id}
+
+    async def asell(self, ltp, quantity, symbol, token, exchange,
+                    variety="NORMAL", orderType="MARKET", productType="DELIVERY",
+                    duration="DAY"):
+        self._order_counter += 1
+        order_id = f"FAKE-{self._order_counter:04d}"
+        unique_order_id = str(uuid.uuid4())[:8]
+        self._orders_placed.append({
+            "order_id": order_id,
+            "unique_order_id": unique_order_id,
+            "symbol": symbol,
+            "token": token,
+            "exchange": exchange,
+            "ltp": ltp,
+            "quantity": quantity,
+            "type": "SELL",
+            "timestamp": time.time()
+        })
+        logger.info(
+            "%s[BROKER]%s %sEXIT%s     %s  qty=%s  price=%.2f  order_id=%s",
+            YELLOW, RESET, BOLD + GREEN, RESET,
+            symbol, quantity, ltp, order_id
+        )
         return {"order_id": order_id, "unique_order_id": unique_order_id}
 
     def set_fail_orders(self, should_fail: bool):

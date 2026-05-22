@@ -8,6 +8,8 @@ const DEFAULT_DATA_PLANE = {
   broker: 'angel',
   strategy_name: 'default',
   account_env: 'live',
+  client_mode: 'standard',
+  is_bracket_order_client: false,
   api_base_url: '/api/live',
   ws_url: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/live`,
   status: 'unknown',
@@ -337,6 +339,9 @@ function WorkspaceHeader({ execution, dataPlane, wsConnected }) {
       </div>
       <div className="flex items-center gap-3">
         <EnvBadge env={execution?.account_env || dataPlane?.account_env} />
+        <span className="text-[9px] bg-card border border-border px-2 py-1 rounded font-bold">
+          {(execution?.is_bracket_order_client || dataPlane?.is_bracket_order_client) ? 'BRACKET' : 'FEED TP/SL'}
+        </span>
         {execution && execution.is_in_position && (
           <span className="text-[9px] bg-accent/20 text-accent px-2 py-1 rounded font-bold">IN POSITION</span>
         )}
@@ -498,9 +503,10 @@ function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefresh }) {
 
   return (
     <div className="p-4 space-y-4">
-      <div className="grid grid-cols-5 gap-3">
+      <div className="grid grid-cols-6 gap-3">
         <StatCard label="Status" value={execution.status || 'UNKNOWN'} />
         <StatCard label="Env" value={envLabel(execution.account_env)} colorClass={execution.account_env === 'demo' ? 'text-accent' : 'text-red'} />
+        <StatCard label="Client" value={execution.is_bracket_order_client ? 'Bracket' : 'Feed TP/SL'} />
         <StatCard label="Symbol" value={execution.symbol || '-'} />
         <StatCard label={instrumentLabel(execution.broker)} value={execution.token || '-'} colorClass="text-accent" />
         <StatCard label="LTP" value={latestTick ? latestTick.ltp.toFixed(2) : '-'} colorClass="text-accent" />
@@ -655,6 +661,7 @@ function CreateExecutionPanel({ searchApi, onRegistered, onCancel }) {
     initial_threshold: '0.2',
     max_available_capital: '100000',
     use_fake_client: false,
+    client_mode: 'standard',
   })
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -698,6 +705,7 @@ function CreateExecutionPanel({ searchApi, onRegistered, onCancel }) {
           initial_threshold: Number(form.initial_threshold),
           max_available_capital: Number(form.max_available_capital),
           use_fake_client: form.use_fake_client,
+          client_mode: form.broker === 'etoro' ? form.client_mode : 'standard',
         }),
       })
       const data = await res.json()
@@ -748,6 +756,18 @@ function CreateExecutionPanel({ searchApi, onRegistered, onCancel }) {
           </select>
         </div>
         <FormField label="Strategy Name" value={form.strategy_name} onChange={value => setForm(prev => ({ ...prev, strategy_name: value }))} />
+        <div>
+          <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Client Mode</label>
+          <select
+            value={form.client_mode}
+            onChange={e => setForm(prev => ({ ...prev, client_mode: e.target.value }))}
+            disabled={form.broker !== 'etoro'}
+            className="w-full px-3 py-2 bg-card border border-border rounded text-xs outline-none focus:border-accent disabled:opacity-50"
+          >
+            <option value="standard">Standard (feed TP/SL)</option>
+            <option value="bracket">Bracket Order</option>
+          </select>
+        </div>
         <FormField label="Execution ID" value={form.executor_id} onChange={value => setForm(prev => ({ ...prev, executor_id: value }))} />
 
         <div className="col-span-3">
@@ -964,6 +984,8 @@ function normalizeExecution(executor, dataPlane = DEFAULT_DATA_PLANE) {
     data_plane_id: dataPlane.id,
     data_plane_label: dataPlane.label,
     account_env: executor.account_env || dataPlane.account_env || 'live',
+    client_mode: executor.client_mode || dataPlane.client_mode || 'standard',
+    is_bracket_order_client: Boolean(executor.is_bracket_order_client || dataPlane.is_bracket_order_client),
     strategy_name: strategyName,
     label: executor.label || `${broker}-${executor.symbol}-strategy-${strategyName}`,
   }

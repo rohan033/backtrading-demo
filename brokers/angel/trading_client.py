@@ -6,6 +6,9 @@ class AngelOneTradingClient(AngelClient, TickClient):
     def __init__(self):
         super().__init__()
 
+    def is_bo_client(self) -> bool:
+        return False
+
     async def aget_ltp_bulk(self, subscriptions: list[Subscription]) -> list[LTPData]:
         exchange_tokens = {}
         for subscription in subscriptions:
@@ -82,4 +85,46 @@ class AngelOneTradingClient(AngelClient, TickClient):
                 return {}
         except Exception as e:
             logger.error("Exception placing entry order: %s", e)
+            return {}
+
+    async def asell(self,
+            ltp,
+            quantity,
+            symbol,
+            token,
+            exchange,
+            variety = "NORMAL",
+            orderType = "MARKET",
+            productType = "DELIVERY",
+            duration = "DAY"):
+        if quantity <= 0:
+            logger.warning("Quantity %s too low for SELL", quantity)
+            return {}
+
+        sell_params = {
+            "tradingsymbol": symbol,
+            "symboltoken": token,
+            "exchange": exchange,
+            "transactiontype": "SELL",
+            "ordertype": orderType,
+            "quantity": str(int(quantity)),
+            "producttype": productType,
+            "duration": duration,
+            "variety": variety
+        }
+        if orderType != "MARKET":
+            sell_params["price"] = str(ltp)
+
+        try:
+            res = await self._client.placeOrderFullResponse(sell_params)
+            if res and res.get("status"):
+                data = res.get("data", {})
+                return {
+                    "order_id": data.get("orderid"),
+                    "unique_order_id": data.get("uniqueorderid")
+                }
+            logger.error("Exit order FAILED: %s", res)
+            return {}
+        except Exception as e:
+            logger.error("Exception placing exit order: %s", e)
             return {}

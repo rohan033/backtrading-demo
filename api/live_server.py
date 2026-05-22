@@ -33,6 +33,7 @@ from brokers.etoro.env import load_etoro_env
 from event.db_event_consumer import DbEventWriter
 from event.event_manager import EventManager
 from managers.strategy_executor import StrategyExecutor
+from managers.order_manager import OrderManager
 from managers.tick_provider import TickProvider
 from managers.trading_manager import TradingManager
 from strategy_config import StrategyConfig
@@ -78,6 +79,7 @@ class LiveEngine:
         symbol: str | None = None,
         token: str | None = None,
         strategy_name: str = "default",
+        client_mode: str = "standard",
     ):
         self.use_fake_client = use_fake_client or broker == "fake"
         self.account_env = "demo" if account_env == "demo" else "live"
@@ -88,10 +90,12 @@ class LiveEngine:
         self.symbol = symbol
         self.token = token
         self.strategy_name = strategy_name
+        self.client_mode = "bracket" if client_mode == "bracket" else "standard"
         self.client = None
         self.db_writer: Optional[DbEventWriter] = None
         self.event_manager: Optional[EventManager] = None
         self.trading_manager: Optional[TradingManager] = None
+        self.order_manager: Optional[OrderManager] = None
         self.tick_provider: Optional[TickProvider] = None
         self.executors: dict[str, StrategyExecutor] = {}
         self.ws_manager = ConnectionManager()
@@ -106,10 +110,11 @@ class LiveEngine:
             self.client = FakeTradingClient(tick_gen)
             logger.info("[ENGINE] Using FakeTradingClient (test mode)")
         elif self.broker == "etoro":
-            from brokers.etoro.trading_client import EtoroTradingClient
-            self.client = EtoroTradingClient(account_env=self.account_env)
+            from brokers.etoro.trading_client import EtoroBracketTradingClient, EtoroTradingClient
+            client_cls = EtoroBracketTradingClient if self.client_mode == "bracket" else EtoroTradingClient
+            self.client = client_cls(account_env=self.account_env)
             self.client.generate_session()
-            logger.info("[ENGINE] EtoroTradingClient session established env=%s", self.account_env)
+            logger.info("[ENGINE] %s session established env=%s", client_cls.__name__, self.account_env)
         else:
             if self.account_env != "live":
                 logger.warning("[ENGINE] Angel broker only supports live mode; requested env=%s", self.account_env)
@@ -120,14 +125,19 @@ class LiveEngine:
 
         self.db_writer = DbEventWriter(db_path="live_events.db")
         self.event_manager = EventManager(self.db_writer)
+        self.order_manager = OrderManager()
         self.trading_manager = TradingManager(
             self.client, self.event_manager,
-            on_event=self._on_engine_event
+            on_event=self._on_engine_event,
+            order_manager=self.order_manager,
         )
+        self.order_manager.register_listener("trading_manager", self.trading_manager)
         self.tick_provider = TickProvider(
             self.client, interval_seconds=1.0,
             on_tick=self._on_tick
         )
+        await self.trading_manager.start()
+        await self.order_manager.start()
         await self.tick_provider.start()
 
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
@@ -145,6 +155,10 @@ class LiveEngine:
                 pass
         if self.tick_provider:
             await self.tick_provider.stop()
+        if self.order_manager:
+            await self.order_manager.stop()
+        if self.trading_manager:
+            await self.trading_manager.stop()
         for executor in self.executors.values():
             await executor.stop()
         if self.event_manager:
@@ -158,6 +172,8 @@ class LiveEngine:
         logger.info("[ENGINE] Live engine shut down")
 
     def _on_tick(self, tick: TickData):
+        if self.order_manager and not self.is_bo_client():
+            self.order_manager.enqueue_tick(tick)
         msg = {
             'type': 'tick',
             'symbol': tick.symbol,
@@ -214,6 +230,8 @@ class LiveEngine:
                 "token": self.token,
                 "strategy_name": self.strategy_name,
                 "use_fake_client": self.use_fake_client,
+                "client_mode": self.client_mode,
+                "is_bracket_order_client": self.is_bo_client(),
                 "ws_connections": len(self.ws_manager.active_connections),
             },
         }
@@ -273,16 +291,24 @@ class LiveEngine:
             "broker": self.broker,
             "account_env": self.account_env,
             "use_fake_client": self.use_fake_client,
+            "client_mode": self.client_mode,
+            "is_bracket_order_client": self.is_bo_client(),
             "executor_count": len(self.executors),
             "symbol": self.symbol,
             "token": self.token,
             "strategy_name": self.strategy_name,
         }
 
+    def is_bo_client(self) -> bool:
+        checker = getattr(self.client, "is_bo_client", None)
+        return bool(checker()) if callable(checker) else False
+
     def _executor_state(self, executor: StrategyExecutor) -> dict:
         state = executor.get_state()
         state["broker"] = self.broker
         state["account_env"] = self.account_env
+        state["client_mode"] = self.client_mode
+        state["is_bracket_order_client"] = self.is_bo_client()
         return state
 
 
@@ -321,6 +347,7 @@ async def lifespan(app: FastAPI):
         symbol=_arg_value("--symbol", ""),
         token=_arg_value("--token", ""),
         strategy_name=_arg_value("--strategy-name", "default"),
+        client_mode=_arg_value("--client-mode", "standard"),
     )
     await engine.start()
     yield
@@ -568,6 +595,7 @@ if __name__ == "__main__":
     parser.add_argument("--symbol", default="", help="Execution symbol metadata")
     parser.add_argument("--token", default="", help="Execution token metadata")
     parser.add_argument("--strategy-name", default="default", help="Strategy metadata")
+    parser.add_argument("--client-mode", choices=["standard", "bracket"], default="standard", help="Broker client mode")
     parser.add_argument("--heartbeat-interval", type=float, default=5.0, help="Seconds between control-plane heartbeats")
     args = parser.parse_args()
 

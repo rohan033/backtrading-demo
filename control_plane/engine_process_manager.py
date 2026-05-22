@@ -32,6 +32,7 @@ class EngineProcessManager:
         broker = data.get("broker") or "angel"
         account_env = _normalize_env(data.get("account_env"))
         strategy_name = data.get("strategy_name") or "default"
+        client_mode = "bracket" if data.get("client_mode") == "bracket" else "standard"
         symbol = data.get("symbol")
         token = data.get("token")
         engine_id = data.get("id") or _engine_id(broker, symbol, strategy_name, account_env)
@@ -75,6 +76,8 @@ class EngineProcessManager:
             broker,
             "--strategy-name",
             strategy_name,
+            "--client-mode",
+            client_mode,
         ]
         if symbol:
             cmd.extend(["--symbol", str(symbol)])

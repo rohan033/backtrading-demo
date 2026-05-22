@@ -8,6 +8,9 @@ class EtoroTradingClient(EtoroClient, TickClient):
     def __init__(self, account_env: str | None = None):
         super().__init__(account_env=account_env)
 
+    def is_bo_client(self) -> bool:
+        return False
+
     async def aget_ltp_bulk(self, subscriptions: list[Subscription]) -> list[LTPData]:
         """Fetch latest prices for multiple symbols from eToro."""
         instrument_map = {}
@@ -172,6 +175,32 @@ class EtoroTradingClient(EtoroClient, TickClient):
             logger.error("[eToro] Error closing position %s: %s", position_id, e)
             return False
 
+    async def aget_position_ids_for_order(self, order_id):
+        """Return position IDs opened by an order once eToro has executed it."""
+        order_status = await self.aget_order_status(order_id)
+        if not isinstance(order_status, dict):
+            return []
+
+        position_ids = []
+        for position in order_status.get("positions", []) or []:
+            position_id = position.get("positionID") or position.get("positionId")
+            if position_id is not None:
+                position_ids.append(str(position_id))
+        return position_ids
+
+    async def await_position_ids_for_order(self, order_id, timeout_seconds=30, poll_seconds=2):
+        """Poll order info until eToro exposes the opened position IDs."""
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        while True:
+            position_ids = await self.aget_position_ids_for_order(order_id)
+            if position_ids:
+                return position_ids
+
+            if asyncio.get_running_loop().time() >= deadline:
+                return []
+
+            await asyncio.sleep(poll_seconds)
+
     async def _instrument_id(self, symbol, token):
         try:
             return int(token)
@@ -235,6 +264,9 @@ class EtoroTradingClient(EtoroClient, TickClient):
 class EtoroBracketTradingClient(EtoroTradingClient):
     """eToro client for entries with attached take-profit and stop-loss rates."""
 
+    def is_bo_client(self) -> bool:
+        return True
+
     async def abuy_with_take_profit_stop_loss(
         self,
         ltp,
@@ -286,28 +318,3 @@ class EtoroBracketTradingClient(EtoroTradingClient):
             result["stop_loss_rate"] = float(stop_loss_rate)
         return result
 
-    async def aget_position_ids_for_order(self, order_id):
-        """Return position IDs opened by an order once eToro has executed it."""
-        order_status = await self.aget_order_status(order_id)
-        if not isinstance(order_status, dict):
-            return []
-
-        position_ids = []
-        for position in order_status.get("positions", []) or []:
-            position_id = position.get("positionID") or position.get("positionId")
-            if position_id is not None:
-                position_ids.append(str(position_id))
-        return position_ids
-
-    async def await_position_ids_for_order(self, order_id, timeout_seconds=30, poll_seconds=2):
-        """Poll order info until eToro exposes the opened position IDs."""
-        deadline = asyncio.get_running_loop().time() + timeout_seconds
-        while True:
-            position_ids = await self.aget_position_ids_for_order(order_id)
-            if position_ids:
-                return position_ids
-
-            if asyncio.get_running_loop().time() >= deadline:
-                return []
-
-            await asyncio.sleep(poll_seconds)
