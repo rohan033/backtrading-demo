@@ -1,0 +1,608 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Backtrading Interactive Architecture Workflow</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --panel: #0d1b2a;
+      --panel-2: #102337;
+      --text: #e5eef8;
+      --muted: #91a4b7;
+      --border: #1f3a52;
+      --accent: #38bdf8;
+      --flow: #60a5fa;
+      --event: #fb7185;
+      --persist: #a78bfa;
+      --broker: #f59e0b;
+      --heartbeat: #22c55e;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at top left, #123253 0, var(--bg) 38rem);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 320px 1fr 340px;
+      min-height: 100vh;
+    }
+
+    aside, .details {
+      background: rgba(13, 27, 42, 0.94);
+      border-color: var(--border);
+      backdrop-filter: blur(10px);
+    }
+
+    aside {
+      border-right: 1px solid var(--border);
+      padding: 20px;
+      overflow: auto;
+    }
+
+    .details {
+      border-left: 1px solid var(--border);
+      padding: 20px;
+      overflow: auto;
+    }
+
+    main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(7, 17, 31, 0.78);
+    }
+
+    h1 {
+      margin: 0 0 6px;
+      font-size: 20px;
+      letter-spacing: 0.2px;
+    }
+
+    h2 {
+      margin: 22px 0 10px;
+      font-size: 12px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 1.6px;
+    }
+
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 13px;
+    }
+
+    button, label {
+      font: inherit;
+    }
+
+    .preset-grid, .toggle-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .preset {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      color: var(--text);
+      background: var(--panel-2);
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .preset.active {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.16);
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.22);
+    }
+
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(255,255,255,0.03);
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+    }
+
+    .zoom-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .mini-button {
+      flex: 1;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      background: var(--panel-2);
+      cursor: pointer;
+    }
+
+    .canvas-wrap {
+      flex: 1;
+      overflow: auto;
+      padding: 22px;
+    }
+
+    .canvas-card {
+      min-width: 980px;
+      min-height: 650px;
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      background:
+        linear-gradient(rgba(255,255,255,0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.035) 1px, transparent 1px),
+        rgba(4, 12, 23, 0.66);
+      background-size: 36px 36px;
+      overflow: hidden;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: 650px;
+      transform-origin: top left;
+    }
+
+    .node rect {
+      cursor: pointer;
+      filter: drop-shadow(0 12px 18px rgba(0, 0, 0, 0.28));
+    }
+
+    .node text {
+      pointer-events: none;
+      fill: #0f172a;
+    }
+
+    .node .title {
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    .node .subtitle {
+      font-size: 11px;
+      font-weight: 600;
+      opacity: 0.76;
+    }
+
+    .step-badge {
+      fill: #dc2626;
+      stroke: #fff;
+      stroke-width: 4;
+    }
+
+    .step-text {
+      fill: #fff !important;
+      font-size: 20px;
+      font-weight: 900;
+    }
+
+    .edge-label {
+      fill: var(--text);
+      font-size: 11px;
+      font-weight: 700;
+      paint-order: stroke;
+      stroke: #07111f;
+      stroke-width: 4px;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 14px 22px;
+      border-top: 1px solid var(--border);
+      background: rgba(7, 17, 31, 0.78);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 9px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--accent);
+    }
+
+    .detail-card, .prompt-card {
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.04);
+      margin-top: 12px;
+    }
+
+    .detail-title {
+      font-size: 16px;
+      font-weight: 800;
+      margin-bottom: 6px;
+    }
+
+    .detail-meta {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 12px;
+      color: var(--accent);
+      margin-bottom: 10px;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 150px;
+      resize: vertical;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: #07111f;
+      color: var(--text);
+      padding: 12px;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    .copy {
+      width: 100%;
+      margin-top: 10px;
+      padding: 10px;
+      border: 0;
+      border-radius: 10px;
+      background: var(--accent);
+      color: #082f49;
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    @media (max-width: 1100px) {
+      .app { grid-template-columns: 1fr; }
+      aside, .details { border: 0; border-bottom: 1px solid var(--border); }
+      .canvas-card { min-width: 940px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <h1>Architecture Explorer</h1>
+      <p>Use presets and filters to focus on one part of the trading system at a time.</p>
+
+      <h2>Presets</h2>
+      <div id="presets" class="preset-grid"></div>
+
+      <h2>Layers</h2>
+      <div id="layers" class="toggle-list"></div>
+
+      <h2>Connections</h2>
+      <div id="connections" class="toggle-list"></div>
+
+      <h2>Zoom</h2>
+      <div class="zoom-row">
+        <button class="mini-button" data-zoom="-0.1">Minus</button>
+        <button class="mini-button" data-zoom="1">Reset</button>
+        <button class="mini-button" data-zoom="0.1">Plus</button>
+      </div>
+    </aside>
+
+    <main>
+      <header>
+        <h1 id="viewTitle">Full System</h1>
+        <p id="viewDescription">Control plane starts and monitors data-plane execution engines while the frontend connects to the active engine.</p>
+      </header>
+      <div class="canvas-wrap">
+        <div class="canvas-card">
+          <svg id="diagram" viewBox="0 0 1200 650" role="img" aria-label="Backtrading architecture diagram"></svg>
+        </div>
+      </div>
+      <div class="legend" id="legend"></div>
+    </main>
+
+    <section class="details">
+      <h1>Selected Component</h1>
+      <p>Click any box to inspect its role in the workflow.</p>
+      <div class="detail-card">
+        <div id="detailTitle" class="detail-title">Frontend React UI</div>
+        <div id="detailMeta" class="detail-meta">frontend/src/ExecutionWorkspace.jsx</div>
+        <p id="detailBody">Creates executions, polls the control-plane registry, registers executors on data planes, and subscribes to realtime WebSocket events.</p>
+      </div>
+
+      <h2>Copyable Summary</h2>
+      <div class="prompt-card">
+        <textarea id="promptOutput" readonly></textarea>
+        <button id="copyPrompt" class="copy">Copy summary</button>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const colors = {
+      ui: '#bfdbfe',
+      control: '#ddd6fe',
+      data: '#bbf7d0',
+      broker: '#fed7aa',
+      storage: '#e5e7eb',
+      event: '#fecdd3'
+    };
+
+    const nodes = [
+      { id: 'frontend', title: 'Frontend React UI', subtitle: 'Execution Workspace', layer: 'ui', x: 70, y: 70, w: 190, h: 78, body: 'Creates executions, shows symbol plus instrument ID, polls the registry, and connects to data-plane APIs.' },
+      { id: 'controlApi', title: 'Control Plane API', subtitle: 'api.server:app', layer: 'control', x: 360, y: 70, w: 190, h: 78, body: 'Receives execution creation requests, exposes registry endpoints, records heartbeats, and marks stale engines.' },
+      { id: 'processManager', title: 'Process Manager', subtitle: 'control_plane/engine_process_manager.py', layer: 'control', x: 650, y: 70, w: 210, h: 78, body: 'Allocates a free port and starts python -m api.live_server for each execution.' },
+      { id: 'registry', title: 'Engine Registry DB', subtitle: 'control_plane.db', layer: 'storage', x: 940, y: 70, w: 190, h: 78, body: 'Stores engine ID, broker, env, symbol, token/instrument ID, port, URLs, PID, and heartbeat timestamps.' },
+
+      { id: 'dataPlane', title: 'Data Plane Server', subtitle: 'api.live_server', layer: 'data', x: 360, y: 250, w: 200, h: 82, body: 'Dedicated FastAPI server for one broker plus symbol plus strategy execution.' },
+      { id: 'heartbeat', title: 'Heartbeat Loop', subtitle: 'pid + env + status', layer: 'event', x: 670, y: 250, w: 180, h: 82, body: 'Runs inside each data plane and reports liveness back to the control plane.' },
+      { id: 'executor', title: 'Strategy Executor', subtitle: 'strategy state', layer: 'data', x: 70, y: 410, w: 190, h: 78, body: 'Consumes ticks and strategy config, then decides when orders should be placed or closed.' },
+      { id: 'tradingManager', title: 'Trading Manager', subtitle: 'orders + positions', layer: 'data', x: 360, y: 410, w: 190, h: 78, body: 'Normalizes trading actions and coordinates broker calls plus event persistence.' },
+      { id: 'broker', title: 'Broker APIs', subtitle: 'eToro / Angel / Fake', layer: 'broker', x: 650, y: 410, w: 190, h: 78, body: 'eToro uses instrument IDs and demo/live keys. Angel uses symbol tokens. Fake supports local testing.' },
+      { id: 'realtime', title: 'Realtime WebSocket', subtitle: '/ws/live', layer: 'ui', x: 940, y: 250, w: 190, h: 78, body: 'Streams snapshots, ticks, executor status, and order events back to the frontend.' },
+      { id: 'storage', title: 'Persistence + Logs', subtitle: 'SQLite + logs/executions', layer: 'storage', x: 940, y: 410, w: 190, h: 78, body: 'Stores runtime events, order activity, position history, and per-execution server logs.' }
+    ];
+
+    const edges = [
+      { from: 'frontend', to: 'controlApi', type: 'request', label: '1 create execution' },
+      { from: 'controlApi', to: 'processManager', type: 'request', label: '2 allocate engine' },
+      { from: 'processManager', to: 'dataPlane', type: 'process', label: '3 spawn server' },
+      { from: 'processManager', to: 'registry', type: 'persist', label: '4 starting row' },
+      { from: 'dataPlane', to: 'heartbeat', type: 'event', label: '5 emit heartbeat' },
+      { from: 'heartbeat', to: 'controlApi', type: 'event', label: '6 report alive' },
+      { from: 'controlApi', to: 'registry', type: 'persist', label: '7 mark running' },
+      { from: 'frontend', to: 'dataPlane', type: 'request', label: '8 register executor' },
+      { from: 'frontend', to: 'realtime', type: 'event', label: '9 connect ws' },
+      { from: 'dataPlane', to: 'executor', type: 'request', label: '10 run strategy' },
+      { from: 'executor', to: 'tradingManager', type: 'request', label: '11 signals' },
+      { from: 'tradingManager', to: 'broker', type: 'broker', label: '12 trade + rates' },
+      { from: 'tradingManager', to: 'storage', type: 'persist', label: '13 history' },
+      { from: 'dataPlane', to: 'storage', type: 'persist', label: '14 logs' },
+      { from: 'realtime', to: 'frontend', type: 'event', label: '15 live updates' }
+    ];
+
+    const presets = {
+      full: {
+        title: 'Full System',
+        description: 'Control plane starts and monitors data-plane execution engines while the frontend connects to the active engine.',
+        layers: ['ui', 'control', 'data', 'broker', 'storage', 'event'],
+        connections: ['request', 'process', 'event', 'persist', 'broker']
+      },
+      creation: {
+        title: 'Execution Creation',
+        description: 'Focus on the create-execution path: frontend to control plane to process manager to data plane.',
+        layers: ['ui', 'control', 'data', 'storage', 'event'],
+        connections: ['request', 'process', 'event', 'persist']
+      },
+      broker: {
+        title: 'Broker Flow',
+        description: 'Focus on strategy execution and broker communication.',
+        layers: ['data', 'broker', 'storage'],
+        connections: ['request', 'broker', 'persist']
+      },
+      realtime: {
+        title: 'Realtime Monitoring',
+        description: 'Focus on heartbeats, websocket updates, and registry state.',
+        layers: ['ui', 'control', 'data', 'storage', 'event'],
+        connections: ['event', 'persist', 'request']
+      }
+    };
+
+    const connectionStyles = {
+      request: { color: '#60a5fa', label: 'REST / calls' },
+      process: { color: '#22c55e', label: 'Process lifecycle' },
+      event: { color: '#fb7185', label: 'Events / WebSocket' },
+      persist: { color: '#a78bfa', label: 'Persistence' },
+      broker: { color: '#f59e0b', label: 'Broker API' }
+    };
+
+    const state = {
+      preset: 'full',
+      zoom: 1,
+      layers: {},
+      connections: {},
+      selected: 'frontend'
+    };
+
+    const svg = document.getElementById('diagram');
+    const layerEl = document.getElementById('layers');
+    const connEl = document.getElementById('connections');
+    const presetEl = document.getElementById('presets');
+    const legendEl = document.getElementById('legend');
+    const promptOutput = document.getElementById('promptOutput');
+
+    function initialize() {
+      Object.keys(colors).forEach(layer => state.layers[layer] = true);
+      Object.keys(connectionStyles).forEach(type => state.connections[type] = true);
+      renderPresets();
+      renderToggles();
+      renderLegend();
+      applyPreset('full');
+      document.querySelectorAll('[data-zoom]').forEach(button => {
+        button.addEventListener('click', () => {
+          const value = Number(button.dataset.zoom);
+          state.zoom = value === 1 ? 1 : Math.max(0.65, Math.min(1.6, state.zoom + value));
+          updateAll();
+        });
+      });
+      document.getElementById('copyPrompt').addEventListener('click', copyPrompt);
+    }
+
+    function renderPresets() {
+      presetEl.innerHTML = Object.entries(presets).map(([id, preset]) =>
+        `<button class="preset" data-preset="${id}"><strong>${preset.title}</strong><br><span>${preset.description}</span></button>`
+      ).join('');
+      presetEl.querySelectorAll('button').forEach(button => {
+        button.addEventListener('click', () => applyPreset(button.dataset.preset));
+      });
+    }
+
+    function renderToggles() {
+      layerEl.innerHTML = Object.keys(colors).map(layer => checkbox('layer', layer, layer)).join('');
+      connEl.innerHTML = Object.entries(connectionStyles).map(([type, style]) => checkbox('connection', type, style.label)).join('');
+      document.querySelectorAll('[data-layer]').forEach(input => {
+        input.addEventListener('change', () => {
+          state.layers[input.dataset.layer] = input.checked;
+          updateAll();
+        });
+      });
+      document.querySelectorAll('[data-connection]').forEach(input => {
+        input.addEventListener('change', () => {
+          state.connections[input.dataset.connection] = input.checked;
+          updateAll();
+        });
+      });
+    }
+
+    function checkbox(kind, id, label) {
+      return `<label class="check"><input type="checkbox" checked data-${kind}="${id}"><span>${label}</span></label>`;
+    }
+
+    function renderLegend() {
+      legendEl.innerHTML = Object.entries(connectionStyles).map(([type, style]) =>
+        `<span class="pill"><span class="dot" style="background:${style.color}"></span>${style.label}</span>`
+      ).join('');
+    }
+
+    function applyPreset(id) {
+      const preset = presets[id];
+      state.preset = id;
+      Object.keys(state.layers).forEach(layer => state.layers[layer] = preset.layers.includes(layer));
+      Object.keys(state.connections).forEach(type => state.connections[type] = preset.connections.includes(type));
+      document.getElementById('viewTitle').textContent = preset.title;
+      document.getElementById('viewDescription').textContent = preset.description;
+      document.querySelectorAll('.preset').forEach(button => button.classList.toggle('active', button.dataset.preset === id));
+      syncCheckboxes();
+      updateAll();
+    }
+
+    function syncCheckboxes() {
+      document.querySelectorAll('[data-layer]').forEach(input => input.checked = state.layers[input.dataset.layer]);
+      document.querySelectorAll('[data-connection]').forEach(input => input.checked = state.connections[input.dataset.connection]);
+    }
+
+    function updateAll() {
+      renderDiagram();
+      renderDetails();
+      updatePrompt();
+      svg.style.transform = `scale(${state.zoom})`;
+    }
+
+    function renderDiagram() {
+      svg.innerHTML = defs();
+      const visibleNodes = nodes.filter(node => state.layers[node.layer]);
+      const visibleNodeIds = new Set(visibleNodes.map(node => node.id));
+      edges
+        .filter(edge => state.connections[edge.type] && visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to))
+        .forEach(drawEdge);
+      visibleNodes.forEach(drawNode);
+    }
+
+    function defs() {
+      return `<defs>${Object.entries(connectionStyles).map(([type, style]) =>
+        `<marker id="arrow-${type}" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><polygon points="0 0, 10 4, 0 8" fill="${style.color}"/></marker>`
+      ).join('')}</defs>`;
+    }
+
+    function drawEdge(edge) {
+      const from = nodes.find(node => node.id === edge.from);
+      const to = nodes.find(node => node.id === edge.to);
+      const style = connectionStyles[edge.type];
+      const start = anchor(from, to);
+      const end = anchor(to, from);
+      const dx = Math.max(80, Math.abs(end.x - start.x) * 0.45);
+      const path = `M ${start.x} ${start.y} C ${start.x + dx} ${start.y}, ${end.x - dx} ${end.y}, ${end.x} ${end.y}`;
+      const midX = (start.x + end.x) / 2;
+      const midY = (start.y + end.y) / 2 - 8;
+      svg.insertAdjacentHTML('beforeend', `
+        <path d="${path}" fill="none" stroke="${style.color}" stroke-width="3" marker-end="url(#arrow-${edge.type})" opacity="0.92"/>
+        <text class="edge-label" x="${midX}" y="${midY}" text-anchor="middle">${edge.label}</text>
+      `);
+    }
+
+    function anchor(node, other) {
+      const cx = node.x + node.w / 2;
+      const cy = node.y + node.h / 2;
+      const ocx = other.x + other.w / 2;
+      const ocy = other.y + other.h / 2;
+      if (Math.abs(ocx - cx) > Math.abs(ocy - cy)) {
+        return { x: ocx > cx ? node.x + node.w : node.x, y: cy };
+      }
+      return { x: cx, y: ocy > cy ? node.y + node.h : node.y };
+    }
+
+    function drawNode(node) {
+      const selected = state.selected === node.id;
+      const fill = colors[node.layer] || '#e5e7eb';
+      const step = nodes.indexOf(node) + 1;
+      svg.insertAdjacentHTML('beforeend', `
+        <g class="node" data-node="${node.id}">
+          <rect x="${node.x}" y="${node.y}" width="${node.w}" height="${node.h}" rx="18" fill="${fill}" stroke="${selected ? '#fff' : '#0f172a'}" stroke-width="${selected ? 5 : 2}"/>
+          <circle class="step-badge" cx="${node.x + 22}" cy="${node.y + 22}" r="18"/>
+          <text class="step-text" x="${node.x + 22}" y="${node.y + 29}" text-anchor="middle">${step}</text>
+          <text class="title" x="${node.x + 52}" y="${node.y + 28}">${node.title}</text>
+          <text class="subtitle" x="${node.x + 18}" y="${node.y + 56}">${node.subtitle}</text>
+        </g>
+      `);
+      svg.querySelector(`[data-node="${node.id}"]`).addEventListener('click', () => {
+        state.selected = node.id;
+        updateAll();
+      });
+    }
+
+    function renderDetails() {
+      const node = nodes.find(item => item.id === state.selected) || nodes[0];
+      document.getElementById('detailTitle').textContent = node.title;
+      document.getElementById('detailMeta').textContent = node.subtitle;
+      document.getElementById('detailBody').textContent = node.body;
+    }
+
+    function updatePrompt() {
+      const preset = presets[state.preset];
+      const visibleLayers = Object.entries(state.layers).filter(([, on]) => on).map(([layer]) => layer).join(', ');
+      const visibleConnections = Object.entries(state.connections).filter(([, on]) => on).map(([type]) => connectionStyles[type].label).join(', ');
+      const selected = nodes.find(node => node.id === state.selected);
+      promptOutput.value = `Review the Backtrading architecture using the ${preset.title} view. The visible layers are ${visibleLayers}. The visible connection types are ${visibleConnections}. Focus especially on ${selected.title} (${selected.subtitle}): ${selected.body}`;
+    }
+
+    async function copyPrompt() {
+      await navigator.clipboard.writeText(promptOutput.value);
+      const button = document.getElementById('copyPrompt');
+      const original = button.textContent;
+      button.textContent = 'Copied!';
+      setTimeout(() => button.textContent = original, 1200);
+    }
+
+    initialize();
+  </script>
+</body>
+</html>
