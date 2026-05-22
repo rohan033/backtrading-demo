@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass
@@ -25,6 +25,17 @@ class LTPData:
     ltp: float
 
 
+@dataclass
+class OrderActivity:
+    activity_type: str
+    order_id: str | None = None
+    position_id: str | None = None
+    status: str | None = None
+    instrument_id: str | None = None
+    source: str | None = None
+    raw: dict[str, Any] | None = None
+
+
 class TickClient(Protocol):
     async def aget_ltp_bulk(self, subscriptions: list[Subscription]) -> list[LTPData]:
         ...
@@ -38,4 +49,12 @@ class TickListener(Protocol):
         ...
 
     def get_required_subscriptions(self) -> list[Subscription]:
+        ...
+
+
+class OrderActivityListener(Protocol):
+    def enqueue_order_activity(self, activity: OrderActivity) -> None:
+        ...
+
+    async def handle_order_activity(self, activity: OrderActivity) -> None:
         ...
