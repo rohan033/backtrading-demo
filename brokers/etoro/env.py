@@ -5,6 +5,17 @@ from dotenv import dotenv_values, load_dotenv
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+ETORO_PUBLIC_API_BASE_URL = "https://public-api.etoro.com/api/v1"
+ETORO_ENV_PATHS = {
+    "demo": {
+        "info": "/trading/info/demo",
+        "execution": "/trading/execution/demo",
+    },
+    "live": {
+        "info": "/trading/info/real",
+        "execution": "/trading/execution",
+    },
+}
 
 
 def load_etoro_env(account_env: str | None = None) -> str:

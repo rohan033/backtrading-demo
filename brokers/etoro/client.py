@@ -9,7 +9,7 @@ from typing import Any
 
 from logzero import logger
 
-from brokers.etoro.env import etoro_env_values, normalize_etoro_api_env
+from brokers.etoro.env import ETORO_ENV_PATHS, ETORO_PUBLIC_API_BASE_URL, etoro_env_values, normalize_etoro_api_env
 
 
 class EtoroApiError(Exception):
@@ -35,7 +35,8 @@ class EtoroClient:
         self.access_token = config.get("ETORO_ACCESS_TOKEN")
         self.account_env = loaded_env
         self.env = normalize_etoro_api_env(loaded_env if account_env else config.get("ETORO_ENV", loaded_env))
-        self.base_url = config.get("ETORO_BASE_URL", "https://public-api.etoro.com/api/v1")
+        self.base_url = ETORO_PUBLIC_API_BASE_URL
+        self._paths = ETORO_ENV_PATHS[self.account_env]
         self.timeout = float(config.get("ETORO_TIMEOUT_SECONDS", "20"))
         self.leverage = int(config.get("ETORO_LEVERAGE", "1"))
         self._session = {"env": self.env, "account_env": self.account_env}
@@ -214,7 +215,7 @@ class EtoroClient:
         return None
 
     def execution_base_path(self) -> str:
-        return "/trading/execution/demo" if self.env == "demo" else "/trading/execution"
+        return self._paths["execution"]
 
     def info_base_path(self) -> str:
-        return f"/trading/info/{self.env}"
+        return self._paths["info"]
