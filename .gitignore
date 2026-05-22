@@ -1,6 +1,8 @@
 # Virtual environment
 .ven/
 .env
+.demo.env
+.live.env
 .claude/    
 # Python cache files
 __pycache__/

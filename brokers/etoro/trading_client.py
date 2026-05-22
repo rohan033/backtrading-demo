@@ -2,12 +2,11 @@ from brokers.etoro.client import EtoroClient
 from brokers.interfaces import TickClient, Subscription, LTPData
 from logzero import logger
 import asyncio
-import os
 
 
 class EtoroTradingClient(EtoroClient, TickClient):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, account_env: str | None = None):
+        super().__init__(account_env=account_env)
 
     async def aget_ltp_bulk(self, subscriptions: list[Subscription]) -> list[LTPData]:
         """Fetch latest prices for multiple symbols from eToro."""
@@ -207,9 +206,8 @@ class EtoroTradingClient(EtoroClient, TickClient):
             "unique_order_id": unique_order_id,
         }
 
-    @staticmethod
-    def _default_leverage():
-        return int(os.getenv("ETORO_LEVERAGE", "1"))
+    def _default_leverage(self):
+        return self.leverage
 
     async def _place_market_open_by_amount(self, payload, side_label):
         try:

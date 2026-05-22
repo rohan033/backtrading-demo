@@ -33,6 +33,7 @@ class EngineRegistry:
                 symbol TEXT,
                 token TEXT,
                 strategy_name TEXT,
+                account_env TEXT NOT NULL DEFAULT 'live',
                 host TEXT NOT NULL,
                 port INTEGER NOT NULL,
                 api_base_url TEXT NOT NULL,
@@ -51,8 +52,15 @@ class EngineRegistry:
                 ON data_plane_engines(broker, symbol, strategy_name);
             """
         )
+        self._ensure_column(conn, "data_plane_engines", "account_env", "TEXT NOT NULL DEFAULT 'live'")
         conn.commit()
         conn.close()
+
+    @staticmethod
+    def _ensure_column(conn, table: str, column: str, definition: str) -> None:
+        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def ensure_default_engine(self) -> None:
         if self.list_engines():
@@ -66,6 +74,7 @@ class EngineRegistry:
                 "symbol": "*",
                 "token": "*",
                 "strategy_name": "default",
+                "account_env": "live",
                 "host": "localhost",
                 "port": 8080,
                 "api_base_url": "http://localhost:8080/api/live",
@@ -83,6 +92,7 @@ class EngineRegistry:
         ws_url = data.get("ws_url") or f"ws://{host}:{port}/ws/live"
         broker = data.get("broker") or "unknown"
         strategy_name = data.get("strategy_name") or "default"
+        account_env = _normalize_env(data.get("account_env"))
         symbol = data.get("symbol")
         label = data.get("label") or f"{broker}-{symbol or '*'}-strategy-{strategy_name}"
 
@@ -90,16 +100,17 @@ class EngineRegistry:
         conn.execute(
             """
             INSERT INTO data_plane_engines (
-                id, label, broker, symbol, token, strategy_name, host, port,
+                id, label, broker, symbol, token, strategy_name, account_env, host, port,
                 api_base_url, ws_url, status, pid, metadata_json,
                 created_at, updated_at, last_seen_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 label = excluded.label,
                 broker = excluded.broker,
                 symbol = excluded.symbol,
                 token = excluded.token,
                 strategy_name = excluded.strategy_name,
+                account_env = excluded.account_env,
                 host = excluded.host,
                 port = excluded.port,
                 api_base_url = excluded.api_base_url,
@@ -117,6 +128,7 @@ class EngineRegistry:
                 symbol,
                 data.get("token"),
                 strategy_name,
+                account_env,
                 host,
                 port,
                 api_base_url,
@@ -174,6 +186,11 @@ class EngineRegistry:
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_env(value: Any) -> str:
+    env = str(value or "live").lower()
+    return "demo" if env == "demo" else "live"
 
 
 def _json_dumps(value: Any) -> str | None:

@@ -7,6 +7,7 @@ const DEFAULT_DATA_PLANE = {
   label: 'angel-local-live-strategy-default',
   broker: 'angel',
   strategy_name: 'default',
+  account_env: 'live',
   api_base_url: '/api/live',
   ws_url: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/live`,
   status: 'unknown',
@@ -66,6 +67,14 @@ export default function ExecutionWorkspace() {
 
   const refreshExecutions = useCallback(async () => {
     try {
+      const infoRes = await fetch(`${liveApi}/engine-info`)
+      const infoData = await infoRes.json().catch(() => null)
+      if (infoData?.status && infoData.data) {
+        setDataPlanes(prev => prev.map(engine =>
+          engine.id === selectedDataPlane.id ? { ...engine, ...infoData.data } : engine,
+        ))
+      }
+
       const res = await fetch(`${liveApi}/executors`)
       const data = await res.json()
       if (!data.status) return
@@ -100,6 +109,11 @@ export default function ExecutionWorkspace() {
     ws.onmessage = (evt) => {
       const msg = JSON.parse(evt.data)
       if (msg.type === 'snapshot') {
+        if (msg.engine) {
+          setDataPlanes(prev => prev.map(engine =>
+            engine.id === selectedDataPlane.id ? { ...engine, ...msg.engine } : engine,
+          ))
+        }
         const snapshotExecutions = (msg.executors || []).map(execution => normalizeExecution(execution, selectedDataPlane))
         setExecutions(snapshotExecutions)
         setSelectedExecutionId(prev => prev || snapshotExecutions[0]?.executor_id || null)
@@ -257,7 +271,7 @@ function ExecutionSidePanel({
           >
             {dataPlanes.map(engine => (
               <option key={engine.id} value={engine.id}>
-                {engine.label || engine.id} ({engine.port || '-'})
+                {engine.label || engine.id} ({engine.port || '-'}, {envLabel(engine.account_env)})
               </option>
             ))}
           </select>
@@ -276,7 +290,9 @@ function ExecutionSidePanel({
             <div className="flex items-start justify-between gap-2">
               <div className="min-w-0">
                 <div className="text-[11px] font-bold truncate">{ex.label}</div>
-                <div className="text-[9px] text-text-secondary mt-1 truncate">{ex.executor_id}</div>
+                <div className="text-[9px] text-text-secondary mt-1 truncate">
+                  {ex.executor_id} · {envLabel(ex.account_env)}
+                </div>
               </div>
               <StatusBadge status={ex.status} />
             </div>
@@ -312,6 +328,7 @@ function WorkspaceHeader({ execution, dataPlane, wsConnected }) {
         </div>
       </div>
       <div className="flex items-center gap-3">
+        <EnvBadge env={execution?.account_env || dataPlane?.account_env} />
         {execution && execution.is_in_position && (
           <span className="text-[9px] bg-accent/20 text-accent px-2 py-1 rounded font-bold">IN POSITION</span>
         )}
@@ -475,10 +492,10 @@ function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefresh }) {
     <div className="p-4 space-y-4">
       <div className="grid grid-cols-5 gap-3">
         <StatCard label="Status" value={execution.status || 'UNKNOWN'} />
+        <StatCard label="Env" value={envLabel(execution.account_env)} colorClass={execution.account_env === 'demo' ? 'text-accent' : 'text-red'} />
         <StatCard label="LTP" value={latestTick ? latestTick.ltp.toFixed(2) : '-'} colorClass="text-accent" />
         <StatCard label="Take Profit" value={`${execution.long_percent ?? '-'}%`} colorClass="text-green" />
         <StatCard label="Stop Loss" value={`${execution.short_percent ?? '-'}%`} colorClass="text-red" />
-        <StatCard label="Capital" value={compactNumber(execution.max_available_capital)} />
       </div>
 
       <div className="bg-card border border-border rounded p-4">
@@ -841,6 +858,14 @@ function StatusBadge({ status }) {
   return <span className={`px-2 py-0.5 rounded text-[8px] font-bold ${color}`}>{normalized}</span>
 }
 
+function EnvBadge({ env }) {
+  const normalized = envLabel(env)
+  const color = normalized === 'DEMO'
+    ? 'bg-accent/20 text-accent'
+    : 'bg-red/20 text-red'
+  return <span className={`px-2 py-1 rounded text-[9px] font-bold ${color}`}>{normalized}</span>
+}
+
 function EmptyState({ title, body, action }) {
   return (
     <div className="p-8 text-center">
@@ -851,6 +876,10 @@ function EmptyState({ title, body, action }) {
   )
 }
 
+function envLabel(env) {
+  return String(env || 'live').toLowerCase() === 'demo' ? 'DEMO' : 'LIVE'
+}
+
 function normalizeExecution(executor, dataPlane = DEFAULT_DATA_PLANE) {
   const broker = executor.broker || dataPlane.broker || 'angel'
   const strategyName = executor.strategy_name || executor.strategy || dataPlane.strategy_name || 'default'
@@ -859,6 +888,7 @@ function normalizeExecution(executor, dataPlane = DEFAULT_DATA_PLANE) {
     broker,
     data_plane_id: dataPlane.id,
     data_plane_label: dataPlane.label,
+    account_env: executor.account_env || dataPlane.account_env || 'live',
     strategy_name: strategyName,
     label: executor.label || `${broker}-${executor.symbol}-strategy-${strategyName}`,
   }

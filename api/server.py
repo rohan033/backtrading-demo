@@ -110,6 +110,7 @@ class DataPlaneEngineRequest(BaseModel):
     symbol: Optional[str] = None
     token: Optional[str] = None
     strategy_name: str = "default"
+    account_env: str = "live"
     host: str = "localhost"
     port: int = 8080
     api_base_url: Optional[str] = None
@@ -125,6 +126,7 @@ class DataPlaneEngineUpdate(BaseModel):
     symbol: Optional[str] = None
     token: Optional[str] = None
     strategy_name: Optional[str] = None
+    account_env: Optional[str] = None
     host: Optional[str] = None
     port: Optional[int] = None
     api_base_url: Optional[str] = None

@@ -9,6 +9,8 @@ from typing import Any
 
 from logzero import logger
 
+from brokers.etoro.env import etoro_env_values, normalize_etoro_api_env
+
 
 class EtoroApiError(Exception):
     def __init__(self, message: str, status_code: int | None = None, payload: Any = None):
@@ -25,15 +27,18 @@ class EtoroRateLimitError(EtoroApiError):
 
 
 class EtoroClient:
-    def __init__(self):
+    def __init__(self, account_env: str | None = None):
+        loaded_env, config = etoro_env_values(account_env)
         self.name = "eToro"
-        self.api_key = os.getenv("ETORO_API_KEY")
-        self.user_key = os.getenv("ETORO_USER_KEY") or os.getenv("ETORO_ACCOUNT_ID")
-        self.access_token = os.getenv("ETORO_ACCESS_TOKEN")
-        self.env = os.getenv("ETORO_ENV", "demo").lower()
-        self.base_url = os.getenv("ETORO_BASE_URL", "https://public-api.etoro.com/api/v1")
-        self.timeout = float(os.getenv("ETORO_TIMEOUT_SECONDS", "20"))
-        self._session = {"env": self.env}
+        self.api_key = config.get("ETORO_API_KEY")
+        self.user_key = config.get("ETORO_USER_KEY") or config.get("ETORO_ACCOUNT_ID")
+        self.access_token = config.get("ETORO_ACCESS_TOKEN")
+        self.account_env = loaded_env
+        self.env = normalize_etoro_api_env(loaded_env if account_env else config.get("ETORO_ENV", loaded_env))
+        self.base_url = config.get("ETORO_BASE_URL", "https://public-api.etoro.com/api/v1")
+        self.timeout = float(config.get("ETORO_TIMEOUT_SECONDS", "20"))
+        self.leverage = int(config.get("ETORO_LEVERAGE", "1"))
+        self._session = {"env": self.env, "account_env": self.account_env}
 
     def generate_session(self):
         """Validate local eToro credentials.
@@ -49,7 +54,7 @@ class EtoroClient:
             raise ValueError("Missing eToro credentials: set ETORO_ACCESS_TOKEN or ETORO_API_KEY and ETORO_USER_KEY")
 
         if self.env not in {"demo", "real"}:
-            raise ValueError("ETORO_ENV must be 'demo' or 'real'")
+            raise ValueError("ETORO_ENV must be 'demo', 'live', or 'real'")
 
         logger.info("[eToro] Session configured for %s environment", self.env)
         return self._session

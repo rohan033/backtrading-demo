@@ -27,6 +27,7 @@ from logzero import logger
 from pydantic import BaseModel
 
 from brokers.interfaces import TickData
+from brokers.etoro.env import load_etoro_env
 from event.db_event_consumer import DbEventWriter
 from event.event_manager import EventManager
 from managers.strategy_executor import StrategyExecutor
@@ -64,8 +65,10 @@ class ConnectionManager:
 # ─── Live Engine ──────────────────────────────────────────────────────────────
 
 class LiveEngine:
-    def __init__(self, use_fake_client: bool = False):
+    def __init__(self, use_fake_client: bool = False, account_env: str = "live"):
         self.use_fake_client = use_fake_client
+        self.account_env = "demo" if account_env == "demo" else "live"
+        self.broker = "fake" if use_fake_client else "angel"
         self.client = None
         self.db_writer: Optional[DbEventWriter] = None
         self.event_manager: Optional[EventManager] = None
@@ -83,6 +86,8 @@ class LiveEngine:
             self.client = FakeTradingClient(tick_gen)
             logger.info("[ENGINE] Using FakeTradingClient (test mode)")
         else:
+            if self.account_env != "live":
+                logger.warning("[ENGINE] Angel broker only supports live mode; requested env=%s", self.account_env)
             from brokers.angel.trading_client import AngelOneTradingClient
             self.client = AngelOneTradingClient()
             self.client.generate_session()
@@ -101,7 +106,7 @@ class LiveEngine:
         await self.tick_provider.start()
 
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
-        logger.info("[ENGINE] Live engine started")
+        logger.info("[ENGINE] Live engine started broker=%s env=%s", self.broker, self.account_env)
 
     async def shutdown(self):
         await self.tick_provider.stop()
@@ -181,7 +186,7 @@ class LiveEngine:
 
         self._on_executor_status(req.executor_id, "RUNNING", False)
         logger.info("[ENGINE] Registered executor: %s for %s", req.executor_id, req.symbol)
-        return executor.get_state()
+        return self._executor_state(executor)
 
     async def remove_executor(self, executor_id: str):
         executor = self.executors.get(executor_id)
@@ -196,6 +201,20 @@ class LiveEngine:
 
         self._on_executor_status(executor_id, "STOPPED", False)
         logger.info("[ENGINE] Removed executor: %s", executor_id)
+
+    def engine_info(self) -> dict:
+        return {
+            "broker": self.broker,
+            "account_env": self.account_env,
+            "use_fake_client": self.use_fake_client,
+            "executor_count": len(self.executors),
+        }
+
+    def _executor_state(self, executor: StrategyExecutor) -> dict:
+        state = executor.get_state()
+        state["broker"] = self.broker
+        state["account_env"] = self.account_env
+        return state
 
 
 # ─── Request Models ───────────────────────────────────────────────────────────
@@ -221,7 +240,9 @@ engine: Optional[LiveEngine] = None
 async def lifespan(app: FastAPI):
     global engine
     use_fake = "--fake" in sys.argv
-    engine = LiveEngine(use_fake_client=use_fake)
+    account_env = _arg_value("--env", os.getenv("BROKER_ENV", "live"))
+    load_etoro_env(account_env)
+    engine = LiveEngine(use_fake_client=use_fake, account_env=account_env)
     await engine.start()
     yield
     await engine.shutdown()
@@ -244,7 +265,20 @@ def get_engine() -> LiveEngine:
     return engine
 
 
+def _arg_value(name: str, default: str) -> str:
+    if name not in sys.argv:
+        return default
+    idx = sys.argv.index(name)
+    if idx + 1 >= len(sys.argv):
+        return default
+    return sys.argv[idx + 1]
+
+
 # ─── REST Endpoints ───────────────────────────────────────────────────────────
+
+@app.get("/api/live/engine-info")
+async def get_engine_info():
+    return {"status": True, "data": get_engine().engine_info()}
 
 @app.get("/api/live/portfolio")
 async def get_portfolio():
@@ -324,7 +358,7 @@ async def remove_executor(executor_id: str):
 @app.get("/api/live/executors")
 async def list_executors():
     eng = get_engine()
-    states = [ex.get_state() for ex in eng.executors.values()]
+    states = [eng._executor_state(ex) for ex in eng.executors.values()]
     return {"status": True, "data": states}
 
 
@@ -382,7 +416,8 @@ async def websocket_live(ws: WebSocket):
     # Send snapshot on connect
     snapshot = {
         'type': 'snapshot',
-        'executors': [ex.get_state() for ex in eng.executors.values()],
+        'engine': eng.engine_info(),
+        'executors': [eng._executor_state(ex) for ex in eng.executors.values()],
     }
     await ws.send_json(snapshot)
 
@@ -402,6 +437,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Live Trading Engine Server")
     parser.add_argument("--port", type=int, default=int(os.getenv("LIVE_PORT", "8080")))
     parser.add_argument("--fake", action="store_true", help="Use fake broker for testing")
+    parser.add_argument("--env", choices=["demo", "live"], default=os.getenv("BROKER_ENV", "live"), help="Broker account environment")
     args = parser.parse_args()
 
     uvicorn.run(app, host="0.0.0.0", port=args.port)
