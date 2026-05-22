@@ -4,6 +4,7 @@ import socket
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,8 @@ from control_plane.engine_registry import EngineRegistry
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_ENGINE_ID = "local-live-engine"
+ACTIVE_ENGINE_STATUSES = {"starting", "running", "stale"}
 
 
 class EngineProcessManager:
@@ -125,7 +128,29 @@ class EngineProcessManager:
             except PermissionError:
                 os.kill(int(pid), signal.SIGTERM)
 
-        return self.registry.update_engine(engine_id, {"status": "stopped"})
+        return self.registry.update_engine(
+            engine_id,
+            {
+                "status": "stopped",
+                "pid": None,
+                "stopped_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
+    def stop_all_engines(self) -> list[dict[str, Any]]:
+        stopped: list[dict[str, Any]] = []
+        for engine in self.registry.list_engines():
+            engine_id = engine.get("id")
+            if not engine_id or engine_id == DEFAULT_ENGINE_ID:
+                continue
+            if not engine.get("pid"):
+                continue
+            if engine.get("status") not in ACTIVE_ENGINE_STATUSES:
+                continue
+            result = self.stop_engine(engine_id)
+            if result:
+                stopped.append(result)
+        return stopped
 
     def allocate_port(self) -> int:
         used_ports = {int(engine["port"]) for engine in self.registry.list_engines() if engine.get("port")}

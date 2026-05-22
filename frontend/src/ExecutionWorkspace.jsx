@@ -32,6 +32,7 @@ export default function ExecutionWorkspace() {
   const [selectedDataPlaneId, setSelectedDataPlaneId] = useState(DEFAULT_DATA_PLANE.id)
   const [selectedExecutionId, setSelectedExecutionId] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [duplicateDraft, setDuplicateDraft] = useState(null)
   const [controlledExecutions, setControlledExecutions] = useState([])
   const [selectedLaunchId, setSelectedLaunchId] = useState(null)
   const [wsConnected, setWsConnected] = useState(false)
@@ -265,12 +266,43 @@ export default function ExecutionWorkspace() {
   }, [liveWs, activeTab, connectionPlane?.id])
 
   const createExecution = () => {
+    setDuplicateDraft(null)
     setShowCreate(true)
     setActiveTab('strategy')
   }
 
+  const duplicateExecution = async (executionItem) => {
+    if (!executionItem?.execution_id) return
+    try {
+      const res = await fetch(`${CONTROL_API}/executions/${executionItem.execution_id}/duplicate-template`)
+      const data = await res.json()
+      if (!res.ok) {
+        console.error('[DuplicateExecution] failed', data.detail || data.message)
+        return
+      }
+      setDuplicateDraft(data.data)
+      setShowCreate(true)
+      setActiveTab('strategy')
+    } catch (err) {
+      console.error('[DuplicateExecution] request failed', err)
+    }
+  }
+
+  const onExecutionStopped = async (executionId) => {
+    await refreshDataPlanes()
+    await refreshControlledExecutions()
+    await refreshExecutions()
+    if (selectedExecutionId === executionId) {
+      setSelectedExecutionId(null)
+    }
+    if (selectedDataPlaneId === executionId) {
+      setSelectedDataPlaneId(DEFAULT_DATA_PLANE.id)
+    }
+  }
+
   const onExecutionCreated = async (executionId) => {
     setShowCreate(false)
+    setDuplicateDraft(null)
     await refreshControlledExecutions()
     setSelectedLaunchId(executionId)
     setActiveTab('launch')
@@ -326,7 +358,14 @@ export default function ExecutionWorkspace() {
 
         <section className="flex-1 overflow-auto">
           {showCreate ? (
-            <CreateExecutionPanel onCreated={onExecutionCreated} onCancel={() => setShowCreate(false)} />
+            <CreateExecutionPanel
+              duplicateDraft={duplicateDraft}
+              onCreated={onExecutionCreated}
+              onCancel={() => {
+                setDuplicateDraft(null)
+                setShowCreate(false)
+              }}
+            />
           ) : (
             <>
               {activeTab === 'launch' && (
@@ -335,6 +374,8 @@ export default function ExecutionWorkspace() {
                   selectedLaunchId={selectedLaunch?.execution_id}
                   onSelect={setSelectedLaunchId}
                   onStarted={onExecutionStarted}
+                  onStopped={onExecutionStopped}
+                  onDuplicate={duplicateExecution}
                   onRefresh={refreshControlledExecutions}
                 />
               )}
@@ -840,9 +881,10 @@ function HistoricalEventsTab({ liveApi }) {
   )
 }
 
-function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onRefresh }) {
+function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onStopped, onDuplicate, onRefresh }) {
   const selected = executions.find(item => item.execution_id === selectedLaunchId) || executions[0] || null
   const [starting, setStarting] = useState(false)
+  const [stopping, setStopping] = useState(false)
   const [error, setError] = useState('')
   const [startInfo, setStartInfo] = useState(null)
 
@@ -888,6 +930,27 @@ function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onRefres
     }
   }
 
+  const stopExecution = async () => {
+    if (!selected) return
+    setStopping(true)
+    setError('')
+    try {
+      const res = await fetch(`${CONTROL_API}/executions/${selected.execution_id}/stop`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setError(data.detail || 'Failed to stop live server')
+        return
+      }
+      setStartInfo(null)
+      await onRefresh()
+      await onStopped(selected.execution_id)
+    } catch (err) {
+      setError(err.message || 'Failed to stop execution')
+    } finally {
+      setStopping(false)
+    }
+  }
+
   if (!executions.length) {
     return (
       <EmptyState
@@ -901,6 +964,7 @@ function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onRefres
   const executor = selected?.executor || {}
   const status = String(engine.status || 'pending').toUpperCase()
   const canStart = ['PENDING', 'STOPPED', 'FAILED', 'STALE'].includes(status)
+  const canStop = ['STARTING', 'RUNNING', 'STALE'].includes(status)
 
   return (
     <div className="p-5 max-w-5xl">
@@ -963,15 +1027,29 @@ function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onRefres
 
           {error && <div className="text-xs text-red">{error}</div>}
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <button
               onClick={startExecution}
-              disabled={starting || !canStart}
+              disabled={starting || stopping || !canStart}
               className="px-5 py-2 bg-green text-white rounded text-xs font-bold disabled:opacity-50"
             >
               {starting ? 'Starting live server...' : status === 'RUNNING' ? 'Already running' : 'Start Live Server'}
             </button>
-            {!canStart && status !== 'RUNNING' && (
+            <button
+              onClick={stopExecution}
+              disabled={starting || stopping || !canStop}
+              className="px-5 py-2 bg-red text-white rounded text-xs font-bold disabled:opacity-50"
+            >
+              {stopping ? 'Stopping...' : 'Stop Live Server'}
+            </button>
+            <button
+              onClick={() => onDuplicate(selected)}
+              disabled={starting || stopping}
+              className="px-5 py-2 bg-card border border-border rounded text-xs font-bold disabled:opacity-50"
+            >
+              Duplicate
+            </button>
+            {!canStart && status !== 'RUNNING' && !canStop && (
               <span className="text-[10px] text-text-secondary">Status: {status}</span>
             )}
           </div>
@@ -981,7 +1059,7 @@ function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onRefres
   )
 }
 
-function CreateExecutionPanel({ onCreated, onCancel }) {
+function CreateExecutionPanel({ duplicateDraft, onCreated, onCancel }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [selectedStock, setSelectedStock] = useState(null)
@@ -1000,6 +1078,33 @@ function CreateExecutionPanel({ onCreated, onCancel }) {
   })
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => {
+    if (!duplicateDraft?.template) return
+    const template = duplicateDraft.template
+    const executor = duplicateDraft.executor || {}
+    setForm({
+      broker: template.broker || 'angel',
+      account_env: template.account_env || 'live',
+      strategy_name: template.strategy_name || 'one-percent',
+      executor_id: template.executor_id || '',
+      close_price: String(template.close_price ?? executor.close_price ?? ''),
+      long_percent: String(template.long_percent ?? executor.long_percent ?? '1.0'),
+      short_percent: String(template.short_percent ?? executor.short_percent ?? '10.0'),
+      initial_threshold: String(template.initial_threshold ?? executor.initial_threshold ?? '0.2'),
+      max_available_capital: String(template.max_available_capital ?? executor.max_available_capital ?? '100000'),
+      use_fake_client: Boolean(template.use_fake_client),
+      client_mode: template.client_mode || 'standard',
+    })
+    setSelectedStock({
+      tradingsymbol: template.symbol || executor.symbol,
+      symboltoken: template.token || executor.token,
+      exchange: template.exchange || executor.exchange || 'NSE',
+    })
+    setResults([])
+    setQuery('')
+    setError('')
+  }, [duplicateDraft])
 
   const search = async () => {
     if (!query.trim()) return
@@ -1084,8 +1189,12 @@ function CreateExecutionPanel({ onCreated, onCancel }) {
     <div className="p-5 max-w-4xl">
       <div className="flex items-center justify-between mb-5">
         <div>
-          <h2 className="text-sm font-bold">Create Execution</h2>
-          <p className="text-[10px] text-text-secondary mt-1">Save the execution config. Start the live server from the Launch tab.</p>
+          <h2 className="text-sm font-bold">{duplicateDraft ? 'Duplicate Execution' : 'Create Execution'}</h2>
+          <p className="text-[10px] text-text-secondary mt-1">
+            {duplicateDraft
+              ? 'Edit the copied config, then save as a new pending execution.'
+              : 'Save the execution config. Start the live server from the Launch tab.'}
+          </p>
         </div>
         <button onClick={onCancel} className="text-xs text-text-secondary hover:text-text-primary">Cancel</button>
       </div>
@@ -1163,7 +1272,7 @@ function CreateExecutionPanel({ onCreated, onCancel }) {
 
       {error && <div className="mt-4 text-xs text-red">{error}</div>}
       <button onClick={submit} disabled={submitting} className="mt-5 px-5 py-2 bg-green text-white rounded text-xs font-bold disabled:opacity-50">
-        {submitting ? 'Creating...' : 'Create Execution'}
+        {submitting ? 'Saving...' : duplicateDraft ? 'Save Duplicate' : 'Create Execution'}
       </button>
     </div>
   )

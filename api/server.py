@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import asyncio
 import json
+import uuid
 
 from client import TotpClient
 from strategy import Strategy
@@ -172,6 +173,10 @@ async def stop_engine_sweeper():
             await _engine_sweeper_task
         except asyncio.CancelledError:
             pass
+
+    stopped = engine_process_manager.stop_all_engines()
+    if stopped:
+        log.info("[CONTROL] Shutdown stopped %d live trading server(s)", len(stopped))
 
 
 async def _mark_stale_engines_loop():
@@ -449,6 +454,85 @@ def start_controlled_execution(execution_id: str):
             "api_base_url": started.get("api_base_url"),
             "ws_url": started.get("ws_url"),
             "log_file": log_file,
+        },
+    }
+
+
+@app.get("/api/control/executions/{execution_id}")
+def get_controlled_execution(execution_id: str):
+    engine = engine_registry.get_engine(execution_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    metadata = engine.get("metadata") or {}
+    if metadata.get("source") != "controlled_execution":
+        raise HTTPException(status_code=400, detail="Not a controlled execution")
+
+    return {
+        "status": True,
+        "data": {
+            "execution_id": execution_id,
+            "engine": engine,
+            "executor": metadata.get("executor_payload"),
+        },
+    }
+
+
+@app.get("/api/control/executions/{execution_id}/duplicate-template")
+def duplicate_execution_template(execution_id: str):
+    engine = engine_registry.get_engine(execution_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    metadata = engine.get("metadata") or {}
+    if metadata.get("source") != "controlled_execution":
+        raise HTTPException(status_code=400, detail="Not a controlled execution")
+
+    config = dict(metadata.get("execution_config") or {})
+    executor_payload = dict(metadata.get("executor_payload") or {})
+    base_id = config.get("executor_id") or execution_id
+    copy_id = f"{base_id}-copy-{uuid.uuid4().hex[:8]}"
+    config["executor_id"] = copy_id
+    executor_payload["executor_id"] = copy_id
+
+    return {
+        "status": True,
+        "data": {
+            "template": config,
+            "executor": executor_payload,
+            "source_execution_id": execution_id,
+        },
+    }
+
+
+@app.post("/api/control/executions/{execution_id}/stop")
+def stop_controlled_execution(execution_id: str):
+    engine = engine_registry.get_engine(execution_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    metadata = engine.get("metadata") or {}
+    if metadata.get("source") != "controlled_execution":
+        raise HTTPException(status_code=400, detail="Not a controlled execution")
+
+    if engine.get("pid") and engine.get("status") in {"starting", "running", "stale"}:
+        stopped = engine_process_manager.stop_engine(execution_id)
+    else:
+        stopped = engine_registry.update_engine(
+            execution_id,
+            {"status": "stopped", "pid": None},
+        )
+
+    if not stopped:
+        raise HTTPException(status_code=500, detail="Failed to stop execution")
+
+    log.info("[CONTROL] Stopped execution %s", execution_id)
+    return {
+        "status": True,
+        "data": {
+            "execution_id": execution_id,
+            "engine": stopped,
+            "executor": metadata.get("executor_payload"),
         },
     }
 
