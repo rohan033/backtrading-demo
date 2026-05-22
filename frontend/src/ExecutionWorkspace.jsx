@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
 
-const LIVE_API = '/api/live'
-const LIVE_WS = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/live`
+const CONTROL_API = '/api/control'
+const DEFAULT_DATA_PLANE = {
+  id: 'local-live-engine',
+  label: 'angel-local-live-strategy-default',
+  broker: 'angel',
+  strategy_name: 'default',
+  api_base_url: '/api/live',
+  ws_url: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/live`,
+  status: 'unknown',
+}
 
 const TABS = [
   { id: 'chart', label: 'Chart' },
@@ -16,6 +24,8 @@ const TABS = [
 export default function ExecutionWorkspace() {
   const [activeTab, setActiveTab] = useState('chart')
   const [executions, setExecutions] = useState([])
+  const [dataPlanes, setDataPlanes] = useState([DEFAULT_DATA_PLANE])
+  const [selectedDataPlaneId, setSelectedDataPlaneId] = useState(DEFAULT_DATA_PLANE.id)
   const [selectedExecutionId, setSelectedExecutionId] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
   const [wsConnected, setWsConnected] = useState(false)
@@ -26,18 +36,41 @@ export default function ExecutionWorkspace() {
   const wsRef = useRef(null)
   const reconnectRef = useRef(null)
 
+  const selectedDataPlane = useMemo(
+    () => dataPlanes.find(engine => engine.id === selectedDataPlaneId) || dataPlanes[0] || DEFAULT_DATA_PLANE,
+    [dataPlanes, selectedDataPlaneId],
+  )
+  const liveApi = selectedDataPlane?.api_base_url || DEFAULT_DATA_PLANE.api_base_url
+  const liveWs = selectedDataPlane?.ws_url || DEFAULT_DATA_PLANE.ws_url
+
   const selectedExecution = useMemo(
     () => executions.find(ex => ex.executor_id === selectedExecutionId) || executions[0] || null,
     [executions, selectedExecutionId],
   )
 
+  const refreshDataPlanes = useCallback(async () => {
+    try {
+      const res = await fetch(`${CONTROL_API}/engines`)
+      const data = await res.json()
+      const engines = data.status && data.data?.length ? data.data : [DEFAULT_DATA_PLANE]
+      setDataPlanes(engines)
+      setSelectedDataPlaneId(prev => {
+        if (prev && engines.some(engine => engine.id === prev)) return prev
+        return engines[0]?.id || DEFAULT_DATA_PLANE.id
+      })
+    } catch {
+      setDataPlanes([DEFAULT_DATA_PLANE])
+      setSelectedDataPlaneId(DEFAULT_DATA_PLANE.id)
+    }
+  }, [])
+
   const refreshExecutions = useCallback(async () => {
     try {
-      const res = await fetch(`${LIVE_API}/executors`)
+      const res = await fetch(`${liveApi}/executors`)
       const data = await res.json()
       if (!data.status) return
 
-      const nextExecutions = (data.data || []).map(normalizeExecution)
+      const nextExecutions = (data.data || []).map(execution => normalizeExecution(execution, selectedDataPlane))
       setExecutions(nextExecutions)
       setSelectedExecutionId(prev => {
         if (prev && nextExecutions.some(ex => ex.executor_id === prev)) return prev
@@ -46,12 +79,12 @@ export default function ExecutionWorkspace() {
     } catch {
       setExecutions([])
     }
-  }, [])
+  }, [liveApi, selectedDataPlane])
 
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return
 
-    const ws = new WebSocket(LIVE_WS)
+    const ws = new WebSocket(liveWs)
     wsRef.current = ws
 
     ws.onopen = () => {
@@ -67,7 +100,7 @@ export default function ExecutionWorkspace() {
     ws.onmessage = (evt) => {
       const msg = JSON.parse(evt.data)
       if (msg.type === 'snapshot') {
-        const snapshotExecutions = (msg.executors || []).map(normalizeExecution)
+        const snapshotExecutions = (msg.executors || []).map(execution => normalizeExecution(execution, selectedDataPlane))
         setExecutions(snapshotExecutions)
         setSelectedExecutionId(prev => prev || snapshotExecutions[0]?.executor_id || null)
         return
@@ -96,9 +129,19 @@ export default function ExecutionWorkspace() {
         setRealtimeEvents(prev => [msg, ...prev].slice(0, 300))
       }
     }
-  }, [])
+  }, [liveWs, selectedDataPlane])
 
   useEffect(() => {
+    refreshDataPlanes()
+  }, [refreshDataPlanes])
+
+  useEffect(() => {
+    if (wsRef.current) {
+      wsRef.current.close()
+      wsRef.current = null
+    }
+    setExecutions([])
+    setSelectedExecutionId(null)
     refreshExecutions()
     connectWs()
     return () => {
@@ -121,6 +164,13 @@ export default function ExecutionWorkspace() {
   return (
     <div className="h-full flex overflow-hidden bg-primary">
       <ExecutionSidePanel
+        dataPlanes={dataPlanes}
+        selectedDataPlaneId={selectedDataPlane.id}
+        onSelectDataPlane={id => {
+          setSelectedDataPlaneId(id)
+          setShowCreate(false)
+          setActiveTab('chart')
+        }}
         executions={executions}
         selectedExecutionId={selectedExecution?.executor_id}
         wsConnected={wsConnected}
@@ -133,29 +183,30 @@ export default function ExecutionWorkspace() {
       />
 
       <main className="flex-1 flex flex-col overflow-hidden">
-        <WorkspaceHeader execution={selectedExecution} wsConnected={wsConnected} />
+        <WorkspaceHeader execution={selectedExecution} dataPlane={selectedDataPlane} wsConnected={wsConnected} />
         <TabBar activeTab={activeTab} setActiveTab={setActiveTab} />
 
         <section className="flex-1 overflow-auto">
           {showCreate ? (
-            <CreateExecutionPanel onRegistered={onRegistered} onCancel={() => setShowCreate(false)} />
+            <CreateExecutionPanel liveApi={liveApi} onRegistered={onRegistered} onCancel={() => setShowCreate(false)} />
           ) : (
             <>
               {activeTab === 'chart' && (
                 <ChartTab execution={selectedExecution} tickHistory={tickHistory} realtimeEvents={realtimeEvents} />
               )}
-              {activeTab === 'portfolio' && <PortfolioTab ticks={ticks} />}
+              {activeTab === 'portfolio' && <PortfolioTab liveApi={liveApi} ticks={ticks} />}
               {activeTab === 'strategy' && (
                 <StrategyTab
                   execution={selectedExecution}
                   latestTick={selectedExecution ? ticks[selectedExecution.token] : null}
+                  liveApi={liveApi}
                   onCreate={createExecution}
                   onRefresh={refreshExecutions}
                 />
               )}
-              {activeTab === 'orders' && <OrderManagementTab execution={selectedExecution} realtimeEvents={realtimeEvents} />}
-              {activeTab === 'events' && <TradingEventsTab execution={selectedExecution} realtimeEvents={realtimeEvents} />}
-              {activeTab === 'history' && <HistoricalEventsTab />}
+              {activeTab === 'orders' && <OrderManagementTab liveApi={liveApi} execution={selectedExecution} realtimeEvents={realtimeEvents} />}
+              {activeTab === 'events' && <TradingEventsTab liveApi={liveApi} execution={selectedExecution} realtimeEvents={realtimeEvents} />}
+              {activeTab === 'history' && <HistoricalEventsTab liveApi={liveApi} />}
             </>
           )}
         </section>
@@ -164,7 +215,16 @@ export default function ExecutionWorkspace() {
   )
 }
 
-function ExecutionSidePanel({ executions, selectedExecutionId, wsConnected, onSelect, onCreate }) {
+function ExecutionSidePanel({
+  dataPlanes,
+  selectedDataPlaneId,
+  onSelectDataPlane,
+  executions,
+  selectedExecutionId,
+  wsConnected,
+  onSelect,
+  onCreate,
+}) {
   return (
     <aside className="w-[310px] bg-secondary border-r border-border flex flex-col shrink-0">
       <div className="p-4 border-b border-border">
@@ -188,6 +248,21 @@ function ExecutionSidePanel({ executions, selectedExecutionId, wsConnected, onSe
       </div>
 
       <div className="flex-1 overflow-auto p-3 space-y-2">
+        <div className="mb-4">
+          <label className="text-[8px] uppercase tracking-widest text-text-secondary block mb-1">Data Plane</label>
+          <select
+            value={selectedDataPlaneId}
+            onChange={event => onSelectDataPlane(event.target.value)}
+            className="w-full bg-card border border-border rounded px-2 py-2 text-[10px] outline-none focus:border-accent"
+          >
+            {dataPlanes.map(engine => (
+              <option key={engine.id} value={engine.id}>
+                {engine.label || engine.id} ({engine.port || '-'})
+              </option>
+            ))}
+          </select>
+        </div>
+
         {executions.map(ex => (
           <button
             key={ex.executor_id}
@@ -226,13 +301,14 @@ function ExecutionSidePanel({ executions, selectedExecutionId, wsConnected, onSe
   )
 }
 
-function WorkspaceHeader({ execution, wsConnected }) {
+function WorkspaceHeader({ execution, dataPlane, wsConnected }) {
   return (
     <div className="px-5 py-3 bg-secondary border-b border-border flex items-center justify-between shrink-0">
       <div>
         <div className="text-sm font-bold">{execution?.label || 'No execution selected'}</div>
         <div className="text-[10px] text-text-secondary mt-0.5">
           {execution ? `${execution.symbol} (${execution.token}) · ${execution.strategy_name}` : 'Create an execution to begin'}
+          <span className="ml-2">· Data plane: {dataPlane?.host || 'local'}:{dataPlane?.port || '-'}</span>
         </div>
       </div>
       <div className="flex items-center gap-3">
@@ -346,17 +422,17 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
   return <div ref={containerRef} className="w-full h-[420px]" />
 }
 
-function PortfolioTab({ ticks }) {
+function PortfolioTab({ ticks, liveApi = DEFAULT_DATA_PLANE.api_base_url }) {
   const [holdings, setHoldings] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch(`${LIVE_API}/portfolio`)
+    fetch(`${liveApi}/portfolio`)
       .then(res => res.json())
       .then(data => { if (data.status) setHoldings(data.data || []) })
       .catch(() => setHoldings([]))
       .finally(() => setLoading(false))
-  }, [])
+  }, [liveApi])
 
   if (loading) return <EmptyState title="Loading portfolio" body="Fetching holdings from the live API." />
   if (!holdings.length) return <EmptyState title="No portfolio data" body="No holdings were returned by the active broker client." />
@@ -384,7 +460,7 @@ function PortfolioTab({ ticks }) {
   )
 }
 
-function StrategyTab({ execution, latestTick, onCreate, onRefresh }) {
+function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefresh }) {
   if (!execution) {
     return (
       <EmptyState
@@ -423,17 +499,17 @@ function StrategyTab({ execution, latestTick, onCreate, onRefresh }) {
   )
 }
 
-function OrderManagementTab({ execution, realtimeEvents }) {
+function OrderManagementTab({ liveApi, execution, realtimeEvents }) {
   const [orders, setOrders] = useState({})
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    fetch(`${LIVE_API}/orders`)
+    fetch(`${liveApi}/orders`)
       .then(res => res.json())
       .then(data => { if (data.status) setOrders(data.data || {}) })
       .catch(() => setOrders({}))
       .finally(() => setLoading(false))
-  }, [realtimeEvents.length])
+  }, [liveApi, realtimeEvents.length])
 
   if (loading) return <EmptyState title="Loading orders" body="Fetching current order manager state." />
 
@@ -458,15 +534,15 @@ function OrderManagementTab({ execution, realtimeEvents }) {
   )
 }
 
-function TradingEventsTab({ execution, realtimeEvents }) {
+function TradingEventsTab({ liveApi, execution, realtimeEvents }) {
   const [dbEvents, setDbEvents] = useState([])
 
   useEffect(() => {
-    fetch(`${LIVE_API}/events?limit=100`)
+    fetch(`${liveApi}/events?limit=100`)
       .then(res => res.json())
       .then(data => { if (data.status) setDbEvents(data.data || []) })
       .catch(() => setDbEvents([]))
-  }, [realtimeEvents.length])
+  }, [liveApi, realtimeEvents.length])
 
   const events = [...realtimeEvents, ...dbEvents]
     .filter(event => !execution || event.executor_id === execution.executor_id || event.details?.executor_id === execution.executor_id)
@@ -475,14 +551,14 @@ function TradingEventsTab({ execution, realtimeEvents }) {
   return <EventList events={events} emptyTitle="No trading events yet" />
 }
 
-function HistoricalEventsTab() {
+function HistoricalEventsTab({ liveApi }) {
   const [sessions, setSessions] = useState([])
   const [selectedSessionId, setSelectedSessionId] = useState('')
   const [events, setEvents] = useState([])
   const [fallbackEvents, setFallbackEvents] = useState([])
 
   useEffect(() => {
-    fetch(`${LIVE_API}/order-activity/sessions`)
+    fetch(`${liveApi}/order-activity/sessions`)
       .then(res => (res.ok ? res.json() : Promise.reject(new Error('not wired'))))
       .then(data => {
         const rows = data.data || data.sessions || []
@@ -490,20 +566,20 @@ function HistoricalEventsTab() {
         setSelectedSessionId(rows[0]?.id || '')
       })
       .catch(() => {
-        fetch(`${LIVE_API}/events?limit=100`)
+        fetch(`${liveApi}/events?limit=100`)
           .then(res => res.json())
           .then(data => { if (data.status) setFallbackEvents(data.data || []) })
           .catch(() => setFallbackEvents([]))
       })
-  }, [])
+  }, [liveApi])
 
   useEffect(() => {
     if (!selectedSessionId) return
-    fetch(`${LIVE_API}/order-activity/sessions/${selectedSessionId}/events?limit=300`)
+    fetch(`${liveApi}/order-activity/sessions/${selectedSessionId}/events?limit=300`)
       .then(res => res.json())
       .then(data => setEvents(data.data || data.events || []))
       .catch(() => setEvents([]))
-  }, [selectedSessionId])
+  }, [liveApi, selectedSessionId])
 
   if (!sessions.length) {
     return (
@@ -539,7 +615,7 @@ function HistoricalEventsTab() {
   )
 }
 
-function CreateExecutionPanel({ onRegistered, onCancel }) {
+function CreateExecutionPanel({ liveApi, onRegistered, onCancel }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [selectedStock, setSelectedStock] = useState(null)
@@ -558,7 +634,7 @@ function CreateExecutionPanel({ onRegistered, onCancel }) {
 
   const search = async () => {
     if (!query.trim()) return
-    const res = await fetch(`${LIVE_API}/search?q=${encodeURIComponent(query)}`)
+    const res = await fetch(`${liveApi}/search?q=${encodeURIComponent(query)}`)
     const data = await res.json()
     setResults(data.data || [])
   }
@@ -578,7 +654,7 @@ function CreateExecutionPanel({ onRegistered, onCancel }) {
     setSubmitting(true)
     setError('')
     try {
-      const res = await fetch(`${LIVE_API}/executors`, {
+      const res = await fetch(`${liveApi}/executors`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -775,12 +851,14 @@ function EmptyState({ title, body, action }) {
   )
 }
 
-function normalizeExecution(executor) {
-  const broker = executor.broker || 'angel'
-  const strategyName = executor.strategy_name || executor.strategy || 'default'
+function normalizeExecution(executor, dataPlane = DEFAULT_DATA_PLANE) {
+  const broker = executor.broker || dataPlane.broker || 'angel'
+  const strategyName = executor.strategy_name || executor.strategy || dataPlane.strategy_name || 'default'
   return {
     ...executor,
     broker,
+    data_plane_id: dataPlane.id,
+    data_plane_label: dataPlane.label,
     strategy_name: strategyName,
     label: executor.label || `${broker}-${executor.symbol}-strategy-${strategyName}`,
   }

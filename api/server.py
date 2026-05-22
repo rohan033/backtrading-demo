@@ -17,6 +17,7 @@ from client import TotpClient
 from strategy import Strategy
 from backtesting import Backtesting
 from api.manual_robo_routes import router as manual_robo_router
+from control_plane.engine_registry import EngineRegistry
 
 load_dotenv()
 
@@ -41,6 +42,8 @@ app.include_router(manual_robo_router)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 TRADE_FEE = 25  # ₹25 per buy-sell round trip
+engine_registry = EngineRegistry()
+engine_registry.ensure_default_engine()
 
 # ── Global client ──
 _client: Optional[TotpClient] = None
@@ -100,7 +103,78 @@ class BacktestRequest(BaseModel):
     interval: str = "ONE_MINUTE"
 
 
+class DataPlaneEngineRequest(BaseModel):
+    id: Optional[str] = None
+    label: Optional[str] = None
+    broker: str = "angel"
+    symbol: Optional[str] = None
+    token: Optional[str] = None
+    strategy_name: str = "default"
+    host: str = "localhost"
+    port: int = 8080
+    api_base_url: Optional[str] = None
+    ws_url: Optional[str] = None
+    status: str = "unknown"
+    pid: Optional[int] = None
+    metadata: Optional[dict] = None
+
+
+class DataPlaneEngineUpdate(BaseModel):
+    label: Optional[str] = None
+    broker: Optional[str] = None
+    symbol: Optional[str] = None
+    token: Optional[str] = None
+    strategy_name: Optional[str] = None
+    host: Optional[str] = None
+    port: Optional[int] = None
+    api_base_url: Optional[str] = None
+    ws_url: Optional[str] = None
+    status: Optional[str] = None
+    pid: Optional[int] = None
+    metadata: Optional[dict] = None
+
+
 # ── Endpoints ──
+
+@app.get("/api/control/engines")
+def list_data_plane_engines(status: Optional[str] = None):
+    return {"status": True, "data": engine_registry.list_engines(status=status)}
+
+
+@app.get("/api/control/engines/{engine_id}")
+def get_data_plane_engine(engine_id: str):
+    engine = engine_registry.get_engine(engine_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Data-plane engine not found")
+    return {"status": True, "data": engine}
+
+
+@app.post("/api/control/engines")
+def register_data_plane_engine(req: DataPlaneEngineRequest):
+    return {"status": True, "data": engine_registry.upsert_engine(req.model_dump(exclude_none=True))}
+
+
+@app.patch("/api/control/engines/{engine_id}")
+def update_data_plane_engine(engine_id: str, req: DataPlaneEngineUpdate):
+    engine = engine_registry.update_engine(engine_id, req.model_dump(exclude_none=True))
+    if not engine:
+        raise HTTPException(status_code=404, detail="Data-plane engine not found")
+    return {"status": True, "data": engine}
+
+
+@app.post("/api/control/engines/{engine_id}/heartbeat")
+def heartbeat_data_plane_engine(engine_id: str):
+    engine = engine_registry.mark_seen(engine_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Data-plane engine not found")
+    return {"status": True, "data": engine}
+
+
+@app.delete("/api/control/engines/{engine_id}")
+def delete_data_plane_engine(engine_id: str):
+    if not engine_registry.delete_engine(engine_id):
+        raise HTTPException(status_code=404, detail="Data-plane engine not found")
+    return {"status": True}
 
 @app.get("/api/portfolio")
 def get_portfolio():
