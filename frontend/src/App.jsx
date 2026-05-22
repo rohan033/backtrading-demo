@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { createChart } from 'lightweight-charts'
 import ManualRobo from './ManualRobo'
-import LiveTrading from './LiveTrading'
+import ExecutionWorkspace from './ExecutionWorkspace'
 
 const API_BASE = '/api'
 const WS_BASE = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
@@ -584,6 +584,7 @@ export default function App() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* ── Left Sidebar ── */}
+        {view !== 'live' && (
         <aside className="w-[300px] bg-secondary border-r border-border flex flex-col shrink-0 overflow-hidden">
           {/* Portfolio Section */}
           <div className="p-4 flex-1 overflow-y-auto">
@@ -612,11 +613,12 @@ export default function App() {
             </div>
           </div>
         </aside>
+        )}
 
         {/* ── Main Content ── */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {view === 'live' ? (
-            <LiveTrading />
+            <ExecutionWorkspace />
           ) : view === 'robo' ? (
             <ManualRobo />
           ) : view === 'compound' ? (
