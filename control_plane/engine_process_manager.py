@@ -83,7 +83,7 @@ class EngineProcessManager:
         if broker == "fake" or data.get("use_fake_client"):
             cmd.append("--fake")
 
-        log_file = self._log_file(engine_id)
+        log_file = self._log_file(label)
         env = {**os.environ, "PYTHONUNBUFFERED": "1"}
         with log_file.open("a") as stream:
             process = subprocess.Popen(
@@ -144,10 +144,10 @@ class EngineProcessManager:
         return True
 
     @staticmethod
-    def _log_file(engine_id: str) -> Path:
-        log_dir = REPO_ROOT / "logs" / "control_plane"
+    def _log_file(name: str) -> Path:
+        log_dir = REPO_ROOT / "logs" / "executions"
         log_dir.mkdir(parents=True, exist_ok=True)
-        return log_dir / f"{engine_id}.log"
+        return log_dir / f"{_safe_filename(name)}.log"
 
 
 def _normalize_env(value: Any) -> str:
@@ -158,3 +158,8 @@ def _engine_id(broker: str, symbol: str | None, strategy_name: str, account_env:
     suffix = str(uuid.uuid4())[:8]
     base = f"{broker}-{symbol or 'all'}-strategy-{strategy_name}-{account_env}-{suffix}".lower()
     return "".join(ch if ch.isalnum() else "-" for ch in base).strip("-")
+
+
+def _safe_filename(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value.lower())
+    return safe.strip("-") or "execution"
