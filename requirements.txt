@@ -7,3 +7,4 @@ pyotp
 logzero
 tabulate
 websockets
+requests

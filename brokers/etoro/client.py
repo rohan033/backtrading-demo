@@ -1,5 +1,6 @@
 import os
 import json
+import shlex
 import time
 import urllib.error
 import urllib.parse
@@ -9,7 +10,7 @@ from typing import Any
 
 from logzero import logger
 
-from brokers.etoro.env import ETORO_ENV_PATHS, ETORO_PUBLIC_API_BASE_URL, etoro_env_values, normalize_etoro_api_env
+from brokers.etoro.env import ETORO_ENV_PATHS, ETORO_HTTP_USER_AGENT, ETORO_PUBLIC_API_BASE_URL, etoro_env_values, normalize_etoro_api_env
 
 
 class EtoroApiError(Exception):
@@ -40,6 +41,15 @@ class EtoroClient:
         self.timeout = float(config.get("ETORO_TIMEOUT_SECONDS", "20"))
         self.leverage = int(config.get("ETORO_LEVERAGE", "1"))
         self._session = {"env": self.env, "account_env": self.account_env}
+        logger.info(
+            "[eToro] Client credentials loaded account_env=%s api_env=%s "
+            "ETORO_API_KEY=%r ETORO_USER_KEY=%r ETORO_ACCESS_TOKEN=%r",
+            self.account_env,
+            self.env,
+            self.api_key,
+            self.user_key,
+            self.access_token,
+        )
 
     def generate_session(self):
         """Validate local eToro credentials.
@@ -60,11 +70,13 @@ class EtoroClient:
         logger.info("[eToro] Session configured for %s environment", self.env)
         return self._session
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, *, include_json_content_type: bool = False) -> dict[str, str]:
         headers = {
-            "Content-Type": "application/json",
+            "User-Agent": ETORO_HTTP_USER_AGENT,
             "x-request-id": str(uuid.uuid4()),
         }
+        if include_json_content_type:
+            headers["Content-Type"] = "application/json"
         if self.access_token:
             headers["Authorization"] = f"Bearer {self.access_token}"
         else:
@@ -109,7 +121,10 @@ class EtoroClient:
 
         last_error: Exception | None = None
         for attempt in range(attempts):
-            request = urllib.request.Request(url, data=body, headers=self._headers(), method=method.upper())
+            headers = self._headers(include_json_content_type=body is not None)
+            if attempt == 0:
+                logger.info("[eToro] curl equivalent: %s", self._to_curl(method, url, headers, body))
+            request = urllib.request.Request(url, data=body, headers=headers, method=method.upper())
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     raw = response.read().decode("utf-8")
@@ -132,6 +147,20 @@ class EtoroClient:
                 time.sleep([0.2, 0.6, 1.5][min(attempt, 2)])
 
         raise EtoroApiError(f"eToro request failed: {last_error}")
+
+    @staticmethod
+    def _to_curl(
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None = None,
+    ) -> str:
+        parts = ["curl", "-X", method.upper(), shlex.quote(url)]
+        for key, value in headers.items():
+            parts.extend(["-H", shlex.quote(f"{key}: {value}")])
+        if body:
+            parts.extend(["-d", shlex.quote(body.decode("utf-8"))])
+        return " ".join(parts)
 
     @staticmethod
     def _read_error_payload(exc: urllib.error.HTTPError) -> Any:

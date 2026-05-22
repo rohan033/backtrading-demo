@@ -16,6 +16,7 @@ const DEFAULT_DATA_PLANE = {
 }
 
 const TABS = [
+  { id: 'launch', label: 'Launch' },
   { id: 'chart', label: 'Chart' },
   { id: 'portfolio', label: 'Portfolio' },
   { id: 'strategy', label: 'Strategy' },
@@ -31,6 +32,8 @@ export default function ExecutionWorkspace() {
   const [selectedDataPlaneId, setSelectedDataPlaneId] = useState(DEFAULT_DATA_PLANE.id)
   const [selectedExecutionId, setSelectedExecutionId] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
+  const [controlledExecutions, setControlledExecutions] = useState([])
+  const [selectedLaunchId, setSelectedLaunchId] = useState(null)
   const [wsConnected, setWsConnected] = useState(false)
   const [ticks, setTicks] = useState({})
   const [tickHistory, setTickHistory] = useState({})
@@ -38,28 +41,89 @@ export default function ExecutionWorkspace() {
 
   const wsRef = useRef(null)
   const reconnectRef = useRef(null)
+  const dataPlanesRef = useRef(dataPlanes)
+
+  useEffect(() => {
+    dataPlanesRef.current = dataPlanes
+  }, [dataPlanes])
 
   const selectedDataPlane = useMemo(
     () => dataPlanes.find(engine => engine.id === selectedDataPlaneId) || dataPlanes[0] || DEFAULT_DATA_PLANE,
     [dataPlanes, selectedDataPlaneId],
   )
-  const liveApi = selectedDataPlane?.api_base_url || DEFAULT_DATA_PLANE.api_base_url
-  const liveWs = selectedDataPlane?.ws_url || DEFAULT_DATA_PLANE.ws_url
 
   const selectedExecution = useMemo(
-    () => executions.find(ex => ex.executor_id === selectedExecutionId) || executions[0] || null,
+    () => executions.find(ex => ex.executor_id === selectedExecutionId) || null,
     [executions, selectedExecutionId],
   )
+
+  const connectionPlane = useMemo(() => {
+    if (selectedExecution?.data_plane_id && selectedExecution?.ws_url) {
+      return {
+        id: selectedExecution.data_plane_id,
+        api_base_url: selectedExecution.api_base_url,
+        ws_url: selectedExecution.ws_url,
+        label: selectedExecution.data_plane_label,
+        port: selectedExecution.data_plane_port,
+        status: selectedExecution.data_plane_status,
+      }
+    }
+    if (selectedDataPlane?.port > 0 && selectedDataPlane?.ws_url) {
+      return selectedDataPlane
+    }
+    return null
+  }, [selectedExecution, selectedDataPlane])
+
+  const liveApi = connectionPlane?.api_base_url || ''
+  const liveWs = connectionPlane?.ws_url || ''
+
+  const executionEvents = useMemo(() => {
+    if (!selectedExecution) return realtimeEvents
+    return realtimeEvents.filter(event =>
+      event.executor_id === selectedExecution.executor_id
+      || event.details?.executor_id === selectedExecution.executor_id,
+    )
+  }, [realtimeEvents, selectedExecution])
+
+  const selectedLaunch = useMemo(
+    () => controlledExecutions.find(item => item.execution_id === selectedLaunchId) || controlledExecutions[0] || null,
+    [controlledExecutions, selectedLaunchId],
+  )
+
+  const refreshControlledExecutions = useCallback(async () => {
+    try {
+      const res = await fetch(`${CONTROL_API}/executions`)
+      const data = await res.json()
+      const rows = data.status ? (data.data || []) : []
+      setControlledExecutions(rows)
+      setSelectedLaunchId(prev => {
+        if (prev && rows.some(item => item.execution_id === prev)) return prev
+        return rows[0]?.execution_id || null
+      })
+    } catch {
+      setControlledExecutions([])
+      setSelectedLaunchId(null)
+    }
+  }, [])
 
   const refreshDataPlanes = useCallback(async () => {
     try {
       const res = await fetch(`${CONTROL_API}/engines`)
       const data = await res.json()
-      const engines = data.status && data.data?.length ? data.data : [DEFAULT_DATA_PLANE]
-      setDataPlanes(engines)
+      const engines = data.status && data.data?.length
+        ? data.data.filter(engine => engine.status !== 'pending' && Number(engine.port) > 0)
+        : [DEFAULT_DATA_PLANE]
+
+      setDataPlanes(prev => {
+        const next = engines.length ? engines : [DEFAULT_DATA_PLANE]
+        const prevKey = JSON.stringify(prev.map(engine => [engine.id, engine.status, engine.port, engine.updated_at]))
+        const nextKey = JSON.stringify(next.map(engine => [engine.id, engine.status, engine.port, engine.updated_at]))
+        return prevKey === nextKey ? prev : next
+      })
       setSelectedDataPlaneId(prev => {
-        if (prev && engines.some(engine => engine.id === prev)) return prev
-        return engines[0]?.id || DEFAULT_DATA_PLANE.id
+        const list = engines.length ? engines : [DEFAULT_DATA_PLANE]
+        if (prev && list.some(engine => engine.id === prev)) return prev
+        return list[0]?.id || DEFAULT_DATA_PLANE.id
       })
     } catch {
       setDataPlanes([DEFAULT_DATA_PLANE])
@@ -68,56 +132,78 @@ export default function ExecutionWorkspace() {
   }, [])
 
   const refreshExecutions = useCallback(async () => {
-    try {
-      const infoRes = await fetch(`${liveApi}/engine-info`)
-      const infoData = await infoRes.json().catch(() => null)
-      if (infoData?.status && infoData.data) {
-        setDataPlanes(prev => prev.map(engine =>
-          engine.id === selectedDataPlane.id ? { ...engine, ...infoData.data } : engine,
-        ))
+    const planes = dataPlanesRef.current.filter(engine => Number(engine.port) > 0 && engine.status !== 'pending')
+    const allExecutions = []
+
+    await Promise.all(planes.map(async (plane) => {
+      try {
+        const res = await fetch(`${plane.api_base_url}/executors`)
+        const data = await res.json()
+        if (!data.status) return
+        allExecutions.push(...(data.data || []).map(execution => normalizeExecution(execution, plane)))
+      } catch {
+        // Ignore unreachable data planes while polling.
       }
+    }))
 
-      const res = await fetch(`${liveApi}/executors`)
-      const data = await res.json()
-      if (!data.status) return
+    setExecutions(prev => {
+      const prevKey = JSON.stringify(prev.map(ex => [ex.executor_id, ex.status, ex.is_in_position, ex.data_plane_status]))
+      const nextKey = JSON.stringify(allExecutions.map(ex => [ex.executor_id, ex.status, ex.is_in_position, ex.data_plane_status]))
+      return prevKey === nextKey ? prev : allExecutions
+    })
+    setSelectedExecutionId(prev => {
+      if (prev && allExecutions.some(ex => ex.executor_id === prev)) return prev
+      return allExecutions[0]?.executor_id || null
+    })
+  }, [])
 
-      const nextExecutions = (data.data || []).map(execution => normalizeExecution(execution, selectedDataPlane))
-      setExecutions(nextExecutions)
-      setSelectedExecutionId(prev => {
-        if (prev && nextExecutions.some(ex => ex.executor_id === prev)) return prev
-        return nextExecutions[0]?.executor_id || null
-      })
-    } catch {
-      setExecutions([])
-    }
-  }, [liveApi, selectedDataPlane])
+  useEffect(() => {
+    refreshDataPlanes()
+    refreshControlledExecutions()
+    const intervalId = setInterval(refreshDataPlanes, 15000)
+    return () => clearInterval(intervalId)
+  }, [refreshDataPlanes, refreshControlledExecutions])
 
-  const connectWs = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
+  const dataPlaneIdsKey = useMemo(
+    () => dataPlanes.map(engine => `${engine.id}:${engine.status}:${engine.port}`).join('|'),
+    [dataPlanes],
+  )
 
-    const ws = new WebSocket(liveWs)
-    wsRef.current = ws
+  useEffect(() => {
+    refreshExecutions()
+    const intervalId = setInterval(refreshExecutions, 10000)
+    return () => clearInterval(intervalId)
+  }, [dataPlaneIdsKey, refreshExecutions])
 
-    ws.onopen = () => {
-      setWsConnected(true)
+  useEffect(() => {
+    if (activeTab === 'launch' || !liveWs) {
+      if (wsRef.current) {
+        wsRef.current.close()
+        wsRef.current = null
+      }
       if (reconnectRef.current) clearTimeout(reconnectRef.current)
-    }
-
-    ws.onclose = () => {
       setWsConnected(false)
-      reconnectRef.current = setTimeout(connectWs, 3000)
+      return undefined
     }
 
-    ws.onmessage = (evt) => {
+    let cancelled = false
+    let socket = null
+    const planeForMessages = connectionPlane || DEFAULT_DATA_PLANE
+    const planeId = planeForMessages.id
+
+    const handleMessage = (evt) => {
       const msg = JSON.parse(evt.data)
       if (msg.type === 'snapshot') {
-        if (msg.engine) {
-          setDataPlanes(prev => prev.map(engine =>
-            engine.id === selectedDataPlane.id ? { ...engine, ...msg.engine } : engine,
-          ))
-        }
-        const snapshotExecutions = (msg.executors || []).map(execution => normalizeExecution(execution, selectedDataPlane))
-        setExecutions(snapshotExecutions)
+        const snapshotExecutions = (msg.executors || []).map(execution =>
+          normalizeExecution(execution, planeForMessages),
+        )
+        setExecutions(prev => {
+          const others = prev.filter(ex => ex.data_plane_id !== planeId)
+          const next = [...others, ...snapshotExecutions]
+          const prevKey = JSON.stringify(prev.map(ex => [ex.executor_id, ex.status, ex.data_plane_id]))
+          const nextKey = JSON.stringify(next.map(ex => [ex.executor_id, ex.status, ex.data_plane_id]))
+          return prevKey === nextKey ? prev : next
+        })
         setSelectedExecutionId(prev => prev || snapshotExecutions[0]?.executor_id || null)
         return
       }
@@ -145,39 +231,60 @@ export default function ExecutionWorkspace() {
         setRealtimeEvents(prev => [msg, ...prev].slice(0, 300))
       }
     }
-  }, [liveWs, selectedDataPlane])
 
-  useEffect(() => {
-    refreshDataPlanes()
-  }, [refreshDataPlanes])
+    const connect = () => {
+      if (cancelled) return
+      socket = new WebSocket(liveWs)
+      wsRef.current = socket
 
-  useEffect(() => {
-    if (wsRef.current) {
-      wsRef.current.close()
+      socket.onopen = () => {
+        if (!cancelled) setWsConnected(true)
+      }
+
+      socket.onclose = () => {
+        setWsConnected(false)
+        if (!cancelled) {
+          reconnectRef.current = setTimeout(connect, 3000)
+        }
+      }
+
+      socket.onmessage = handleMessage
+    }
+
+    setTicks({})
+    setTickHistory({})
+    setRealtimeEvents([])
+    connect()
+
+    return () => {
+      cancelled = true
+      if (reconnectRef.current) clearTimeout(reconnectRef.current)
+      socket?.close()
       wsRef.current = null
     }
-    setExecutions([])
-    setSelectedExecutionId(null)
-    refreshExecutions()
-    connectWs()
-    return () => {
-      if (wsRef.current) wsRef.current.close()
-      if (reconnectRef.current) clearTimeout(reconnectRef.current)
-    }
-  }, [connectWs, refreshExecutions])
+  }, [liveWs, activeTab, connectionPlane?.id])
 
   const createExecution = () => {
     setShowCreate(true)
     setActiveTab('strategy')
   }
 
-  const onRegistered = async (engine) => {
+  const onExecutionCreated = async (executionId) => {
     setShowCreate(false)
+    await refreshControlledExecutions()
+    setSelectedLaunchId(executionId)
+    setActiveTab('launch')
+  }
+
+  const onExecutionStarted = async (engine, executor) => {
+    await refreshDataPlanes()
+    await refreshControlledExecutions()
+    await refreshExecutions()
     if (engine?.id) {
       setSelectedDataPlaneId(engine.id)
-      await refreshDataPlanes()
-    } else {
-      await refreshExecutions()
+    }
+    if (executor?.executor_id) {
+      setSelectedExecutionId(executor.executor_id)
     }
     setActiveTab('chart')
   }
@@ -195,8 +302,13 @@ export default function ExecutionWorkspace() {
         executions={executions}
         selectedExecutionId={selectedExecution?.executor_id}
         wsConnected={wsConnected}
+        connectionPlane={connectionPlane}
         onSelect={id => {
+          const execution = executions.find(ex => ex.executor_id === id)
           setSelectedExecutionId(id)
+          if (execution?.data_plane_id) {
+            setSelectedDataPlaneId(execution.data_plane_id)
+          }
           setShowCreate(false)
           setActiveTab('chart')
         }}
@@ -204,18 +316,39 @@ export default function ExecutionWorkspace() {
       />
 
       <main className="flex-1 flex flex-col overflow-hidden">
-        <WorkspaceHeader execution={selectedExecution} dataPlane={selectedDataPlane} wsConnected={wsConnected} />
+        <WorkspaceHeader
+          execution={selectedExecution}
+          dataPlane={connectionPlane || selectedDataPlane}
+          wsConnected={wsConnected}
+          liveApi={liveApi}
+        />
         <TabBar activeTab={activeTab} setActiveTab={setActiveTab} />
 
         <section className="flex-1 overflow-auto">
           {showCreate ? (
-            <CreateExecutionPanel searchApi={liveApi} onRegistered={onRegistered} onCancel={() => setShowCreate(false)} />
+            <CreateExecutionPanel onCreated={onExecutionCreated} onCancel={() => setShowCreate(false)} />
           ) : (
             <>
-              {activeTab === 'chart' && (
-                <ChartTab execution={selectedExecution} tickHistory={tickHistory} realtimeEvents={realtimeEvents} />
+              {activeTab === 'launch' && (
+                <LaunchTab
+                  executions={controlledExecutions}
+                  selectedLaunchId={selectedLaunch?.execution_id}
+                  onSelect={setSelectedLaunchId}
+                  onStarted={onExecutionStarted}
+                  onRefresh={refreshControlledExecutions}
+                />
               )}
-              {activeTab === 'portfolio' && <PortfolioTab liveApi={liveApi} ticks={ticks} />}
+              {activeTab === 'chart' && (
+                <ChartTab
+                  execution={selectedExecution}
+                  connectionPlane={connectionPlane}
+                  tickHistory={tickHistory}
+                  realtimeEvents={executionEvents}
+                />
+              )}
+              {activeTab === 'portfolio' && (
+                <PortfolioTab liveApi={liveApi || DEFAULT_DATA_PLANE.api_base_url} ticks={ticks} execution={selectedExecution} />
+              )}
               {activeTab === 'strategy' && (
                 <StrategyTab
                   execution={selectedExecution}
@@ -225,9 +358,15 @@ export default function ExecutionWorkspace() {
                   onRefresh={refreshExecutions}
                 />
               )}
-              {activeTab === 'orders' && <OrderManagementTab liveApi={liveApi} execution={selectedExecution} realtimeEvents={realtimeEvents} />}
-              {activeTab === 'events' && <TradingEventsTab liveApi={liveApi} execution={selectedExecution} realtimeEvents={realtimeEvents} />}
-              {activeTab === 'history' && <HistoricalEventsTab liveApi={liveApi} />}
+              {activeTab === 'orders' && (
+                <OrderManagementTab liveApi={liveApi || DEFAULT_DATA_PLANE.api_base_url} execution={selectedExecution} realtimeEvents={executionEvents} />
+              )}
+              {activeTab === 'events' && (
+                <TradingEventsTab liveApi={liveApi || DEFAULT_DATA_PLANE.api_base_url} execution={selectedExecution} realtimeEvents={executionEvents} />
+              )}
+              {activeTab === 'history' && (
+                <HistoricalEventsTab liveApi={liveApi || DEFAULT_DATA_PLANE.api_base_url} execution={selectedExecution} />
+              )}
             </>
           )}
         </section>
@@ -243,6 +382,7 @@ function ExecutionSidePanel({
   executions,
   selectedExecutionId,
   wsConnected,
+  connectionPlane,
   onSelect,
   onCreate,
 }) {
@@ -264,7 +404,11 @@ function ExecutionSidePanel({
         </div>
         <div className="flex items-center gap-2 text-[9px] text-text-secondary">
           <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green' : 'bg-red'}`} />
-          {wsConnected ? 'Realtime connected' : 'Realtime disconnected'}
+          {wsConnected
+            ? `Connected · port ${connectionPlane?.port || '-'}`
+            : connectionPlane?.port
+              ? 'Reconnecting...'
+              : 'Select a running execution'}
         </div>
       </div>
 
@@ -286,7 +430,7 @@ function ExecutionSidePanel({
 
         {executions.map(ex => (
           <button
-            key={ex.executor_id}
+            key={`${ex.data_plane_id}:${ex.executor_id}`}
             onClick={() => onSelect(ex.executor_id)}
             className={`w-full text-left p-3 rounded border transition-colors ${
               selectedExecutionId === ex.executor_id
@@ -303,6 +447,14 @@ function ExecutionSidePanel({
                 <div className="text-[9px] text-text-secondary mt-1 truncate">
                   {ex.symbol || '-'} · {instrumentLabel(ex.broker)} {ex.token || '-'}
                 </div>
+                <div className="text-[9px] text-text-secondary mt-1 truncate">
+                  server :{ex.data_plane_port || '-'} · {ex.data_plane_status || 'unknown'}
+                </div>
+                {ex.log_file ? (
+                  <div className="text-[9px] text-text-secondary mt-1 truncate font-mono" title={ex.log_file}>
+                    log {ex.log_file}
+                  </div>
+                ) : null}
               </div>
               <StatusBadge status={ex.status} />
             </div>
@@ -327,14 +479,18 @@ function ExecutionSidePanel({
   )
 }
 
-function WorkspaceHeader({ execution, dataPlane, wsConnected }) {
+function WorkspaceHeader({ execution, dataPlane, wsConnected, liveApi }) {
   return (
     <div className="px-5 py-3 bg-secondary border-b border-border flex items-center justify-between shrink-0">
       <div>
         <div className="text-sm font-bold">{execution?.label || 'No execution selected'}</div>
         <div className="text-[10px] text-text-secondary mt-0.5">
           {execution ? `${execution.symbol} · ${instrumentLabel(execution.broker)} ${execution.token || '-'} · ${execution.strategy_name}` : 'Create an execution to begin'}
-          <span className="ml-2">· Data plane: {dataPlane?.host || 'local'}:{dataPlane?.port || '-'}</span>
+          <span className="ml-2">· Live server :{dataPlane?.port || '-'}</span>
+          {liveApi ? <span className="ml-2">· {liveApi}</span> : null}
+          {execution?.log_file ? (
+            <div className="mt-1 font-mono break-all">Log: {execution.log_file}</div>
+          ) : null}
         </div>
       </div>
       <div className="flex items-center gap-3">
@@ -373,8 +529,11 @@ function TabBar({ activeTab, setActiveTab }) {
   )
 }
 
-function ChartTab({ execution, tickHistory, realtimeEvents }) {
+function ChartTab({ execution, connectionPlane, tickHistory, realtimeEvents }) {
   if (!execution) return <EmptyState title="No execution selected" body="Create or select an execution from the left panel." />
+  if (!connectionPlane?.ws_url) {
+    return <EmptyState title="Live server not running" body="Start this execution from the Launch tab to connect its websocket and chart." />
+  }
   return (
     <div className="p-4 space-y-4">
       <div className="bg-card border border-border rounded">
@@ -452,11 +611,17 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
   return <div ref={containerRef} className="w-full h-[420px]" />
 }
 
-function PortfolioTab({ ticks, liveApi = DEFAULT_DATA_PLANE.api_base_url }) {
+function PortfolioTab({ ticks, liveApi, execution }) {
   const [holdings, setHoldings] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
+    if (!liveApi) {
+      setHoldings([])
+      setLoading(false)
+      return undefined
+    }
+    setLoading(true)
     fetch(`${liveApi}/portfolio`)
       .then(res => res.json())
       .then(data => { if (data.status) setHoldings(data.data || []) })
@@ -464,7 +629,10 @@ function PortfolioTab({ ticks, liveApi = DEFAULT_DATA_PLANE.api_base_url }) {
       .finally(() => setLoading(false))
   }, [liveApi])
 
-  if (loading) return <EmptyState title="Loading portfolio" body="Fetching holdings from the live API." />
+  if (!liveApi) {
+    return <EmptyState title="No live server connected" body="Select a running execution to view its broker portfolio." />
+  }
+  if (loading) return <EmptyState title="Loading portfolio" body={`Fetching holdings from ${liveApi}`} />
   if (!holdings.length) return <EmptyState title="No portfolio data" body="No holdings were returned by the active broker client." />
 
   return (
@@ -486,6 +654,22 @@ function PortfolioTab({ ticks, liveApi = DEFAULT_DATA_PLANE.api_base_url }) {
           ]
         })}
       />
+    </div>
+  )
+}
+
+function ServerInfoPanel({ port, apiBaseUrl, wsUrl, logFile, pending = false }) {
+  return (
+    <div className="grid grid-cols-1 gap-2 text-xs bg-secondary border border-border rounded p-3">
+      <div><span className="text-text-secondary">Port:</span> <span className="font-mono">{port || '-'}</span></div>
+      <div><span className="text-text-secondary">API:</span> <span className="font-mono break-all">{apiBaseUrl || '-'}</span></div>
+      {wsUrl ? (
+        <div><span className="text-text-secondary">WebSocket:</span> <span className="font-mono break-all">{wsUrl}</span></div>
+      ) : null}
+      <div>
+        <span className="text-text-secondary">Log file:</span>{' '}
+        <span className="font-mono break-all">{logFile || (pending ? 'Created when live server starts' : '-')}</span>
+      </div>
     </div>
   )
 }
@@ -512,13 +696,23 @@ function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefresh }) {
         <StatCard label="LTP" value={latestTick ? latestTick.ltp.toFixed(2) : '-'} colorClass="text-accent" />
       </div>
 
+      <ServerInfoPanel
+        port={execution.data_plane_port}
+        apiBaseUrl={execution.api_base_url || liveApi}
+        wsUrl={execution.ws_url}
+        logFile={execution.log_file}
+        pending={!execution.log_file && !execution.data_plane_port}
+      />
+
       <div className="bg-card border border-border rounded p-4">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-xs font-bold uppercase tracking-[1.5px]">Strategy Details</h3>
           <button onClick={onRefresh} className="text-[10px] text-accent hover:text-text-primary">Refresh</button>
         </div>
         <dl className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs">
-          {Object.entries(execution).map(([key, value]) => (
+          {Object.entries(execution)
+            .filter(([key]) => !['api_base_url', 'ws_url', 'log_file', 'data_plane_id', 'data_plane_label', 'data_plane_port', 'data_plane_status'].includes(key))
+            .map(([key, value]) => (
             <div key={key} className="flex justify-between gap-4 border-b border-border/30 pb-1">
               <dt className="text-text-secondary">{key}</dt>
               <dd className="font-mono text-right">{String(value ?? '-')}</dd>
@@ -646,7 +840,148 @@ function HistoricalEventsTab({ liveApi }) {
   )
 }
 
-function CreateExecutionPanel({ searchApi, onRegistered, onCancel }) {
+function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onRefresh }) {
+  const selected = executions.find(item => item.execution_id === selectedLaunchId) || executions[0] || null
+  const [starting, setStarting] = useState(false)
+  const [error, setError] = useState('')
+  const [startInfo, setStartInfo] = useState(null)
+
+  useEffect(() => {
+    setStartInfo(null)
+    setError('')
+  }, [selectedLaunchId])
+
+  const startExecution = async () => {
+    if (!selected) return
+    setStarting(true)
+    setError('')
+    setStartInfo(null)
+    try {
+      const res = await fetch(`${CONTROL_API}/executions/${selected.execution_id}/start`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setError(data.detail || 'Failed to start live server')
+        return
+      }
+
+      const { engine, executor, port, log_file: logFile, api_base_url: apiBaseUrl } = data.data
+      setStartInfo({ port, logFile, apiBaseUrl, engineId: engine.id })
+
+      const runningEngine = await waitForEngine(engine.id)
+      const executorRes = await fetch(`${runningEngine.api_base_url}/executors`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(executor),
+      })
+      const executorData = await executorRes.json()
+      if (!executorRes.ok) {
+        setError(executorData.detail || 'Live server started, but executor registration failed')
+        return
+      }
+
+      await onRefresh()
+      onStarted(runningEngine, executor)
+    } catch (err) {
+      setError(err.message || 'Failed to start execution')
+    } finally {
+      setStarting(false)
+    }
+  }
+
+  if (!executions.length) {
+    return (
+      <EmptyState
+        title="No executions queued"
+        body="Create an execution first, then come back here to start its live server."
+      />
+    )
+  }
+
+  const engine = selected?.engine || {}
+  const executor = selected?.executor || {}
+  const status = String(engine.status || 'pending').toUpperCase()
+  const canStart = ['PENDING', 'STOPPED', 'FAILED', 'STALE'].includes(status)
+
+  return (
+    <div className="p-5 max-w-5xl">
+      <div className="flex items-center justify-between mb-5">
+        <div>
+          <h2 className="text-sm font-bold">Launch Execution</h2>
+          <p className="text-[10px] text-text-secondary mt-1">
+            Start the live server when you are ready. You will get the port and log file path.
+          </p>
+        </div>
+        <button onClick={onRefresh} className="px-3 py-1.5 bg-card border border-border rounded text-[10px]">
+          Refresh
+        </button>
+      </div>
+
+      <div className="grid grid-cols-[280px_1fr] gap-4">
+        <aside className="space-y-2">
+          {executions.map(item => (
+            <button
+              key={item.execution_id}
+              onClick={() => onSelect(item.execution_id)}
+              className={`w-full text-left p-3 rounded border ${
+                selected?.execution_id === item.execution_id ? 'border-accent bg-accent/10' : 'border-border bg-card'
+              }`}
+            >
+              <div className="text-[11px] font-bold truncate">{item.engine?.label || item.execution_id}</div>
+              <div className="text-[9px] text-text-secondary mt-1 truncate">{item.execution_id}</div>
+              <div className="mt-2"><StatusBadge status={item.engine?.status || 'pending'} /></div>
+            </button>
+          ))}
+        </aside>
+
+        <div className="bg-card border border-border rounded p-4 space-y-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-bold">{engine.label || selected.execution_id}</div>
+              <div className="text-[10px] text-text-secondary mt-1">
+                {executor.symbol || engine.symbol} · {instrumentLabel(engine.broker)} {executor.token || engine.token}
+              </div>
+            </div>
+            <StatusBadge status={engine.status || 'pending'} />
+          </div>
+
+          <div className="grid grid-cols-3 gap-3 text-xs">
+            <StatCard label="Broker" value={engine.broker || '-'} />
+            <StatCard label="Environment" value={envLabel(engine.account_env)} />
+            <StatCard label="Strategy" value={engine.strategy_name || '-'} />
+            <StatCard label="Close Price" value={executor.close_price ?? '-'} />
+            <StatCard label="Take Profit" value={executor.long_percent != null ? `${executor.long_percent}%` : '-'} />
+            <StatCard label="Stop Loss" value={executor.short_percent != null ? `${executor.short_percent}%` : '-'} />
+          </div>
+
+          <ServerInfoPanel
+            port={startInfo?.port || engine.port}
+            apiBaseUrl={startInfo?.apiBaseUrl || engine.api_base_url}
+            wsUrl={engine.ws_url}
+            logFile={startInfo?.logFile || engine.metadata?.log_file}
+            pending={status === 'PENDING' && !(startInfo?.logFile || engine.metadata?.log_file)}
+          />
+
+          {error && <div className="text-xs text-red">{error}</div>}
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={startExecution}
+              disabled={starting || !canStart}
+              className="px-5 py-2 bg-green text-white rounded text-xs font-bold disabled:opacity-50"
+            >
+              {starting ? 'Starting live server...' : status === 'RUNNING' ? 'Already running' : 'Start Live Server'}
+            </button>
+            {!canStart && status !== 'RUNNING' && (
+              <span className="text-[10px] text-text-secondary">Status: {status}</span>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function CreateExecutionPanel({ onCreated, onCancel }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [selectedStock, setSelectedStock] = useState(null)
@@ -668,9 +1003,33 @@ function CreateExecutionPanel({ searchApi, onRegistered, onCancel }) {
 
   const search = async () => {
     if (!query.trim()) return
-    const res = await fetch(`${searchApi}/search?q=${encodeURIComponent(query)}`)
-    const data = await res.json()
-    setResults(data.data || [])
+    setError('')
+    const params = new URLSearchParams({
+      q: query.trim(),
+      broker: form.broker,
+      account_env: form.account_env,
+      exchange: 'NSE',
+      use_fake_client: String(form.use_fake_client),
+    })
+    const url = `${CONTROL_API}/search?${params.toString()}`
+    console.info('[CreateExecution] Searching instruments', Object.fromEntries(params.entries()))
+    try {
+      const res = await fetch(url)
+      const data = await res.json().catch(() => null)
+      console.info('[CreateExecution] Search response', { ok: res.ok, status: res.status, data })
+      if (!res.ok || !data?.status) {
+        const message = data?.message || data?.detail || `Search failed with HTTP ${res.status}`
+        setError(message)
+        setResults([])
+        return
+      }
+      setResults(data.data || [])
+      if (!(data.data || []).length) setError(`No results found for "${query.trim()}"`)
+    } catch (err) {
+      console.error('[CreateExecution] Search request failed', err)
+      setError(err.message || 'Search request failed')
+      setResults([])
+    }
   }
 
   const selectStock = stock => {
@@ -710,21 +1069,10 @@ function CreateExecutionPanel({ searchApi, onRegistered, onCancel }) {
       })
       const data = await res.json()
       if (!res.ok) {
-        setError(data.detail || 'Failed to start data plane')
+        setError(data.detail || 'Failed to create execution')
         return
       }
-      const engine = await waitForEngine(data.data.engine.id)
-      const executorRes = await fetch(`${engine.api_base_url}/executors`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data.data.executor),
-      })
-      const executorData = await executorRes.json()
-      if (!executorRes.ok) {
-        setError(executorData.detail || 'Data plane started, but executor registration failed')
-        return
-      }
-      onRegistered(engine)
+      onCreated(data.data.execution_id)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -737,7 +1085,7 @@ function CreateExecutionPanel({ searchApi, onRegistered, onCancel }) {
       <div className="flex items-center justify-between mb-5">
         <div>
           <h2 className="text-sm font-bold">Create Execution</h2>
-          <p className="text-[10px] text-text-secondary mt-1">This starts a dedicated data-plane engine, waits for heartbeat, then registers the executor.</p>
+          <p className="text-[10px] text-text-secondary mt-1">Save the execution config. Start the live server from the Launch tab.</p>
         </div>
         <button onClick={onCancel} className="text-xs text-text-secondary hover:text-text-primary">Cancel</button>
       </div>
@@ -983,6 +1331,11 @@ function normalizeExecution(executor, dataPlane = DEFAULT_DATA_PLANE) {
     broker,
     data_plane_id: dataPlane.id,
     data_plane_label: dataPlane.label,
+    data_plane_port: dataPlane.port,
+    data_plane_status: dataPlane.status,
+    api_base_url: dataPlane.api_base_url,
+    ws_url: dataPlane.ws_url,
+    log_file: dataPlane.metadata?.log_file || null,
     account_env: executor.account_env || dataPlane.account_env || 'live',
     client_mode: executor.client_mode || dataPlane.client_mode || 'standard',
     is_bracket_order_client: Boolean(executor.is_bracket_order_client || dataPlane.is_bracket_order_client),

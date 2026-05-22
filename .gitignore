@@ -3,6 +3,7 @@
 .env
 .demo.env
 .live.env
+live.read.env
 .claude/    
 # Python cache files
 __pycache__/

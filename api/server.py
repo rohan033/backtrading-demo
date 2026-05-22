@@ -234,8 +234,84 @@ def delete_data_plane_engine(engine_id: str):
     return {"status": True}
 
 
-@app.post("/api/control/executions")
-def create_controlled_execution(req: ControlPlaneExecutionRequest):
+@app.get("/api/control/search")
+async def control_plane_search(
+    q: str,
+    broker: str = "angel",
+    exchange: str = "NSE",
+    account_env: str = "live",
+    use_fake_client: bool = False,
+):
+    broker_name = "fake" if use_fake_client else (broker or "angel").lower()
+    log.info(
+        "[CONTROL_SEARCH] request broker=%s env=%s exchange=%s q=%r fake=%s",
+        broker_name, account_env, exchange, q, use_fake_client,
+    )
+    try:
+        if broker_name == "fake":
+            rows = _mock_search_rows(q)
+            log.info("[CONTROL_SEARCH] fake returned %d rows for %r", len(rows), q)
+            return {"status": True, "data": rows}
+
+        if broker_name == "etoro":
+            from brokers.etoro.trading_client import EtoroTradingClient
+
+            client = EtoroTradingClient(account_env="live.read")
+            client.generate_session()
+            instruments = await client.asearch_instruments(q)
+            rows = [_etoro_instrument_to_search_row(item) for item in instruments]
+            log.info(
+                "[CONTROL_SEARCH] etoro returned %d rows for %r using credential_profile=live.read execution_env=%s",
+                len(rows), q, account_env,
+            )
+            return {"status": True, "data": rows}
+
+        client = get_client()
+        result = client._client.searchScrip(exchange, q)
+        if result and result.get("status"):
+            rows = result.get("data", []) or []
+            log.info("[CONTROL_SEARCH] angel returned %d rows for %r", len(rows), q)
+            for item in rows[:10]:
+                log.info(
+                    "[CONTROL_SEARCH] row symbol=%s token=%s exchange=%s",
+                    item.get("tradingsymbol"), item.get("symboltoken"), item.get("exchange"),
+                )
+            return {"status": True, "data": rows}
+
+        log.warning("[CONTROL_SEARCH] angel returned no results for %r: %s", q, result)
+        return {"status": False, "message": "No results found", "data": []}
+    except Exception as e:
+        log.error(
+            "[CONTROL_SEARCH] failed broker=%s env=%s q=%r status=%s payload=%s error=%s",
+            broker_name,
+            account_env,
+            q,
+            getattr(e, "status_code", None),
+            getattr(e, "payload", None),
+            e,
+            exc_info=True,
+        )
+        return {"status": False, "message": str(e), "data": []}
+
+
+@app.get("/api/control/executions")
+def list_controlled_executions():
+    executions = []
+    for engine in engine_registry.list_engines():
+        metadata = engine.get("metadata") or {}
+        if metadata.get("source") != "controlled_execution":
+            continue
+        executions.append(
+            {
+                "execution_id": engine["id"],
+                "engine": engine,
+                "executor": metadata.get("executor_payload"),
+            }
+        )
+    return {"status": True, "data": executions}
+
+
+def _controlled_execution_payload(req: ControlPlaneExecutionRequest) -> tuple[str, dict, dict]:
     executor_id = req.executor_id or _execution_id(req.broker, req.symbol, req.strategy_name)
     executor_payload = {
         "executor_id": executor_id,
@@ -248,33 +324,183 @@ def create_controlled_execution(req: ControlPlaneExecutionRequest):
         "initial_threshold": req.initial_threshold,
         "max_available_capital": req.max_available_capital,
     }
+    broker = "fake" if req.use_fake_client else req.broker
+    label = f"{req.broker}-{req.symbol}-strategy-{req.strategy_name}"
+    engine_config = {
+        "id": executor_id,
+        "label": label,
+        "broker": broker,
+        "symbol": req.symbol,
+        "token": req.token,
+        "strategy_name": req.strategy_name,
+        "account_env": req.account_env,
+        "host": "localhost",
+        "port": 0,
+        "api_base_url": "",
+        "ws_url": "",
+        "status": "pending",
+        "metadata": {
+            "source": "controlled_execution",
+            "executor_payload": executor_payload,
+            "execution_config": req.model_dump(),
+            "exchange": req.exchange,
+            "client_mode": req.client_mode,
+            "use_fake_client": req.use_fake_client,
+        },
+    }
+    return executor_id, executor_payload, engine_config
+
+
+@app.post("/api/control/executions")
+def create_controlled_execution(req: ControlPlaneExecutionRequest):
+    execution_id, executor_payload, engine_config = _controlled_execution_payload(req)
     try:
-        engine = engine_process_manager.start_engine(
+        engine = engine_registry.upsert_engine(engine_config)
+    except Exception as e:
+        log.error("[CONTROL] Failed to create execution: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    log.info("[CONTROL] Created pending execution %s for %s", execution_id, req.symbol)
+    return {
+        "status": True,
+        "data": {
+            "execution_id": execution_id,
+            "engine": engine,
+            "executor": executor_payload,
+        },
+    }
+
+
+@app.post("/api/control/executions/{execution_id}/start")
+def start_controlled_execution(execution_id: str):
+    engine = engine_registry.get_engine(execution_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    metadata = engine.get("metadata") or {}
+    if metadata.get("source") != "controlled_execution":
+        raise HTTPException(status_code=400, detail="Not a controlled execution")
+
+    if engine.get("status") == "running":
+        log_file = metadata.get("log_file")
+        return {
+            "status": True,
+            "data": {
+                "engine": engine,
+                "executor": metadata.get("executor_payload"),
+                "port": engine.get("port"),
+                "api_base_url": engine.get("api_base_url"),
+                "ws_url": engine.get("ws_url"),
+                "log_file": log_file,
+            },
+        }
+
+    if engine.get("status") == "starting":
+        log_file = metadata.get("log_file")
+        return {
+            "status": True,
+            "data": {
+                "engine": engine,
+                "executor": metadata.get("executor_payload"),
+                "port": engine.get("port"),
+                "api_base_url": engine.get("api_base_url"),
+                "ws_url": engine.get("ws_url"),
+                "log_file": log_file,
+            },
+        }
+
+    config = metadata.get("execution_config") or {}
+    executor_payload = metadata.get("executor_payload") or {}
+    try:
+        started = engine_process_manager.start_engine(
             {
-                "broker": "fake" if req.use_fake_client else req.broker,
-                "account_env": req.account_env,
-                "strategy_name": req.strategy_name,
-                "client_mode": "bracket" if req.client_mode == "bracket" else "standard",
-                "symbol": req.symbol,
-                "token": req.token,
-                "label": f"{req.broker}-{req.symbol}-strategy-{req.strategy_name}",
-                "use_fake_client": req.use_fake_client,
+                "id": execution_id,
+                "broker": engine.get("broker") or config.get("broker") or "angel",
+                "account_env": engine.get("account_env") or config.get("account_env") or "live",
+                "strategy_name": engine.get("strategy_name") or config.get("strategy_name") or "default",
+                "client_mode": metadata.get("client_mode") or config.get("client_mode") or "standard",
+                "symbol": engine.get("symbol") or config.get("symbol"),
+                "token": engine.get("token") or config.get("token"),
+                "label": engine.get("label"),
+                "use_fake_client": bool(metadata.get("use_fake_client") or config.get("use_fake_client")),
                 "metadata": {
+                    **metadata,
                     "executor_payload": executor_payload,
-                    "exchange": req.exchange,
-                    "client_mode": req.client_mode,
                 },
             }
         )
     except Exception as e:
-        log.error("[CONTROL] Failed to start data-plane engine: %s", e, exc_info=True)
+        log.error("[CONTROL] Failed to start data-plane engine %s: %s", execution_id, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-    return {"status": True, "data": {"engine": engine, "executor": executor_payload}}
+
+    started_metadata = started.get("metadata") or {}
+    log_file = started_metadata.get("log_file")
+    log.info(
+        "[CONTROL] Started execution %s on port=%s log_file=%s",
+        execution_id,
+        started.get("port"),
+        log_file,
+    )
+    return {
+        "status": True,
+        "data": {
+            "engine": started,
+            "executor": executor_payload,
+            "port": started.get("port"),
+            "api_base_url": started.get("api_base_url"),
+            "ws_url": started.get("ws_url"),
+            "log_file": log_file,
+        },
+    }
 
 
 def _execution_id(broker: str, symbol: str, strategy_name: str) -> str:
     raw = f"{broker}-{symbol}-strategy-{strategy_name}".lower()
     return "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-")
+
+
+def _mock_search_rows(q: str) -> list[dict]:
+    mock_stocks = [
+        {"tradingsymbol": "RELIANCE-EQ", "symboltoken": "2885", "exchange": "NSE"},
+        {"tradingsymbol": "INFY-EQ", "symboltoken": "1594", "exchange": "NSE"},
+        {"tradingsymbol": "TCS-EQ", "symboltoken": "11536", "exchange": "NSE"},
+        {"tradingsymbol": "HDFCBANK-EQ", "symboltoken": "1333", "exchange": "NSE"},
+        {"tradingsymbol": "BAJFINANCE-EQ", "symboltoken": "317", "exchange": "NSE"},
+        {"tradingsymbol": "SBIN-EQ", "symboltoken": "3045", "exchange": "NSE"},
+        {"tradingsymbol": "ICICIBANK-EQ", "symboltoken": "4963", "exchange": "NSE"},
+        {"tradingsymbol": "LUPIN-EQ", "symboltoken": "10440", "exchange": "NSE"},
+        {"tradingsymbol": "WIPRO-EQ", "symboltoken": "3787", "exchange": "NSE"},
+        {"tradingsymbol": "TATAMOTORS-EQ", "symboltoken": "3456", "exchange": "NSE"},
+    ]
+    needle = q.upper()
+    return [stock for stock in mock_stocks if needle in stock["tradingsymbol"].upper()]
+
+
+def _etoro_instrument_to_search_row(instrument: dict) -> dict:
+    instrument_id = (
+        instrument.get("instrumentId")
+        or instrument.get("instrumentID")
+        or instrument.get("InstrumentID")
+    )
+    symbol = (
+        instrument.get("symbolFull")
+        or instrument.get("internalSymbolFull")
+        or instrument.get("symbol")
+        or instrument.get("displayName")
+        or str(instrument_id or "")
+    )
+    exchange = (
+        instrument.get("exchangeName")
+        or instrument.get("exchange")
+        or instrument.get("exchangeCode")
+        or "ETORO"
+    )
+    return {
+        "tradingsymbol": symbol,
+        "symboltoken": str(instrument_id) if instrument_id is not None else "",
+        "exchange": exchange,
+        "name": instrument.get("displayName") or instrument.get("instrumentDisplayName") or symbol,
+        "raw": instrument,
+    }
 
 @app.get("/api/portfolio")
 def get_portfolio():

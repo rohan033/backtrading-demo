@@ -424,15 +424,20 @@ async def get_portfolio():
 @app.get("/api/live/search")
 async def search_scrip(q: str, exchange: str = "NSE"):
     eng = get_engine()
+    logger.info("[LIVE_SEARCH] request broker=%s env=%s exchange=%s q=%r", eng.broker, eng.account_env, exchange, q)
     try:
         if eng.broker == "etoro" and hasattr(eng.client, "asearch_instruments"):
             instruments = await eng.client.asearch_instruments(q)
-            return {"status": True, "data": [_etoro_instrument_to_search_row(item) for item in instruments]}
+            rows = [_etoro_instrument_to_search_row(item) for item in instruments]
+            logger.info("[LIVE_SEARCH] etoro returned %d rows for %r", len(rows), q)
+            return {"status": True, "data": rows}
 
         if hasattr(eng.client, '_client'):
             result = eng.client._client.searchScrip(exchange, q)
             if result and result.get("status"):
-                return {"status": True, "data": result.get("data", [])}
+                rows = result.get("data", []) or []
+                logger.info("[LIVE_SEARCH] broker returned %d rows for %r", len(rows), q)
+                return {"status": True, "data": rows}
         # Fake mode: return filtered mock results
         if eng.use_fake_client:
             mock_stocks = [
@@ -448,9 +453,21 @@ async def search_scrip(q: str, exchange: str = "NSE"):
                 {"tradingsymbol": "TATAMOTORS-EQ", "symboltoken": "3456", "exchange": "NSE"},
             ]
             filtered = [s for s in mock_stocks if q.upper() in s["tradingsymbol"].upper()]
+            logger.info("[LIVE_SEARCH] fake returned %d rows for %r", len(filtered), q)
             return {"status": True, "data": filtered}
+        logger.warning("[LIVE_SEARCH] no search backend for broker=%s q=%r", eng.broker, q)
         return {"status": True, "data": []}
     except Exception as e:
+        logger.error(
+            "[LIVE_SEARCH] failed broker=%s env=%s q=%r status=%s payload=%s error=%s",
+            eng.broker,
+            eng.account_env,
+            q,
+            getattr(e, "status_code", None),
+            getattr(e, "payload", None),
+            e,
+            exc_info=True,
+        )
         return {"status": False, "data": [], "message": str(e)}
 
 

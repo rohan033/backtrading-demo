@@ -5,6 +5,7 @@ from typing import Awaitable, Callable, Any
 
 from logzero import logger
 
+from brokers.etoro.env import ETORO_HTTP_USER_AGENT
 from brokers.etoro.trading_client import EtoroTradingClient
 
 
@@ -172,7 +173,10 @@ class EtoroWebsocketPortfolioStatusClient(EtoroTradingClient):
 
         while self._running:
             try:
-                async with websockets.connect(self.websocket_url) as socket:
+                async with websockets.connect(
+                    self.websocket_url,
+                    extra_headers=[("User-Agent", ETORO_HTTP_USER_AGENT)],
+                ) as socket:
                     self._socket = socket
                     await self._authenticate()
                     await self._subscribe_private()

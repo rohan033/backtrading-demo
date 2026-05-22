@@ -150,7 +150,7 @@ class EngineProcessManager:
     def _log_file(name: str) -> Path:
         log_dir = REPO_ROOT / "logs" / "executions"
         log_dir.mkdir(parents=True, exist_ok=True)
-        return log_dir / f"{_safe_filename(name)}.log"
+        return (log_dir / f"{_safe_filename(name)}.log").resolve()
 
 
 def _normalize_env(value: Any) -> str:
