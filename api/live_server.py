@@ -125,13 +125,16 @@ class LiveEngine:
 
         self.db_writer = DbEventWriter(db_path="live_events.db")
         self.event_manager = EventManager(self.db_writer)
-        self.order_manager = OrderManager()
+        status_client = self._create_status_client()
+        self.order_manager = OrderManager(client=status_client)
         self.trading_manager = TradingManager(
             self.client, self.event_manager,
             on_event=self._on_engine_event,
             order_manager=self.order_manager,
         )
         self.order_manager.register_listener("trading_manager", self.trading_manager)
+        if status_client is not None:
+            logger.info("[ENGINE] Portfolio status client wired (%s)", type(status_client).__name__)
         self.tick_provider = TickProvider(
             self.client, interval_seconds=1.0,
             on_tick=self._on_tick
@@ -144,6 +147,27 @@ class LiveEngine:
         if self.engine_id and self.control_url:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         logger.info("[ENGINE] Live engine started broker=%s env=%s", self.broker, self.account_env)
+
+    def _create_status_client(self):
+        if self.broker != "etoro":
+            return None
+
+        from brokers.etoro.status_client import (
+            EtoroHybridPortfolioStatusClient,
+            EtoroPortfolioStatusClient,
+        )
+
+        try:
+            return EtoroHybridPortfolioStatusClient(
+                poll_interval_seconds=3.0,
+                account_env=self.account_env,
+            )
+        except Exception as e:
+            logger.warning(
+                "[ENGINE] eToro hybrid status client unavailable (%s); using polling fallback",
+                e,
+            )
+            return EtoroPortfolioStatusClient(interval_seconds=3.0, account_env=self.account_env)
 
     async def shutdown(self):
         await self._send_heartbeat("stopped")
@@ -190,7 +214,29 @@ class LiveEngine:
         try:
             self._broadcast_queue.put_nowait(event)
         except asyncio.QueueFull:
-            pass
+            logger.warning("[WS] Broadcast queue full; dropping event type=%s", event.get("type"))
+
+    def _log_broadcast(self, msg: dict) -> None:
+        msg_type = msg.get("type")
+        if msg_type == "tick":
+            return
+        logger.info(
+            "[WS] Broadcasting type=%s action=%s executor=%s order=%s event=%s clients=%d",
+            msg_type,
+            msg.get("action"),
+            msg.get("executor_id"),
+            msg.get("order_id"),
+            msg.get("event_type"),
+            len(self.ws_manager.active_connections),
+        )
+
+    async def _broadcast_loop(self):
+        while True:
+            msg = await self._broadcast_queue.get()
+            if msg.get("type") != "tick":
+                self._log_broadcast(msg)
+            if self.ws_manager.active_connections:
+                await self.ws_manager.broadcast(msg)
 
     def _on_executor_status(self, executor_id: str, status: str, is_in_position: bool):
         msg = {
@@ -202,13 +248,7 @@ class LiveEngine:
         try:
             self._broadcast_queue.put_nowait(msg)
         except asyncio.QueueFull:
-            pass
-
-    async def _broadcast_loop(self):
-        while True:
-            msg = await self._broadcast_queue.get()
-            if self.ws_manager.active_connections:
-                await self.ws_manager.broadcast(msg)
+            logger.warning("[WS] Broadcast queue full; dropping executor_status for %s", executor_id)
 
     async def _heartbeat_loop(self):
         while True:

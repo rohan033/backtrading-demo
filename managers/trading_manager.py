@@ -1,7 +1,12 @@
 import asyncio
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Set
 from brokers.interfaces import OrderActivity
+from brokers.etoro.ws_order_events import (
+    extract_position_id,
+    map_tracked_order_status,
+    map_websocket_update,
+)
 from event.event_manager import EventManager
 from logzero import logger
 
@@ -35,6 +40,7 @@ class TradingManager:
         self.order_manager = order_manager
         self._activity_queue: asyncio.Queue[OrderActivity] = asyncio.Queue(maxsize=1000)
         self._activity_task: asyncio.Task | None = None
+        self._emitted_activity_keys: Set[str] = set()
 
     def is_bo_client(self) -> bool:
         checker = getattr(self.client, "is_bo_client", None)
@@ -138,6 +144,7 @@ class TradingManager:
                 )
                 if not self.is_bo_client() and hasattr(self.client, "await_position_ids_for_order"):
                     asyncio.create_task(self._resolve_position_id_for_order(executor_id, buy_result.get('order_id')))
+                self.order_manager.track_order(buy_result['order_id'])
             
             self.event_manager.log_event(
                 order_id=buy_result['order_id'],
@@ -198,9 +205,14 @@ class TradingManager:
         return OrderResult(has_executed=False, error_message="Sell logic not implemented yet")
 
     async def _handle_order_activity(self, activity: OrderActivity) -> None:
-        if activity.activity_type not in {"take_profit_triggered", "stop_loss_triggered"}:
+        if activity.activity_type in {"take_profit_triggered", "stop_loss_triggered"}:
+            await self._handle_tp_sl_activity(activity)
             return
 
+        if activity.source in {"websocket", "polling"}:
+            await self._handle_broker_status_activity(activity)
+
+    async def _handle_tp_sl_activity(self, activity: OrderActivity) -> None:
         raw = activity.raw or {}
         executor_id = raw.get("executor_id")
         order_details = (
@@ -278,6 +290,124 @@ class TradingManager:
             "quantity": quantity,
             "trigger_type": activity.activity_type,
         })
+
+    async def _handle_broker_status_activity(self, activity: OrderActivity) -> None:
+        raw = activity.raw or {}
+        content = raw.get("content") if isinstance(raw.get("content"), dict) else raw
+        event_type = raw.get("event_type") or activity.activity_type
+
+        if activity.activity_type == "tracked_order_status":
+            action = map_tracked_order_status(content)
+        elif raw.get("type") == "portfolio_status_update" or activity.source == "websocket":
+            action = map_websocket_update(event_type, content)
+        else:
+            return
+
+        if not action:
+            return
+
+        position_id = activity.position_id or extract_position_id(content)
+        order_id = activity.order_id or content.get("OrderID") or content.get("orderID")
+        order_details = self._find_tracked_order(order_id, position_id)
+        if not order_details and action != "POSITION_CLOSED":
+            logger.debug(
+                "[TM] Ignoring untracked broker status action=%s order=%s event=%s",
+                action, order_id, event_type,
+            )
+            return
+
+        dedupe_key = f"{order_id or position_id}:{action}:{activity.status}:{event_type}"
+        if dedupe_key in self._emitted_activity_keys:
+            return
+        self._emitted_activity_keys.add(dedupe_key)
+
+        executor_id = order_details.get("executor_id") if order_details else None
+        signal = order_details.get("signal") if order_details else None
+        symbol = getattr(signal, "symbol", "") if signal else ""
+        token = getattr(signal, "token", "") if signal else activity.instrument_id or ""
+        exchange = getattr(signal, "exchange", "NSE") if signal else "ETORO"
+        quantity = getattr(signal, "quantity", None) if signal else None
+        entry_price = getattr(signal, "entry_price", None) if signal else None
+
+        if action == "ORDER_FILLED" and order_details:
+            order_details["status"] = "filled"
+            if position_id:
+                order_details["position_id"] = position_id
+                if self.order_manager and executor_id:
+                    self.order_manager.set_protected_position_id(str(executor_id), str(position_id))
+        elif action == "POSITION_CLOSED" and order_details:
+            order_details["status"] = "closed"
+        elif action in {"ORDER_REJECTED", "ORDER_CANCELLED"} and order_details:
+            order_details["status"] = action.lower().replace("order_", "")
+
+        details = {
+            "executor_id": executor_id,
+            "unique_order_id": order_details.get("unique_order_id") if order_details else None,
+            "symbol": symbol,
+            "token": token,
+            "exchange": exchange,
+            "entry_price": entry_price,
+            "quantity": quantity,
+            "position_id": position_id,
+            "status_id": activity.status,
+            "event_type": event_type,
+            "source": activity.source,
+            "error_code": content.get("ErrorCode") or content.get("errorCode"),
+            "executed_units": content.get("ExecutedUnits") or content.get("executedUnits"),
+            "end_rate": content.get("EndRate") or content.get("endRate"),
+            "close_reason": content.get("CloseReason") or content.get("closeReason"),
+        }
+
+        logger.info(
+            "[TM] Broker status -> %s executor=%s order=%s position=%s event=%s status=%s",
+            action, executor_id, order_id, position_id, event_type, activity.status,
+        )
+
+        self.event_manager.log_event(
+            order_id=str(order_id) if order_id else None,
+            action=action,
+            details=details,
+        )
+        self._emit({
+            "type": "event",
+            "action": action,
+            "executor_id": executor_id,
+            "order_id": order_id,
+            "position_id": position_id,
+            "symbol": symbol,
+            "token": token,
+            "exchange": exchange,
+            "status_id": activity.status,
+            "event_type": event_type,
+            "source": activity.source,
+            "executed_units": details.get("executed_units"),
+            "end_rate": details.get("end_rate"),
+        })
+        self._emit({
+            "type": "portfolio_status_update",
+            "action": action,
+            "event_type": event_type,
+            "executor_id": executor_id,
+            "order_id": order_id,
+            "position_id": position_id,
+            "status_id": activity.status,
+            "instrument_id": activity.instrument_id,
+            "source": activity.source,
+            "content": content,
+        })
+
+    def _find_tracked_order(self, order_id: str | None, position_id: str | None) -> Optional[Dict]:
+        if order_id:
+            tracked = self.order_tracking_by_order_id.get(str(order_id))
+            if tracked:
+                return tracked
+
+        if position_id:
+            for details in self.order_tracking_by_executor.values():
+                if str(details.get("position_id")) == str(position_id):
+                    return details
+
+        return None
 
     async def _cancel_sibling_exit(self, raw: dict, trigger_type: str) -> None:
         if not hasattr(self.client, "acancel_order"):

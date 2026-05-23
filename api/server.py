@@ -19,7 +19,8 @@ from strategy import Strategy
 from backtesting import Backtesting
 from api.manual_robo_routes import router as manual_robo_router
 from control_plane.engine_registry import EngineRegistry
-from control_plane.engine_process_manager import EngineProcessManager
+from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT
+from event.db_event_consumer import DbEventWriter
 
 load_dotenv()
 
@@ -48,6 +49,15 @@ engine_registry = EngineRegistry()
 engine_registry.ensure_default_engine()
 engine_process_manager = EngineProcessManager(engine_registry)
 _engine_sweeper_task: Optional[asyncio.Task] = None
+_live_events_db: Optional[DbEventWriter] = None
+
+
+def get_live_events_db() -> DbEventWriter:
+    global _live_events_db
+    if _live_events_db is None:
+        db_path = os.getenv("LIVE_EVENTS_DB") or str(REPO_ROOT / "live_events.db")
+        _live_events_db = DbEventWriter(db_path=db_path)
+    return _live_events_db
 
 # ── Global client ──
 _client: Optional[TotpClient] = None
@@ -542,6 +552,59 @@ def _execution_id(broker: str, symbol: str, strategy_name: str) -> str:
     return "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-")
 
 
+@app.get("/api/control/events")
+def get_control_events(
+    limit: int = 100,
+    action: Optional[str] = None,
+    executor_id: Optional[str] = None,
+    order_id: Optional[str] = None,
+):
+    events = get_live_events_db().query_events(
+        limit=limit,
+        action=action,
+        executor_id=executor_id,
+        order_id=order_id,
+    )
+    return {"status": True, "data": events}
+
+
+@app.get("/api/control/trades")
+def get_control_trades(
+    limit: int = 100,
+    action: Optional[str] = None,
+    executor_id: Optional[str] = None,
+    symbol: Optional[str] = None,
+):
+    trades = get_live_events_db().query_trading_events(
+        limit=limit,
+        action=action,
+        executor_id=executor_id,
+        symbol=symbol,
+    )
+    return {"status": True, "data": trades}
+
+
+@app.get("/api/control/orders")
+def get_control_orders(executor_id: Optional[str] = None, limit: int = 100):
+    orders = get_live_events_db().query_orders_snapshot(executor_id=executor_id, limit=limit)
+    return {"status": True, "data": orders}
+
+
+@app.get("/api/control/event-sessions")
+def get_control_event_sessions(limit: int = 100):
+    sessions = get_live_events_db().query_event_sessions(limit=limit)
+    return {"status": True, "data": sessions}
+
+
+@app.get("/api/control/event-sessions/{session_id}/events")
+def get_control_event_session_events(session_id: str, limit: int = 300):
+    db = get_live_events_db()
+    events = db.query_trading_events(executor_id=session_id, limit=limit)
+    if not events:
+        events = db.query_events(executor_id=session_id, limit=limit)
+    return {"status": True, "data": events}
+
+
 def _mock_search_rows(q: str) -> list[dict]:
     mock_stocks = [
         {"tradingsymbol": "RELIANCE-EQ", "symboltoken": "2885", "exchange": "NSE"},
@@ -814,6 +877,131 @@ def run_backtest(req: BacktestRequest):
     except Exception as e:
         log.error("[BACKTEST] FAILED: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── WebSocket market preview for create/launch panel ──
+
+async def _run_market_preview(ws: WebSocket, cfg: dict) -> None:
+    from brokers.interfaces import Subscription, TickData
+
+    broker = "fake" if cfg.get("use_fake_client") else (cfg.get("broker") or "angel").lower()
+    token = str(cfg["token"])
+    symbol = cfg["symbol"]
+    exchange = cfg.get("exchange") or "NSE"
+    account_env = cfg.get("account_env") or "live"
+    tick_queue: asyncio.Queue = asyncio.Queue()
+    feed_client = None
+    subtasks: list[asyncio.Task] = []
+
+    async def on_tick(tick) -> None:
+        await tick_queue.put(tick)
+
+    try:
+        if broker == "etoro":
+            from brokers.etoro.feed_client import EtoroWebsocketFeedClient
+
+            feed_client = EtoroWebsocketFeedClient(account_env=account_env)
+            feed_client.add_tick_callback(on_tick)
+            await feed_client.start()
+            await feed_client.subscribe(exchange, symbol, token)
+        elif broker == "fake":
+            seed = 100.0 + (int("".join(ch for ch in token if ch.isdigit()) or "0") % 500)
+
+            async def fake_loop() -> None:
+                import random
+
+                price = seed
+                while True:
+                    price = max(1.0, price + random.uniform(-0.35, 0.35))
+                    await tick_queue.put(
+                        TickData(
+                            symbol=symbol,
+                            token=token,
+                            exchange=exchange,
+                            ltp=round(price, 2),
+                        )
+                    )
+                    await asyncio.sleep(1.0)
+
+            subtasks.append(asyncio.create_task(fake_loop()))
+        else:
+            from brokers.angel.trading_client import AngelOneTradingClient
+
+            angel_client = AngelOneTradingClient()
+            subscription = Subscription(exchange=exchange, symbol=symbol, token=token)
+
+            async def angel_loop() -> None:
+                while True:
+                    ltps = await angel_client.aget_ltp_bulk([subscription])
+                    if ltps:
+                        await tick_queue.put(ltps[0])
+                    await asyncio.sleep(1.0)
+
+            subtasks.append(asyncio.create_task(angel_loop()))
+
+        while True:
+            tick = await tick_queue.get()
+            await ws.send_json(
+                {
+                    "type": "tick",
+                    "symbol": tick.symbol,
+                    "token": str(tick.token),
+                    "exchange": tick.exchange,
+                    "ltp": float(tick.ltp),
+                }
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.error("[CONTROL_MARKET] preview stream error broker=%s symbol=%s: %s", broker, symbol, e)
+        try:
+            await ws.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        for task in subtasks:
+            task.cancel()
+        if subtasks:
+            await asyncio.gather(*subtasks, return_exceptions=True)
+        if feed_client is not None:
+            await feed_client.stop()
+
+
+@app.websocket("/ws/control/market")
+async def ws_control_market(ws: WebSocket):
+    await ws.accept()
+    log.info("[CONTROL_MARKET] Client connected")
+    stream_task: asyncio.Task | None = None
+    try:
+        while True:
+            raw = await ws.receive_text()
+            msg = json.loads(raw)
+            if msg.get("type") != "subscribe":
+                continue
+
+            if stream_task is not None:
+                stream_task.cancel()
+                try:
+                    await stream_task
+                except asyncio.CancelledError:
+                    pass
+
+            log.info(
+                "[CONTROL_MARKET] subscribe broker=%s symbol=%s token=%s",
+                msg.get("broker"),
+                msg.get("symbol"),
+                msg.get("token"),
+            )
+            stream_task = asyncio.create_task(_run_market_preview(ws, msg))
+    except WebSocketDisconnect:
+        log.info("[CONTROL_MARKET] Client disconnected")
+    finally:
+        if stream_task is not None:
+            stream_task.cancel()
+            try:
+                await stream_task
+            except asyncio.CancelledError:
+                pass
 
 
 # ── WebSocket backtest: streams candles one-by-one ──

@@ -94,8 +94,9 @@ class EtoroWebsocketFeedClient(EtoroTradingClient):
         sample_every: int = 1,
         websocket_url: str = "wss://ws.etoro.com/ws",
         snapshot: bool = False,
+        account_env: str | None = None,
     ):
-        super().__init__()
+        super().__init__(account_env=account_env)
         self.sample_every = max(1, int(sample_every))
         self.websocket_url = websocket_url
         self.snapshot = snapshot
@@ -163,7 +164,7 @@ class EtoroWebsocketFeedClient(EtoroTradingClient):
             try:
                 async with websockets.connect(
                     self.websocket_url,
-                    extra_headers=[("User-Agent", ETORO_HTTP_USER_AGENT)],
+                    additional_headers=[("User-Agent", ETORO_HTTP_USER_AGENT)],
                 ) as socket:
                     self._socket = socket
                     await self._authenticate()

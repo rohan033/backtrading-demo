@@ -76,7 +76,10 @@ class DbEventWriter:
             ))
             
             # Store in trading_events table for frontend queries
-            if action in ['BUY_ORDER_PLACED', 'SELL_ORDER_PLACED', 'ORDER_FILLED', 'ORDER_CANCELLED']:
+            if action in [
+                'BUY_ORDER_PLACED', 'SELL_ORDER_PLACED', 'ORDER_FILLED', 'ORDER_CANCELLED',
+                'ORDER_REJECTED', 'POSITION_CLOSED',
+            ]:
                 cursor.execute('''
                     INSERT INTO trading_events (
                         timestamp, order_id, unique_order_id, executor_id, action,
@@ -112,6 +115,7 @@ class DbEventWriter:
     def query_events(self, 
                      order_id: Optional[str] = None,
                      action: Optional[str] = None,
+                     executor_id: Optional[str] = None,
                      start_time: Optional[float] = None,
                      end_time: Optional[float] = None,
                      limit: int = 100) -> List[Dict[str, Any]]:
@@ -129,6 +133,10 @@ class DbEventWriter:
             if action:
                 query += " AND action = ?"
                 params.append(action)
+
+            if executor_id:
+                query += " AND json_extract(details, '$.executor_id') = ?"
+                params.append(executor_id)
             
             if start_time:
                 query += " AND timestamp >= ?"
@@ -316,4 +324,90 @@ class DbEventWriter:
             
         except Exception as e:
             logger.error(f"Failed to get trading summary: {e}")
+            return {}
+
+    def query_event_sessions(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Group persisted trading events by executor for history browsing."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT executor_id,
+                       COUNT(*) AS event_count,
+                       MIN(timestamp) AS started_at,
+                       MAX(timestamp) AS last_at,
+                       MAX(symbol) AS symbol
+                FROM trading_events
+                WHERE executor_id IS NOT NULL AND executor_id != ''
+                GROUP BY executor_id
+                ORDER BY last_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            return [
+                {
+                    "id": row[0],
+                    "label": row[0],
+                    "executor_id": row[0],
+                    "event_count": row[1],
+                    "started_at": row[2],
+                    "last_at": row[3],
+                    "symbol": row[4],
+                }
+                for row in rows
+            ]
+        except Exception as e:
+            logger.error(f"Failed to query event sessions: {e}")
+            return []
+
+    def query_orders_snapshot(self, executor_id: Optional[str] = None, limit: int = 100) -> Dict[str, Dict[str, Any]]:
+        """Latest persisted order state keyed by unique_order_id or order_id."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            query = """
+                SELECT te.*
+                FROM trading_events te
+                INNER JOIN (
+                    SELECT order_id, MAX(timestamp) AS latest_timestamp
+                    FROM trading_events
+                    WHERE 1=1
+            """
+            params: list[Any] = []
+            if executor_id:
+                query += " AND executor_id = ?"
+                params.append(executor_id)
+            query += """
+                    GROUP BY order_id
+                ) latest ON te.order_id = latest.order_id
+                    AND te.timestamp = latest.latest_timestamp
+                ORDER BY te.timestamp DESC
+                LIMIT ?
+            """
+            params.append(limit)
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            conn.close()
+
+            orders: Dict[str, Dict[str, Any]] = {}
+            for row in rows:
+                unique_order_id = row[3] or row[2]
+                action = row[5] or ""
+                orders[unique_order_id] = {
+                    "executor_id": row[4],
+                    "order_id": row[2],
+                    "unique_order_id": row[3],
+                    "order_type": action.replace("_ORDER_PLACED", "").replace("_", " "),
+                    "status": row[16] or action,
+                    "symbol": row[6],
+                    "quantity": row[12],
+                    "entry_price": row[9],
+                }
+            return orders
+        except Exception as e:
+            logger.error(f"Failed to query orders snapshot: {e}")
             return {}
