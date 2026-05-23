@@ -46,3 +46,8 @@ frontend/dist/
 
 # Database
 manual_robo.db
+control_plane.db
+live_events.db
+
+# UX simulation prototype (HTML/JS mock — not the React app)
+ux-prototype/
