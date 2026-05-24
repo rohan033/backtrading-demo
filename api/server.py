@@ -61,9 +61,28 @@ def get_live_events_db() -> DbEventWriter:
 
 # ── Global client ──
 _client: Optional[TotpClient] = None
-_portfolio_cache = None
-_portfolio_cache_time = 0
-PORTFOLIO_CACHE_TTL = 60  # seconds
+_control_portfolio_cache: dict[str, tuple[list, float]] = {}
+PORTFOLIO_CACHE_TTL = int(os.getenv("PORTFOLIO_CACHE_TTL", "300"))  # seconds
+
+
+def _portfolio_cache_key(broker: str, account_env: str) -> str:
+    return f"{(broker or 'angel').lower()}:{(account_env or 'live').lower()}"
+
+
+def _get_portfolio_cache_entry(broker: str, account_env: str) -> tuple[list | None, float | None, bool]:
+    import time as _time
+
+    entry = _control_portfolio_cache.get(_portfolio_cache_key(broker, account_env))
+    if not entry:
+        return None, None, False
+    data, cached_at = entry
+    return data, cached_at, (_time.time() - cached_at) < PORTFOLIO_CACHE_TTL
+
+
+def _set_portfolio_cache(broker: str, account_env: str, data: list) -> None:
+    import time as _time
+
+    _control_portfolio_cache[_portfolio_cache_key(broker, account_env)] = (data, _time.time())
 
 
 def get_client() -> TotpClient:
@@ -271,12 +290,12 @@ async def control_plane_search(
         if broker_name == "etoro":
             from brokers.etoro.trading_client import EtoroTradingClient
 
-            client = EtoroTradingClient(account_env="live.read")
+            client = EtoroTradingClient(account_env=account_env)
             client.generate_session()
             instruments = await client.asearch_instruments(q)
             rows = [_etoro_instrument_to_search_row(item) for item in instruments]
             log.info(
-                "[CONTROL_SEARCH] etoro returned %d rows for %r using credential_profile=live.read execution_env=%s",
+                "[CONTROL_SEARCH] etoro returned %d rows for %r using account_env=%s",
                 len(rows), q, account_env,
             )
             return {"status": True, "data": rows}
@@ -649,29 +668,143 @@ def _etoro_instrument_to_search_row(instrument: dict) -> dict:
         "raw": instrument,
     }
 
-@app.get("/api/portfolio")
-def get_portfolio():
-    import time as _time
-    global _portfolio_cache, _portfolio_cache_time
+
+def _etoro_position_to_portfolio_row(position: dict) -> dict:
+    instrument_id = position.get("instrumentID") or position.get("instrumentId")
+    symbol = (
+        position.get("instrumentDisplayName")
+        or position.get("InstrumentDisplayName")
+        or position.get("symbol")
+        or position.get("Symbol")
+        or str(instrument_id or "")
+    )
+    units = position.get("units") or position.get("Units") or position.get("amount") or 0
+    open_rate = position.get("openRate") or position.get("OpenRate") or position.get("open") or 0
+    ltp = (
+        position.get("currentRate")
+        or position.get("CurrentRate")
+        or position.get("rate")
+        or position.get("openRate")
+        or open_rate
+    )
+    return {
+        "tradingsymbol": symbol,
+        "symboltoken": str(instrument_id) if instrument_id is not None else "",
+        "exchange": "ETORO",
+        "quantity": str(units),
+        "averageprice": str(open_rate),
+        "ltp": str(ltp),
+        "broker": "etoro",
+    }
+
+
+@app.get("/api/control/portfolio")
+async def control_plane_portfolio(
+    broker: str = "angel",
+    account_env: str = "live",
+    use_fake_client: bool = False,
+    refresh: bool = False,
+):
+    broker_name = "fake" if use_fake_client else (broker or "angel").lower()
+    log.info(
+        "[CONTROL_PORTFOLIO] request broker=%s env=%s fake=%s refresh=%s",
+        broker_name, account_env, use_fake_client, refresh,
+    )
+    cached_rows, cached_at, cache_fresh = _get_portfolio_cache_entry(broker_name, account_env)
+    if cached_rows is not None and cache_fresh and not refresh:
+        import time as _time
+        log.info(
+            "[CONTROL_PORTFOLIO] cache hit broker=%s env=%s rows=%d age=%.1fs",
+            broker_name,
+            account_env,
+            len(cached_rows),
+            _time.time() - (cached_at or 0),
+        )
+        return {
+            "status": True,
+            "broker": broker_name,
+            "account_env": account_env,
+            "data": cached_rows,
+            "cached": True,
+        }
+
     try:
-        now = _time.time()
-        if _portfolio_cache and (now - _portfolio_cache_time) < PORTFOLIO_CACHE_TTL:
-            log.info("[PORTFOLIO] Serving from cache (%d holdings)", len(_portfolio_cache))
-            return {"status": True, "data": _portfolio_cache}
+        if broker_name == "fake":
+            rows = [
+                {
+                    "tradingsymbol": "FAKE-EQ",
+                    "symboltoken": "1",
+                    "exchange": "NSE",
+                    "quantity": "10",
+                    "averageprice": "100",
+                    "ltp": "105",
+                    "broker": "fake",
+                }
+            ]
+            _set_portfolio_cache(broker_name, account_env, rows)
+            return {"status": True, "broker": broker_name, "account_env": account_env, "data": rows}
+
+        if broker_name == "etoro":
+            from brokers.etoro.trading_client import EtoroTradingClient
+
+            client = EtoroTradingClient(account_env=account_env)
+            client.generate_session()
+            positions = await client.aget_positions()
+            rows = [_etoro_position_to_portfolio_row(item) for item in positions]
+            _set_portfolio_cache(broker_name, account_env, rows)
+            log.info("[CONTROL_PORTFOLIO] etoro returned %d positions", len(rows))
+            return {"status": True, "broker": broker_name, "account_env": account_env, "data": rows}
+
+        log.info("[CONTROL_PORTFOLIO] fetching fresh angel holdings...")
+        client = get_client()
+        raw = client._client.holding().get("data") or []
+        rows = [{**item, "broker": "angel"} for item in raw]
+        _set_portfolio_cache(broker_name, account_env, rows)
+        log.info("[CONTROL_PORTFOLIO] angel returned %d holdings", len(rows))
+        return {"status": True, "broker": broker_name, "account_env": account_env, "data": rows}
+    except Exception as e:
+        log.error("[CONTROL_PORTFOLIO] failed broker=%s env=%s: %s", broker_name, account_env, e, exc_info=True)
+        if cached_rows is not None:
+            log.info(
+                "[CONTROL_PORTFOLIO] returning stale cache broker=%s env=%s rows=%d",
+                broker_name,
+                account_env,
+                len(cached_rows),
+            )
+            return {
+                "status": True,
+                "broker": broker_name,
+                "account_env": account_env,
+                "data": cached_rows,
+                "cached": True,
+                "stale": True,
+                "message": str(e),
+            }
+        return {"status": False, "broker": broker_name, "account_env": account_env, "message": str(e), "data": []}
+
+
+@app.get("/api/portfolio")
+def get_portfolio(refresh: bool = False):
+    broker_name = "angel"
+    account_env = "live"
+    cached_rows, cached_at, cache_fresh = _get_portfolio_cache_entry(broker_name, account_env)
+    if cached_rows is not None and cache_fresh and not refresh:
+        log.info("[PORTFOLIO] Serving from cache (%d holdings)", len(cached_rows))
+        return {"status": True, "data": cached_rows, "cached": True}
+    try:
         log.info("[PORTFOLIO] Fetching fresh holdings from API...")
         client = get_client()
         raw = client._client.holding()["data"]
-        _portfolio_cache = raw
-        _portfolio_cache_time = now
+        _set_portfolio_cache(broker_name, account_env, raw)
         log.info("[PORTFOLIO] Fetched %d holdings", len(raw))
         for h in raw:
             log.info("  -> %s  qty=%s  ltp=%s", h.get('tradingsymbol'), h.get('quantity'), h.get('ltp'))
         return {"status": True, "data": raw}
     except Exception as e:
         log.error("[PORTFOLIO] Error: %s", e)
-        if _portfolio_cache:
-            log.info("[PORTFOLIO] Returning stale cache (%d holdings)", len(_portfolio_cache))
-            return {"status": True, "data": _portfolio_cache}
+        if cached_rows is not None:
+            log.info("[PORTFOLIO] Returning stale cache (%d holdings)", len(cached_rows))
+            return {"status": True, "data": cached_rows, "cached": True, "stale": True}
         raise HTTPException(status_code=500, detail=str(e))
 
 

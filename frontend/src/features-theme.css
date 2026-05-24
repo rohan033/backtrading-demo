@@ -1,0 +1,61 @@
+/* shadcn theme scoped to the features marketing page */
+.features-shell {
+  --background: 207 36% 10%;
+  --foreground: 210 20% 92%;
+  --card: 210 28% 14%;
+  --card-foreground: 210 20% 92%;
+  --popover: 210 28% 14%;
+  --popover-foreground: 210 20% 92%;
+  --brand: 203 89% 53%;
+  --brand-foreground: 0 0% 100%;
+  --muted: 210 24% 18%;
+  --muted-foreground: 210 12% 62%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 210 22% 22%;
+  --input: 210 22% 22%;
+  --ring: 203 89% 53%;
+  --radius: 0.75rem;
+
+  min-height: 100vh;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: Inter, 'Segoe UI', system-ui, sans-serif;
+}
+
+.features-shell .text-primary-foreground {
+  color: hsl(var(--brand-foreground));
+}
+
+.features-shell .bg-primary {
+  background-color: hsl(var(--brand));
+}
+
+.features-shell .bg-primary\/20 {
+  background-color: hsl(var(--brand) / 0.2);
+}
+
+.features-shell .text-muted-foreground {
+  color: hsl(var(--muted-foreground));
+}
+
+.features-shell .bg-card,
+.features-shell .bg-ui-card {
+  background-color: hsl(var(--card));
+}
+
+.features-shell .border-border {
+  border-color: hsl(var(--border));
+}
+
+.features-shell .text-brand {
+  color: hsl(var(--brand));
+}
+
+.features-shell .bg-brand {
+  background-color: hsl(var(--brand));
+}
+
+.features-shell .text-brand-foreground {
+  color: hsl(var(--brand-foreground));
+}

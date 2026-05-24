@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
+
+import {
+  formatBrokerCompactMoney,
+  formatBrokerPrice,
+  formatBrokerSignedMoney,
+  formatIndianNumber,
+  formatPriceInput,
+  isIndianBroker,
+} from './lib/currency'
 
 const CONTROL_API = '/api/control'
 const CONTROL_MARKET_WS = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/control/market`
@@ -46,7 +55,17 @@ const EMPTY_PLANE_STREAM = {
   realtimeEvents: [],
 }
 
-export default function ExecutionWorkspace() {
+const ExecutionContext = createContext(null)
+
+export function useExecution() {
+  const ctx = useContext(ExecutionContext)
+  if (!ctx) {
+    throw new Error('useExecution must be used within ExecutionProvider')
+  }
+  return ctx
+}
+
+export function ExecutionProvider({ children }) {
   const [activeTab, setActiveTab] = useState('strategy')
   const [executions, setExecutions] = useState([])
   const [dataPlanes, setDataPlanes] = useState([])
@@ -477,120 +496,54 @@ export default function ExecutionWorkspace() {
     setActiveTab('chart')
   }
 
+  const value = {
+    activeTab,
+    setActiveTab,
+    panelExecutions,
+    selectedExecution,
+    selectedExecutionLive,
+    selectedExecutionId,
+    setSelectedExecutionId,
+    isGlobalView,
+    connectionPlane,
+    selectedDataPlane,
+    selectedDataPlaneId,
+    setSelectedDataPlaneId,
+    liveApi,
+    wsConnected,
+    ticks,
+    tickHistory,
+    selectedTick,
+    executionEvents,
+    planeStreams,
+    controlledExecutions,
+    selectedLaunch,
+    selectedLaunchId,
+    setSelectedLaunchId,
+    dataPlanes,
+    showCreate,
+    setShowCreate,
+    duplicateDraft,
+    setDuplicateDraft,
+    createExecution,
+    duplicateExecution,
+    onExecutionStopped,
+    onExecutionCreated,
+    onExecutionStarted,
+    refreshControlledExecutions,
+    refreshExecutions,
+    refreshDataPlanes,
+  }
+
   return (
-    <div className="h-full flex overflow-hidden bg-primary">
-      <ExecutionSidePanel
-        dataPlanes={dataPlanes}
-        selectedDataPlaneId={selectedDataPlane?.id}
-        onSelectDataPlane={id => {
-          setSelectedDataPlaneId(id)
-          setShowCreate(false)
-          setActiveTab('chart')
-        }}
-        executions={panelExecutions}
-        selectedExecutionId={selectedExecution?.executor_id}
-        isGlobalView={isGlobalView}
-        planeStreams={planeStreams}
-        connectionPlane={connectionPlane}
-        onSelectGlobal={() => {
-          setSelectedExecutionId(null)
-          setShowCreate(false)
-        }}
-        onSelect={id => {
-          const execution = panelExecutions.find(ex => ex.executor_id === id)
-          setSelectedExecutionId(id)
-          if (execution?.data_plane_id) {
-            setSelectedDataPlaneId(execution.data_plane_id)
-          }
-          setShowCreate(false)
-          setActiveTab('chart')
-        }}
-        onCreate={createExecution}
-      />
-
-      <main className="flex-1 flex flex-col overflow-hidden">
-        <WorkspaceHeader
-          execution={selectedExecution}
-          isGlobalView={isGlobalView}
-          dataPlane={connectionPlane || selectedDataPlane}
-          wsConnected={wsConnected}
-          liveApi={liveApi}
-        />
-        <TabBar activeTab={activeTab} setActiveTab={setActiveTab} />
-
-        <section className="flex-1 overflow-auto">
-          {showCreate ? (
-            <CreateExecutionPanel
-              duplicateDraft={duplicateDraft}
-              onCreated={onExecutionCreated}
-              onStarted={onExecutionStarted}
-              onCancel={() => {
-                setDuplicateDraft(null)
-                setShowCreate(false)
-              }}
-            />
-          ) : (
-            <>
-              {activeTab === 'launch' && (
-                <LaunchTab
-                  executions={controlledExecutions}
-                  selectedLaunchId={selectedLaunch?.execution_id}
-                  onSelect={setSelectedLaunchId}
-                  onStarted={onExecutionStarted}
-                  onStopped={onExecutionStopped}
-                  onDuplicate={duplicateExecution}
-                  onRefresh={refreshControlledExecutions}
-                />
-              )}
-              {activeTab === 'chart' && (
-                <ChartTab
-                  executions={panelExecutions}
-                  planeStreams={planeStreams}
-                  selectedExecutionId={selectedExecutionId}
-                />
-              )}
-              {activeTab === 'portfolio' && (
-                <PortfolioTab liveApi={liveApi} ticks={ticks} execution={selectedExecutionLive || selectedExecution} />
-              )}
-              {activeTab === 'strategy' && (
-                <StrategyTab
-                  execution={selectedExecutionLive || selectedExecution}
-                  latestTick={selectedTick}
-                  liveApi={liveApi}
-                  onCreate={createExecution}
-                  onRefresh={refreshExecutions}
-                />
-              )}
-              {activeTab === 'orders' && (
-                <OrderManagementTab
-                  globalView={isGlobalView}
-                  liveApi={liveApi}
-                  execution={selectedExecutionLive || selectedExecution}
-                  realtimeEvents={executionEvents}
-                />
-              )}
-              {activeTab === 'events' && (
-                <TradingEventsTab
-                  globalView={isGlobalView}
-                  liveApi={liveApi}
-                  execution={selectedExecutionLive || selectedExecution}
-                  realtimeEvents={executionEvents}
-                />
-              )}
-              {activeTab === 'history' && (
-                <HistoricalEventsTab globalView={isGlobalView} execution={selectedExecutionLive || selectedExecution} />
-              )}
-            </>
-          )}
-        </section>
-      </main>
-
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 pointer-events-none max-w-sm">
+    <ExecutionContext.Provider value={value}>
+      {children}
+      <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex max-w-sm flex-col gap-2">
         {toasts.map(toast => (
           <TradingToast key={toast.id} toast={toast} />
         ))}
       </div>
-    </div>
+    </ExecutionContext.Provider>
   )
 }
 
@@ -727,7 +680,7 @@ function ExecutionSidePanel({
             <div className="grid grid-cols-3 gap-2 mt-3 text-[9px] text-text-secondary">
               <Metric label="TP" value={`${ex.long_percent ?? '-'}%`} />
               <Metric label="SL" value={`${ex.short_percent ?? '-'}%`} />
-              <Metric label="Cap" value={compactNumber(ex.max_available_capital)} />
+              <Metric label="Cap" value={formatBrokerCompactMoney(ex.broker, ex.max_available_capital)} />
             </div>
           </button>
           )
@@ -812,7 +765,7 @@ function TabBar({ activeTab, setActiveTab }) {
   )
 }
 
-function ChartTab({ executions, planeStreams, selectedExecutionId }) {
+export function ChartTab({ executions, planeStreams, selectedExecutionId }) {
   const liveExecutions = useMemo(
     () => executions.filter(execution =>
       execution?.ws_url
@@ -993,9 +946,13 @@ function PortfolioTab({ ticks, liveApi, execution }) {
           return [
             holding.tradingsymbol,
             holding.exchange,
-            qty,
-            ltp.toFixed(2),
-            <span className={pnl >= 0 ? 'text-green' : 'text-red'}>{pnl.toFixed(2)}</span>,
+            isIndianBroker(execution?.broker)
+              ? formatIndianNumber(qty, 0)
+              : qty,
+            formatBrokerPrice(execution?.broker, ltp),
+            <span className={pnl >= 0 ? 'text-green' : 'text-red'} key="pnl">
+              {formatBrokerSignedMoney(execution?.broker, pnl)}
+            </span>,
           ]
         })}
       />
@@ -1019,13 +976,13 @@ function ServerInfoPanel({ port, apiBaseUrl, wsUrl, logFile, pending = false }) 
   )
 }
 
-function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefresh }) {
+export function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefresh }) {
   if (!execution) {
     return (
       <EmptyState
         title="No strategy execution"
         body="Create a broker-stock-strategy execution to start monitoring strategy state."
-        action={<button onClick={onCreate} className="px-4 py-2 bg-accent text-white rounded text-xs font-bold">Create Execution</button>}
+        action={<button onClick={onCreate} className="px-4 py-2 bg-accent text-white rounded text-xs font-bold">New strategy</button>}
       />
     )
   }
@@ -1069,7 +1026,7 @@ function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefresh }) {
   )
 }
 
-function OrderManagementTab({ globalView, liveApi, execution, realtimeEvents }) {
+export function OrderManagementTab({ globalView, liveApi, execution, realtimeEvents }) {
   const [orders, setOrders] = useState({})
   const [loading, setLoading] = useState(true)
 
@@ -1104,7 +1061,7 @@ function OrderManagementTab({ globalView, liveApi, execution, realtimeEvents }) 
     return (
       <EmptyState
         title="Loading orders"
-        body={globalView ? 'Fetching all persisted orders from the control plane.' : 'Fetching persisted and live order state.'}
+        body={globalView ? 'Fetching all persisted orders.' : 'Fetching persisted and live order state.'}
       />
     )
   }
@@ -1114,7 +1071,7 @@ function OrderManagementTab({ globalView, liveApi, execution, realtimeEvents }) 
     .map(([uid, order]) => [
       order.order_id || uid,
       order.unique_order_id || '-',
-      order.executor_id || '-',
+      order.symbol || order.executor_id || '-',
       order.order_type || '-',
       <StatusBadge status={(order.status || 'unknown').toUpperCase()} />,
     ])
@@ -1123,11 +1080,11 @@ function OrderManagementTab({ globalView, liveApi, execution, realtimeEvents }) 
     <div className="p-4">
       {globalView ? (
         <div className="mb-3 text-[10px] text-text-secondary">
-          Showing all persisted orders from the control plane database.
+          Showing all persisted orders across strategies.
         </div>
       ) : null}
       {rows.length ? (
-        <DataTable columns={['Order ID', 'Unique ID', 'Execution', 'Type', 'Status']} rows={rows} />
+        <DataTable columns={['Order ID', 'Unique ID', 'Strategy', 'Type', 'Status']} rows={rows} />
       ) : (
         <EmptyState title="No orders tracked" body="Orders will appear here as the trading manager places and updates them." />
       )}
@@ -1135,7 +1092,7 @@ function OrderManagementTab({ globalView, liveApi, execution, realtimeEvents }) 
   )
 }
 
-function TradingEventsTab({ globalView, liveApi, execution, realtimeEvents }) {
+export function TradingEventsTab({ globalView, liveApi, execution, realtimeEvents }) {
   const [dbEvents, setDbEvents] = useState([])
 
   useEffect(() => {
@@ -1167,7 +1124,7 @@ function TradingEventsTab({ globalView, liveApi, execution, realtimeEvents }) {
     <div className="p-4">
       {globalView ? (
         <div className="mb-3 text-[10px] text-text-secondary">
-          Showing all persisted events from the control plane database. Select an execution for live websocket updates.
+          Showing all persisted events across strategies. Open a strategy for live websocket updates.
         </div>
       ) : null}
       <EventList events={events} emptyTitle="No trading events yet" />
@@ -1262,7 +1219,7 @@ function HistoricalEventsTab({ globalView, execution }) {
   )
 }
 
-function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onStopped, onDuplicate, onRefresh }) {
+export function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onStopped, onDuplicate, onRefresh }) {
   const selected = executions.find(item => item.execution_id === selectedLaunchId) || executions[0] || null
   const [starting, setStarting] = useState(false)
   const [stopping, setStopping] = useState(false)
@@ -1331,9 +1288,9 @@ function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onStoppe
     <div className="p-5 max-w-5xl">
       <div className="flex items-center justify-between mb-5">
         <div>
-          <h2 className="text-sm font-bold">Launch Execution</h2>
+          <h2 className="text-sm font-bold">Deploy Strategy</h2>
           <p className="text-[10px] text-text-secondary mt-1">
-            Start the live server when you are ready. You will get the port and log file path.
+            Deploy when you are ready. You will get the runtime port and log file path.
           </p>
         </div>
         <button onClick={onRefresh} className="px-3 py-1.5 bg-card border border-border rounded text-[10px]">
@@ -1351,8 +1308,8 @@ function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onStoppe
                 selected?.execution_id === item.execution_id ? 'border-accent bg-accent/10' : 'border-border bg-card'
               }`}
             >
-              <div className="text-[11px] font-bold truncate">{item.engine?.label || item.execution_id}</div>
-              <div className="text-[9px] text-text-secondary mt-1 truncate">{item.execution_id}</div>
+              <div className="text-[11px] font-bold truncate">{item.engine?.label || item.engine?.strategy_name || 'Strategy'}</div>
+              <div className="text-[9px] text-text-secondary mt-1 truncate">{item.executor?.symbol || item.engine?.symbol || '—'}</div>
               <div className="mt-2"><StatusBadge status={item.engine?.status || 'pending'} /></div>
             </button>
           ))}
@@ -1394,14 +1351,14 @@ function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onStoppe
               disabled={starting || stopping || !canStart}
               className="px-5 py-2 bg-green text-white rounded text-xs font-bold disabled:opacity-50"
             >
-              {starting ? 'Starting live server...' : status === 'RUNNING' ? 'Already running' : 'Start Live Server'}
+              {starting ? 'Deploying...' : status === 'RUNNING' ? 'Deployed' : 'Deploy'}
             </button>
             <button
               onClick={stopExecution}
               disabled={starting || stopping || !canStop}
               className="px-5 py-2 bg-red text-white rounded text-xs font-bold disabled:opacity-50"
             >
-              {stopping ? 'Stopping...' : 'Stop Live Server'}
+              {stopping ? 'Stopping...' : 'Stop'}
             </button>
             <button
               onClick={() => onDuplicate(selected)}
@@ -1420,7 +1377,7 @@ function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onStoppe
   )
 }
 
-function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onCancel }) {
+export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onCancel }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [selectedStock, setSelectedStock] = useState(null)
@@ -1487,7 +1444,7 @@ function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onCancel }
 
   useEffect(() => {
     if (ltp == null || closePriceManual || !selectedStock) return
-    setForm(prev => ({ ...prev, close_price: formatPrice(ltp) }))
+    setForm(prev => ({ ...prev, close_price: formatPriceInput(ltp) }))
   }, [ltp, closePriceManual, selectedStock])
 
   const search = async () => {
@@ -1497,7 +1454,7 @@ function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onCancel }
       q: query.trim(),
       broker: form.broker,
       account_env: form.account_env,
-      exchange: 'NSE',
+      exchange: form.broker === 'etoro' ? 'ETORO' : 'NSE',
       use_fake_client: String(form.use_fake_client),
     })
     const url = `${CONTROL_API}/search?${params.toString()}`
@@ -1513,7 +1470,14 @@ function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onCancel }
         return
       }
       setResults(data.data || [])
-      if (!(data.data || []).length) setError(`No results found for "${query.trim()}"`)
+      if (!(data.data || []).length) {
+        const cryptoHint = /btc|eth|crypto|usd|eur/i.test(query.trim()) && form.broker === 'angel'
+          ? ' Angel search only covers NSE/BSE symbols — switch Broker to eToro for crypto and global instruments.'
+          : form.broker === 'etoro'
+            ? ' Check eToro credentials and that the selected environment (Demo/Live) is configured.'
+            : ''
+        setError(`No results found for "${query.trim()}".${cryptoHint}`)
+      }
     } catch (err) {
       console.error('[CreateExecution] Search request failed', err)
       setError(err.message || 'Search request failed')
@@ -1792,13 +1756,14 @@ function EventList({ events, emptyTitle }) {
 
 function ExecutionLevels({ execution }) {
   const levels = computeExecutionLevels(execution)
+  const broker = execution?.broker
 
   return (
     <div className="grid grid-cols-4 gap-3">
-      <StatCard label="Previous Close" value={levels.closePrice ?? '-'} />
-      <StatCard label="Buy Trigger" value={levels.buyTrigger ?? '-'} colorClass="text-accent" />
-      <StatCard label="Take Profit" value={levels.takeProfit ?? '-'} colorClass="text-green" />
-      <StatCard label="Stop Loss" value={levels.stopLoss ?? '-'} colorClass="text-red" />
+      <StatCard label="Previous Close" value={levels.closePrice != null ? formatBrokerPrice(broker, levels.closePrice) : '-'} />
+      <StatCard label="Buy Trigger" value={levels.buyTrigger != null ? formatBrokerPrice(broker, levels.buyTrigger) : '-'} colorClass="text-accent" />
+      <StatCard label="Take Profit" value={levels.takeProfit != null ? formatBrokerPrice(broker, levels.takeProfit) : '-'} colorClass="text-green" />
+      <StatCard label="Stop Loss" value={levels.stopLoss != null ? formatBrokerPrice(broker, levels.stopLoss) : '-'} colorClass="text-red" />
     </div>
   )
 }
@@ -1827,7 +1792,7 @@ function MarketPreviewPanel({
     )
   }
 
-  const displayLtp = ltp != null ? formatPrice(ltp) : '--'
+  const displayLtp = ltp != null ? formatBrokerPrice(form.broker, ltp) : '--'
   const livePrice = ltp != null ? Number(ltp) : null
   const closeNum = Number(closePrice)
   const priceDelta = livePrice != null && Number.isFinite(closeNum) && closeNum > 0
@@ -1882,9 +1847,9 @@ function MarketPreviewPanel({
       </div>
 
       <div className="grid grid-cols-1 gap-2 mt-auto">
-        <PreviewLevelRow label="Buy Trigger" value={levels.buyTrigger} hint={`+${form.initial_threshold}% from close`} tone="accent" />
-        <PreviewLevelRow label="Take Profit" value={levels.takeProfit} hint={`+${form.long_percent}% from trigger`} tone="green" />
-        <PreviewLevelRow label="Stop Loss" value={levels.stopLoss} hint={`-${form.short_percent}% from trigger`} tone="red" />
+        <PreviewLevelRow label="Buy Trigger" value={formatBrokerPrice(form.broker, levels.buyTrigger)} hint={`+${form.initial_threshold}% from close`} tone="accent" />
+        <PreviewLevelRow label="Take Profit" value={formatBrokerPrice(form.broker, levels.takeProfit)} hint={`+${form.long_percent}% from trigger`} tone="green" />
+        <PreviewLevelRow label="Stop Loss" value={formatBrokerPrice(form.broker, levels.stopLoss)} hint={`-${form.short_percent}% from trigger`} tone="red" />
       </div>
 
       {marketError && <div className="mt-3 text-[10px] text-red">{marketError}</div>}
@@ -2050,17 +2015,15 @@ function computeExecutionLevels(source) {
   const stopLoss = buyTrigger * (1 - Number(source.short_percent || 0) / 100)
 
   return {
-    closePrice: closePrice.toFixed(2),
-    buyTrigger: buyTrigger.toFixed(2),
-    takeProfit: takeProfit.toFixed(2),
-    stopLoss: stopLoss.toFixed(2),
+    closePrice,
+    buyTrigger,
+    takeProfit,
+    stopLoss,
   }
 }
 
 function formatPrice(value) {
-  const num = Number(value)
-  if (!Number.isFinite(num)) return ''
-  return num.toFixed(2)
+  return formatPriceInput(value)
 }
 
 function DataTable({ columns, rows }) {
@@ -2134,7 +2097,7 @@ function EnvBadge({ env }) {
   return <span className={`px-2 py-1 rounded text-[9px] font-bold ${color}`}>{normalized}</span>
 }
 
-function EmptyState({ title, body, action }) {
+export function EmptyState({ title, body, action }) {
   return (
     <div className="p-8 text-center">
       <h3 className="text-sm font-bold mb-2">{title}</h3>
@@ -2413,10 +2376,6 @@ function eventColor(action = '') {
   return 'text-accent'
 }
 
-function compactNumber(value) {
-  const number = Number(value || 0)
-  if (!number) return '-'
-  if (number >= 100000) return `${(number / 100000).toFixed(1)}L`
-  if (number >= 1000) return `${(number / 1000).toFixed(0)}K`
-  return String(number)
+function compactNumber(value, broker = 'angel') {
+  return formatBrokerCompactMoney(broker, value)
 }
