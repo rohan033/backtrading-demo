@@ -1,23 +1,55 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, Outlet, useNavigate, useParams } from 'react-router-dom'
 
+import { StrategiesTable } from '../../components/StrategiesTable'
+import StrategyDetailView from './StrategyDetailView'
 import {
-  ChartTab,
   CreateExecutionPanel,
+  ChartTab,
   EmptyState,
   ExecutionProvider,
-  LaunchTab,
   OrderManagementTab,
-  StrategyTab,
   TradingEventsTab,
   useExecution,
 } from '../../ExecutionWorkspace'
 
-const DETAIL_TABS = [
-  { id: 'chart', label: 'Chart' },
-  { id: 'overview', label: 'Overview' },
-  { id: 'activity', label: 'Activity' },
-]
+const STRATEGIES_PAGE_SIZE = 10
+
+function PaginationBar({ page, pageCount, total, pageSize, onPageChange }) {
+  if (pageCount <= 1) return null
+
+  const start = (page - 1) * pageSize + 1
+  const end = Math.min(page * pageSize, total)
+
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-border pt-4">
+      <p className="text-[11px] text-text-secondary">
+        Showing {start}–{end} of {total}
+      </p>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => onPageChange(page - 1)}
+          disabled={page <= 1}
+          className="rounded border border-border bg-card px-3 py-1.5 text-[11px] font-semibold text-text-secondary hover:text-text-primary disabled:opacity-40"
+        >
+          Previous
+        </button>
+        <span className="min-w-[4.5rem] text-center text-[11px] text-text-secondary">
+          Page {page} of {pageCount}
+        </span>
+        <button
+          type="button"
+          onClick={() => onPageChange(page + 1)}
+          disabled={page >= pageCount}
+          className="rounded border border-border bg-card px-3 py-1.5 text-[11px] font-semibold text-text-secondary hover:text-text-primary disabled:opacity-40"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export function TradeLayout() {
   return (
@@ -31,14 +63,14 @@ export function TradeLayout() {
 
 export function StrategiesListPage() {
   const navigate = useNavigate()
+  const [filter, setFilter] = useState('all')
+  const [page, setPage] = useState(1)
   const {
     panelExecutions,
-    controlledExecutions,
+    controlledExecutionsLoading,
+    controlledExecutionsError,
     setSelectedExecutionId,
     setSelectedLaunchId,
-    duplicateExecution,
-    onExecutionStarted,
-    onExecutionStopped,
     refreshControlledExecutions,
   } = useExecution()
 
@@ -46,30 +78,58 @@ export function StrategiesListPage() {
     refreshControlledExecutions()
   }, [refreshControlledExecutions])
 
-  const queued = controlledExecutions.map(item => ({
-    id: item.execution_id,
-    label: item.engine?.label || item.engine?.strategy_name || item.executor?.symbol || 'Queued strategy',
-    symbol: item.executor?.symbol || item.engine?.symbol || '—',
-    status: item.engine?.status || 'pending',
-    kind: 'queued',
-  }))
+  useEffect(() => {
+    setPage(1)
+  }, [filter])
 
-  const live = panelExecutions.map(execution => ({
-    id: execution.executor_id,
-    label: execution.label || execution.symbol || execution.strategy_name || 'Strategy',
-    symbol: execution.symbol || '—',
-    status: execution.data_plane_status || execution.status || 'unknown',
-    kind: 'live',
-  }))
+  const rows = useMemo(() => {
+    return panelExecutions.map(execution => {
+      const engineStatus = String(execution.data_plane_status || execution.status || 'unknown').toLowerCase()
+      return {
+        id: execution.executor_id,
+        name: execution.label || execution.symbol || execution.strategy_name || 'Strategy',
+        symbol: execution.symbol || '—',
+        status: engineStatus,
+        pnl: 0,
+        inPosition: Boolean(execution.is_in_position),
+        isLive: ['running', 'starting'].includes(engineStatus),
+      }
+    })
+  }, [panelExecutions])
 
-  const rows = [...queued, ...live]
+  const filteredRows = useMemo(() => {
+    if (filter === 'running') return rows.filter(row => row.isLive)
+    if (filter === 'stopped') return rows.filter(row => !row.isLive)
+    return rows
+  }, [filter, rows])
+
+  const pageCount = Math.max(1, Math.ceil(filteredRows.length / STRATEGIES_PAGE_SIZE))
+  const currentPage = Math.min(page, pageCount)
+
+  const pagedRows = useMemo(() => {
+    const start = (currentPage - 1) * STRATEGIES_PAGE_SIZE
+    return filteredRows.slice(start, start + STRATEGIES_PAGE_SIZE)
+  }, [filteredRows, currentPage])
+
+  const counts = useMemo(() => ({
+    all: rows.length,
+    running: rows.filter(row => row.isLive).length,
+    stopped: rows.filter(row => !row.isLive).length,
+  }), [rows])
 
   return (
     <div className="h-full overflow-auto p-6">
       <div className="mb-6 flex items-center justify-between gap-4">
-        <p className="text-sm text-text-secondary">
-          Manage queued and running strategies. Open a strategy to chart, review activity, and deploy.
-        </p>
+        <div>
+          <p className="text-sm text-text-secondary">
+            Saved broker-stock-strategy executions from the control plane, including stopped runs.
+          </p>
+          {!controlledExecutionsLoading && !controlledExecutionsError ? (
+            <p className="mt-1 text-[10px] text-text-secondary">
+              {counts.all} saved · {counts.running} running · {counts.stopped} stopped
+            </p>
+          ) : null}
+        </div>
         <Link
           to="/trade/strategies/new"
           className="shrink-0 rounded-md bg-accent px-4 py-2 text-[11px] font-bold text-white"
@@ -78,32 +138,72 @@ export function StrategiesListPage() {
         </Link>
       </div>
 
-      <div className="grid gap-3">
-        {rows.length ? rows.map(row => (
+      <div className="mb-4 flex flex-wrap gap-2">
+        {[
+          { id: 'all', label: `All (${counts.all})` },
+          { id: 'running', label: `Running (${counts.running})` },
+          { id: 'stopped', label: `Stopped (${counts.stopped})` },
+        ].map(tab => (
           <button
-            key={`${row.kind}:${row.id}`}
+            key={tab.id}
             type="button"
-            onClick={() => {
-              if (row.kind === 'live') setSelectedExecutionId(row.id)
-              else setSelectedLaunchId(row.id)
-              navigate(`/trade/strategies/${encodeURIComponent(row.id)}`)
-            }}
-            className="flex w-full items-center justify-between rounded border border-border bg-card p-4 text-left transition-colors hover:border-accent/50"
+            onClick={() => setFilter(tab.id)}
+            className={`rounded px-3 py-1.5 text-[11px] font-bold transition-colors ${
+              filter === tab.id
+                ? 'bg-accent text-white'
+                : 'bg-card text-text-secondary hover:text-text-primary'
+            }`}
           >
-            <div>
-              <div className="text-sm font-semibold">{row.label}</div>
-              <div className="mt-1 text-[10px] text-text-secondary">{row.symbol}</div>
-            </div>
-            <span className="rounded bg-secondary px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-text-secondary">
-              {String(row.status).replace(/_/g, ' ')}
-            </span>
+            {tab.label}
           </button>
-        )) : (
-          <div className="rounded border border-dashed border-border p-8 text-center text-sm text-text-secondary">
-            No strategies yet. Create one to get started.
-          </div>
-        )}
+        ))}
+        <button
+          type="button"
+          onClick={() => refreshControlledExecutions()}
+          disabled={controlledExecutionsLoading}
+          className="ml-auto rounded border border-border bg-card px-3 py-1.5 text-[11px] font-semibold text-text-secondary hover:text-text-primary disabled:opacity-50"
+        >
+          {controlledExecutionsLoading ? 'Refreshing…' : 'Refresh'}
+        </button>
       </div>
+
+      {controlledExecutionsError ? (
+        <div className="mb-4 rounded border border-red/40 bg-red/10 px-4 py-3 text-sm text-red">
+          {controlledExecutionsError}
+        </div>
+      ) : null}
+
+      {controlledExecutionsLoading ? (
+        <div className="rounded border border-dashed border-border p-8 text-center text-sm text-text-secondary">
+          Loading saved strategies…
+        </div>
+      ) : filteredRows.length ? (
+        <div className="overflow-hidden rounded-lg border border-border bg-card">
+          <StrategiesTable
+            rows={pagedRows}
+            onRowClick={rowId => {
+              setSelectedExecutionId(rowId)
+              setSelectedLaunchId(rowId)
+              navigate(`/trade/strategies/${encodeURIComponent(rowId)}`)
+            }}
+          />
+          <div className="px-4 pb-4">
+            <PaginationBar
+              page={currentPage}
+              pageCount={pageCount}
+              total={filteredRows.length}
+              pageSize={STRATEGIES_PAGE_SIZE}
+              onPageChange={setPage}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="rounded border border-dashed border-border p-8 text-center text-sm text-text-secondary">
+          {filter === 'running'
+            ? 'No running strategies right now. Open Stopped or All to see saved executions.'
+            : 'No strategies yet. Create one to get started.'}
+        </div>
+      )}
     </div>
   )
 }
@@ -149,8 +249,10 @@ export function StrategyCreatePage() {
 
 export function StrategyDetailPage() {
   const { id } = useParams()
-  const [section, setSection] = useState('chart')
-  const contentRef = useRef(null)
+  const navigate = useNavigate()
+  const [stopping, setStopping] = useState(false)
+  const [deploying, setDeploying] = useState(false)
+  const [actionError, setActionError] = useState('')
   const {
     panelExecutions,
     controlledExecutions,
@@ -160,11 +262,9 @@ export function StrategyDetailPage() {
     setSelectedExecutionId,
     setSelectedLaunchId,
     planeStreams,
-    selectedExecutionId,
     liveApi,
     selectedTick,
     executionEvents,
-    createExecution,
     refreshExecutions,
     duplicateExecution,
     onExecutionStarted,
@@ -183,121 +283,93 @@ export function StrategyDetailPage() {
     if (queued) setSelectedLaunchId(id)
   }, [id, panelExecutions, controlledExecutions, setSelectedExecutionId, setSelectedLaunchId])
 
-  useEffect(() => {
-    setSection('chart')
-  }, [id])
-
   const execution = selectedExecutionLive || selectedExecution
   const queuedItem = controlledExecutions.find(item => item.execution_id === id)
   const engineStatus = String(
     queuedItem?.engine?.status || execution?.data_plane_status || '',
   ).toLowerCase()
   const isLive = ['running', 'starting'].includes(engineStatus)
-  const showDeploy = Boolean(queuedItem) && !isLive
-  const strategyExecutions = useMemo(
-    () => panelExecutions.filter(ex => ex.executor_id === id),
-    [panelExecutions, id],
+  const overviewExecution = useMemo(
+    () => panelExecutions.find(ex => ex.executor_id === id) || execution || null,
+    [panelExecutions, id, execution],
   )
+  const strategyActivityEvents = useMemo(() => {
+    if (!id) return []
+    return executionEvents.filter(event => {
+      const execId = event.executor_id || event.details?.executor_id
+      return execId === id
+    })
+  }, [executionEvents, id])
 
-  const selectSection = nextSection => {
-    setSection(nextSection)
-    if (contentRef.current) contentRef.current.scrollTop = 0
+  const stopStrategy = async () => {
+    if (!id) return
+    setActionError('')
+    setStopping(true)
+    try {
+      const res = await fetch(`/api/control/executions/${encodeURIComponent(id)}/stop`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Failed to stop strategy')
+      await refreshControlledExecutions()
+      await onExecutionStopped(id)
+    } catch (error) {
+      setActionError(error?.message || 'Failed to stop strategy')
+    } finally {
+      setStopping(false)
+    }
+  }
+
+  const deployStrategy = async () => {
+    if (!id) return
+    setActionError('')
+    setDeploying(true)
+    try {
+      const res = await fetch(`/api/control/executions/${encodeURIComponent(id)}/start`, { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Failed to deploy strategy')
+      const payload = data.data || {}
+      await refreshControlledExecutions()
+      await onExecutionStarted(payload.engine, payload.executor)
+      await refreshExecutions()
+    } catch (error) {
+      setActionError(error?.message || 'Failed to deploy strategy')
+    } finally {
+      setDeploying(false)
+    }
+  }
+
+  const handleDuplicate = async () => {
+    setActionError('')
+    const item = queuedItem || { execution_id: id }
+    const draft = await duplicateExecution(item)
+    if (draft) {
+      navigate('/trade/strategies/new')
+      return
+    }
+    setActionError('Could not duplicate this strategy. Refresh and try again.')
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-secondary px-4 py-2">
-        {DETAIL_TABS.map(tab => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => selectSection(tab.id)}
-            className={`rounded px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide ${
-              section === tab.id ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
-        {execution?.symbol ? (
-          <span className="ml-auto text-[10px] text-text-secondary">{execution.symbol}</span>
-        ) : null}
-      </div>
-
-      <div ref={contentRef} className="min-h-0 flex-1 overflow-auto">
-        {section === 'chart' ? (
-          isLive ? (
-            <ChartTab
-              executions={strategyExecutions}
-              planeStreams={planeStreams}
-              selectedExecutionId={selectedExecutionId || id}
-            />
-          ) : (
-            <EmptyState
-              title="Chart unavailable"
-              body="Deploy this strategy from the Overview tab to start live price streaming."
-              action={showDeploy ? (
-                <button
-                  type="button"
-                  onClick={() => selectSection('overview')}
-                  className="rounded bg-accent px-4 py-2 text-xs font-bold text-white"
-                >
-                  Go to Overview
-                </button>
-              ) : null}
-            />
-          )
-        ) : null}
-
-        {section === 'overview' ? (
-          <div className="space-y-0">
-            {showDeploy ? (
-              <div className="border-b border-border">
-                <LaunchTab
-                  executions={controlledExecutions}
-                  selectedLaunchId={selectedLaunchId || id}
-                  onSelect={setSelectedLaunchId}
-                  onStarted={onExecutionStarted}
-                  onStopped={onExecutionStopped}
-                  onDuplicate={duplicateExecution}
-                  onRefresh={refreshControlledExecutions}
-                />
-              </div>
-            ) : null}
-            <StrategyTab
-              execution={execution}
-              latestTick={selectedTick}
-              liveApi={liveApi}
-              onCreate={createExecution}
-              onRefresh={refreshExecutions}
-            />
-          </div>
-        ) : null}
-
-        {section === 'activity' ? (
-          <div className="space-y-6 p-4">
-            <div>
-              <h3 className="mb-3 text-xs font-bold uppercase tracking-[1.5px]">Orders</h3>
-              <OrderManagementTab
-                globalView={false}
-                liveApi={liveApi}
-                execution={execution}
-                realtimeEvents={executionEvents}
-              />
-            </div>
-            <div>
-              <h3 className="mb-3 text-xs font-bold uppercase tracking-[1.5px]">Events</h3>
-              <TradingEventsTab
-                globalView={false}
-                liveApi={liveApi}
-                execution={execution}
-                realtimeEvents={executionEvents}
-              />
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </div>
+    <StrategyDetailView
+      executionId={id}
+      execution={overviewExecution}
+      queuedItem={queuedItem}
+      engineStatus={engineStatus}
+      isLive={isLive}
+      planeStreams={planeStreams}
+      selectedTick={selectedTick}
+      liveApi={liveApi}
+      strategyActivityEvents={strategyActivityEvents}
+      onExecutionStarted={onExecutionStarted}
+      onExecutionStopped={onExecutionStopped}
+      refreshControlledExecutions={refreshControlledExecutions}
+      refreshExecutions={refreshExecutions}
+      onStop={stopStrategy}
+      stopping={stopping}
+      onDeploy={deployStrategy}
+      deploying={deploying}
+      onDuplicate={handleDuplicate}
+      actionError={actionError}
+    />
   )
 }
 

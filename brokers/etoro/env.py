@@ -44,7 +44,7 @@ def etoro_env_values(account_env: str | None = None) -> tuple[str, dict[str, str
         if value is not None
     }
     merged = {**os.environ, **file_values}
-    _log_etoro_credentials(
+    _log_etoro_env(
         requested_profile=account_env,
         env_name=env_name,
         env_file=env_file,
@@ -72,7 +72,7 @@ def normalize_etoro_api_env(value: str | None) -> str:
     return "demo" if selected == "demo" else "real"
 
 
-def _log_etoro_credentials(
+def _log_etoro_env(
     *,
     requested_profile: str | None,
     env_name: str,
@@ -98,9 +98,8 @@ def _log_etoro_credentials(
         merged_value = merged.get(key)
         source = "file" if file_value is not None else ("process" if merged_value is not None else "missing")
         log.info(
-            "[eToro env] %s source=%s file=%r merged=%r",
+            "[eToro env] %s source=%s configured=%s",
             key,
             source,
-            file_value,
-            merged_value,
+            merged_value is not None,
         )

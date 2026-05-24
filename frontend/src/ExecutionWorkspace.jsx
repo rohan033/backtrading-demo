@@ -74,6 +74,8 @@ export function ExecutionProvider({ children }) {
   const [showCreate, setShowCreate] = useState(false)
   const [duplicateDraft, setDuplicateDraft] = useState(null)
   const [controlledExecutions, setControlledExecutions] = useState([])
+  const [controlledExecutionsLoading, setControlledExecutionsLoading] = useState(true)
+  const [controlledExecutionsError, setControlledExecutionsError] = useState(null)
   const [selectedLaunchId, setSelectedLaunchId] = useState(null)
   const [planeStreams, setPlaneStreams] = useState({})
   const [toasts, setToasts] = useState([])
@@ -163,12 +165,13 @@ export function ExecutionProvider({ children }) {
   const selectedTick = selectedTickKey ? ticks[selectedTickKey] : null
 
   const executionEvents = useMemo(() => {
-    if (!selectedExecution) return selectedStream.realtimeEvents
+    const filterId = selectedExecution?.executor_id || selectedExecutionId
+    if (!filterId) return []
     return selectedStream.realtimeEvents.filter(event =>
-      event.executor_id === selectedExecution.executor_id
-      || event.details?.executor_id === selectedExecution.executor_id,
+      event.executor_id === filterId
+      || event.details?.executor_id === filterId,
     )
-  }, [selectedStream.realtimeEvents, selectedExecution])
+  }, [selectedStream.realtimeEvents, selectedExecution, selectedExecutionId])
 
   const updatePlaneStream = useCallback((planeId, updater) => {
     setPlaneStreams(prev => {
@@ -213,18 +216,31 @@ export function ExecutionProvider({ children }) {
   )
 
   const refreshControlledExecutions = useCallback(async () => {
+    setControlledExecutionsLoading(true)
     try {
       const res = await fetch(`${CONTROL_API}/executions`)
+      if (!res.ok) {
+        throw new Error(`Control plane returned HTTP ${res.status}`)
+      }
       const data = await res.json()
-      const rows = data.status ? (data.data || []) : []
+      if (!data.status) {
+        throw new Error(data.message || 'Failed to load saved strategies')
+      }
+      const rows = data.data || []
       setControlledExecutions(rows)
+      setControlledExecutionsError(null)
       setSelectedLaunchId(prev => {
         if (prev && rows.some(item => item.execution_id === prev)) return prev
         return rows[0]?.execution_id || null
       })
-    } catch {
+    } catch (error) {
       setControlledExecutions([])
       setSelectedLaunchId(null)
+      setControlledExecutionsError(
+        error?.message || 'Could not reach the control plane. Start it with ./scripts/dev-cp.sh',
+      )
+    } finally {
+      setControlledExecutionsLoading(false)
     }
   }, [])
 
@@ -450,19 +466,21 @@ export function ExecutionProvider({ children }) {
   }
 
   const duplicateExecution = async (executionItem) => {
-    if (!executionItem?.execution_id) return
+    if (!executionItem?.execution_id) return null
     try {
       const res = await fetch(`${CONTROL_API}/executions/${executionItem.execution_id}/duplicate-template`)
       const data = await res.json()
       if (!res.ok) {
         console.error('[DuplicateExecution] failed', data.detail || data.message)
-        return
+        return null
       }
       setDuplicateDraft(data.data)
       setShowCreate(true)
       setActiveTab('strategy')
+      return data.data
     } catch (err) {
       console.error('[DuplicateExecution] request failed', err)
+      return null
     }
   }
 
@@ -517,6 +535,8 @@ export function ExecutionProvider({ children }) {
     executionEvents,
     planeStreams,
     controlledExecutions,
+    controlledExecutionsLoading,
+    controlledExecutionsError,
     selectedLaunch,
     selectedLaunchId,
     setSelectedLaunchId,
@@ -765,6 +785,60 @@ function TabBar({ activeTab, setActiveTab }) {
   )
 }
 
+export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
+  if (!execution) {
+    return (
+      <div className="flex min-h-[360px] items-center justify-center rounded-lg border border-border bg-card p-8">
+        <EmptyState title="No chart data" body="Select a strategy execution to view the chart." />
+      </div>
+    )
+  }
+
+  const stream = getPlaneStream(planeStreams, execution.data_plane_id)
+  const streamKey = planeTickKey(execution.data_plane_id, execution.token)
+  const tickHistory = stream.tickHistory[streamKey] || []
+  const ltp = selectedTick?.ltp ?? stream.ticks[streamKey]?.ltp
+  const isStreaming = Boolean(execution.ws_url)
+    && ['running', 'starting'].includes(String(execution.data_plane_status || '').toLowerCase())
+  const realtimeEvents = stream.realtimeEvents.filter(event =>
+    event.executor_id === execution.executor_id
+    || event.details?.executor_id === execution.executor_id,
+  )
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-card">
+      <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3.5">
+        <div>
+          <h3 className="text-[13px] font-semibold">Live chart</h3>
+          <p className="mt-0.5 text-[10px] text-text-secondary">Live price stream</p>
+        </div>
+        <div className="text-right">
+          <div className="text-sm font-bold">{execution.symbol || '—'}</div>
+          <div className="font-mono text-xl font-bold text-text-primary">
+            {ltp != null ? formatBrokerPrice(execution.broker, ltp) : '—'}
+          </div>
+        </div>
+      </div>
+      <div className="p-4">
+        {isStreaming ? (
+          <LiveExecutionChart
+            execution={execution}
+            data={tickHistory}
+            realtimeEvents={realtimeEvents}
+          />
+        ) : (
+          <div className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-border bg-secondary/20 px-6 text-center">
+            <p className="text-sm font-semibold">Chart unavailable</p>
+            <p className="mt-2 max-w-sm text-xs text-text-secondary">
+              Deploy this strategy from Runtime configuration to start live price streaming.
+            </p>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export function ChartTab({ executions, planeStreams, selectedExecutionId }) {
   const liveExecutions = useMemo(
     () => executions.filter(execution =>
@@ -960,23 +1034,88 @@ function PortfolioTab({ ticks, liveApi, execution }) {
   )
 }
 
-function ServerInfoPanel({ port, apiBaseUrl, wsUrl, logFile, pending = false }) {
+function HighlightMetricCard({ label, value, tone = 'default', mono = true, size = 'lg' }) {
+  const valueToneClass = tone === 'profit'
+    ? 'text-green'
+    : tone === 'loss'
+      ? 'text-red'
+      : tone === 'accent'
+        ? 'text-accent'
+        : 'text-text-primary'
+  const sizeClass = size === 'xl' ? 'text-3xl' : size === 'lg' ? 'text-2xl' : 'text-xl'
+
   return (
-    <div className="grid grid-cols-1 gap-2 text-xs bg-secondary border border-border rounded p-3">
-      <div><span className="text-text-secondary">Port:</span> <span className="font-mono">{port || '-'}</span></div>
-      <div><span className="text-text-secondary">API:</span> <span className="font-mono break-all">{apiBaseUrl || '-'}</span></div>
-      {wsUrl ? (
-        <div><span className="text-text-secondary">WebSocket:</span> <span className="font-mono break-all">{wsUrl}</span></div>
-      ) : null}
-      <div>
-        <span className="text-text-secondary">Log file:</span>{' '}
-        <span className="font-mono break-all">{logFile || (pending ? 'Created when live server starts' : '-')}</span>
+    <div className="rounded-lg border border-border bg-card px-4 py-4">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">{label}</div>
+      <div className={`font-bold leading-tight ${mono ? 'font-mono' : ''} ${sizeClass} ${valueToneClass}`}>
+        {value}
       </div>
     </div>
   )
 }
 
-export function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefresh }) {
+function ConnectionEndpointCard({ label, value, pending = false }) {
+  const displayValue = value || (pending ? 'Created when live server starts' : '—')
+
+  return (
+    <div className="rounded-lg border border-border bg-card px-4 py-4">
+      <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">{label}</div>
+      <div className="break-all font-mono text-base font-bold leading-snug text-text-primary">{displayValue}</div>
+    </div>
+  )
+}
+
+export function ServerInfoPanel({ port, apiBaseUrl, wsUrl, logFile, pending = false, hideTitle = false }) {
+  return (
+    <div className="space-y-3">
+      {!hideTitle ? (
+        <h3 className="text-xs font-bold uppercase tracking-[1.5px]">Runtime connection</h3>
+      ) : null}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <HighlightMetricCard label="Port" value={port || '—'} tone="accent" />
+        <ConnectionEndpointCard label="API" value={apiBaseUrl} pending={pending && !apiBaseUrl} />
+        {wsUrl ? <ConnectionEndpointCard label="WebSocket" value={wsUrl} /> : null}
+        <ConnectionEndpointCard label="Log file" value={logFile} pending={pending && !logFile} />
+      </div>
+    </div>
+  )
+}
+
+function StrategyParametersPanel({ execution, onRefresh }) {
+  const closePrice = execution.close_price != null
+    ? formatBrokerPrice(execution.broker, execution.close_price)
+    : '—'
+  const takeProfit = execution.long_percent != null ? `${execution.long_percent}%` : '—'
+  const stopLoss = execution.short_percent != null ? `${execution.short_percent}%` : '—'
+  const entryThreshold = execution.initial_threshold != null ? `${execution.initial_threshold}%` : '—'
+  const maxCapital = execution.max_available_capital != null
+    ? formatBrokerCompactMoney(execution.broker, execution.max_available_capital)
+    : '—'
+  const clientMode = execution.is_bracket_order_client ? 'Bracket orders' : 'Feed TP/SL'
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-bold uppercase tracking-[1.5px]">Strategy parameters</h3>
+        <button onClick={onRefresh} className="text-[10px] text-accent hover:text-text-primary">Refresh</button>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <HighlightMetricCard label="Take profit" value={takeProfit} tone="profit" size="xl" />
+        <HighlightMetricCard label="Stop loss" value={stopLoss} tone="loss" size="xl" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <HighlightMetricCard label="Close price" value={closePrice} tone="default" />
+        <HighlightMetricCard label="Entry threshold" value={entryThreshold} tone="default" />
+        <HighlightMetricCard label="Max capital" value={maxCapital} tone="default" />
+        <HighlightMetricCard label="Client mode" value={clientMode} tone="default" mono={false} />
+      </div>
+    </div>
+  )
+}
+
+export function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefresh, includeServerInfo = true }) {
   if (!execution) {
     return (
       <EmptyState
@@ -989,51 +1128,37 @@ export function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefres
 
   return (
     <div className="p-4 space-y-4">
-      <div className="grid grid-cols-6 gap-3">
-        <StatCard label="Status" value={execution.status || 'UNKNOWN'} />
-        <StatCard label="Env" value={envLabel(execution.account_env)} colorClass={execution.account_env === 'demo' ? 'text-accent' : 'text-red'} />
-        <StatCard label="Client" value={execution.is_bracket_order_client ? 'Bracket' : 'Feed TP/SL'} />
-        <StatCard label="Symbol" value={execution.symbol || '-'} />
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        <StatCard label="Environment" value={envLabel(execution.account_env)} colorClass={execution.account_env === 'demo' ? 'text-accent' : 'text-red'} />
         <StatCard label={instrumentLabel(execution.broker)} value={execution.token || '-'} colorClass="text-accent" />
         <StatCard label="LTP" value={latestTick ? latestTick.ltp.toFixed(2) : '-'} colorClass="text-accent" />
+        <StatCard label="In position" value={execution.is_in_position ? 'Yes' : 'No'} />
       </div>
 
-      <ServerInfoPanel
-        port={execution.data_plane_port}
-        apiBaseUrl={execution.api_base_url || liveApi}
-        wsUrl={execution.ws_url}
-        logFile={execution.log_file}
-        pending={!execution.log_file && !execution.data_plane_port}
-      />
+      {includeServerInfo ? (
+        <ServerInfoPanel
+          port={execution.data_plane_port}
+          apiBaseUrl={execution.api_base_url || liveApi}
+          wsUrl={execution.ws_url}
+          logFile={execution.log_file}
+          pending={!execution.log_file && !execution.data_plane_port}
+        />
+      ) : null}
 
-      <div className="bg-card border border-border rounded p-4">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-xs font-bold uppercase tracking-[1.5px]">Strategy Details</h3>
-          <button onClick={onRefresh} className="text-[10px] text-accent hover:text-text-primary">Refresh</button>
-        </div>
-        <dl className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs">
-          {Object.entries(execution)
-            .filter(([key]) => !['api_base_url', 'ws_url', 'log_file', 'data_plane_id', 'data_plane_label', 'data_plane_port', 'data_plane_status'].includes(key))
-            .map(([key, value]) => (
-            <div key={key} className="flex justify-between gap-4 border-b border-border/30 pb-1">
-              <dt className="text-text-secondary">{key}</dt>
-              <dd className="font-mono text-right">{String(value ?? '-')}</dd>
-            </div>
-          ))}
-        </dl>
-      </div>
+      <StrategyParametersPanel execution={execution} onRefresh={onRefresh} />
     </div>
   )
 }
 
-export function OrderManagementTab({ globalView, liveApi, execution, realtimeEvents }) {
+export function OrderManagementTab({ globalView, liveApi, execution, executorId, realtimeEvents }) {
   const [orders, setOrders] = useState({})
   const [loading, setLoading] = useState(true)
+  const filterExecutorId = !globalView ? (execution?.executor_id || executorId || null) : null
 
   useEffect(() => {
     let cancelled = false
     const params = new URLSearchParams()
-    if (!globalView && execution?.executor_id) params.set('executor_id', execution.executor_id)
+    if (filterExecutorId) params.set('executor_id', filterExecutorId)
 
     const loadPersisted = fetch(`${CONTROL_API}/orders?${params}`)
       .then(res => res.json())
@@ -1049,13 +1174,20 @@ export function OrderManagementTab({ globalView, liveApi, execution, realtimeEve
 
     Promise.all([loadPersisted, loadLive]).then(([persisted, live]) => {
       if (cancelled) return
-      setOrders({ ...persisted, ...live })
+      const merged = { ...persisted, ...live }
+      if (filterExecutorId) {
+        setOrders(Object.fromEntries(
+          Object.entries(merged).filter(([, order]) => order.executor_id === filterExecutorId),
+        ))
+        return
+      }
+      setOrders(merged)
     }).finally(() => {
       if (!cancelled) setLoading(false)
     })
 
     return () => { cancelled = true }
-  }, [globalView, liveApi, execution?.executor_id, realtimeEvents.length])
+  }, [globalView, liveApi, filterExecutorId, realtimeEvents.length])
 
   if (loading) {
     return (
@@ -1067,7 +1199,7 @@ export function OrderManagementTab({ globalView, liveApi, execution, realtimeEve
   }
 
   const rows = Object.entries(orders)
-    .filter(([, order]) => globalView || !execution || order.executor_id === execution.executor_id)
+    .filter(([, order]) => !filterExecutorId || order.executor_id === filterExecutorId)
     .map(([uid, order]) => [
       order.order_id || uid,
       order.unique_order_id || '-',
@@ -1082,6 +1214,10 @@ export function OrderManagementTab({ globalView, liveApi, execution, realtimeEve
         <div className="mb-3 text-[10px] text-text-secondary">
           Showing all persisted orders across strategies.
         </div>
+      ) : filterExecutorId ? (
+        <div className="mb-3 text-[10px] text-text-secondary">
+          Orders for execution <span className="font-mono text-accent">{filterExecutorId}</span>
+        </div>
       ) : null}
       {rows.length ? (
         <DataTable columns={['Order ID', 'Unique ID', 'Strategy', 'Type', 'Status']} rows={rows} />
@@ -1092,26 +1228,27 @@ export function OrderManagementTab({ globalView, liveApi, execution, realtimeEve
   )
 }
 
-export function TradingEventsTab({ globalView, liveApi, execution, realtimeEvents }) {
+export function TradingEventsTab({ globalView, liveApi, execution, executorId, realtimeEvents }) {
   const [dbEvents, setDbEvents] = useState([])
+  const filterExecutorId = !globalView ? (execution?.executor_id || executorId || null) : null
 
   useEffect(() => {
     const params = new URLSearchParams({ limit: '100' })
-    if (!globalView && execution?.executor_id) params.set('executor_id', execution.executor_id)
+    if (filterExecutorId) params.set('executor_id', filterExecutorId)
 
     fetch(`${CONTROL_API}/events?${params}`)
       .then(res => res.json())
       .then(data => { if (data.status) setDbEvents(data.data || []) })
       .catch(() => setDbEvents([]))
-  }, [globalView, execution?.executor_id, realtimeEvents.length])
+  }, [globalView, filterExecutorId, realtimeEvents.length])
 
   const liveEvents = globalView ? [] : realtimeEvents
   const seen = new Set()
   const events = [...liveEvents, ...dbEvents]
     .filter(event => {
-      if (!globalView && execution) {
+      if (filterExecutorId) {
         const execId = event.executor_id || event.details?.executor_id
-        if (execId && execId !== execution.executor_id) return false
+        if (execId !== filterExecutorId) return false
       }
       const key = `${event.id || ''}-${event.timestamp || event.created_at || ''}-${event.action}-${event.order_id || ''}`
       if (seen.has(key)) return false
@@ -1125,6 +1262,10 @@ export function TradingEventsTab({ globalView, liveApi, execution, realtimeEvent
       {globalView ? (
         <div className="mb-3 text-[10px] text-text-secondary">
           Showing all persisted events across strategies. Open a strategy for live websocket updates.
+        </div>
+      ) : filterExecutorId ? (
+        <div className="mb-3 text-[10px] text-text-secondary">
+          Events for execution <span className="font-mono text-accent">{filterExecutorId}</span>
         </div>
       ) : null}
       <EventList events={events} emptyTitle="No trading events yet" />
@@ -1219,7 +1360,7 @@ function HistoricalEventsTab({ globalView, execution }) {
   )
 }
 
-export function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onStopped, onDuplicate, onRefresh }) {
+export function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, onStopped, onDuplicate, onRefresh, singleExecution = false, embedded = false }) {
   const selected = executions.find(item => item.execution_id === selectedLaunchId) || executions[0] || null
   const [starting, setStarting] = useState(false)
   const [stopping, setStopping] = useState(false)
@@ -1283,65 +1424,83 @@ export function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, o
   const status = String(engine.status || 'pending').toUpperCase()
   const canStart = ['PENDING', 'STOPPED', 'FAILED', 'STALE'].includes(status)
   const canStop = ['STARTING', 'RUNNING', 'STALE'].includes(status)
+  const showSidebar = !singleExecution && executions.length > 1
 
   return (
-    <div className="p-5 max-w-5xl">
-      <div className="flex items-center justify-between mb-5">
-        <div>
-          <h2 className="text-sm font-bold">Deploy Strategy</h2>
-          <p className="text-[10px] text-text-secondary mt-1">
-            Deploy when you are ready. You will get the runtime port and log file path.
-          </p>
+    <div className={embedded ? '' : singleExecution ? 'border-b border-border px-4 py-4' : 'p-5 max-w-5xl'}>
+      {!singleExecution && !embedded ? (
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h2 className="text-sm font-bold">Deploy Strategy</h2>
+            <p className="text-[10px] text-text-secondary mt-1">
+              Deploy when you are ready. You will get the runtime port and log file path.
+            </p>
+          </div>
+          <button onClick={onRefresh} className="px-3 py-1.5 bg-card border border-border rounded text-[10px]">
+            Refresh
+          </button>
         </div>
-        <button onClick={onRefresh} className="px-3 py-1.5 bg-card border border-border rounded text-[10px]">
-          Refresh
-        </button>
-      </div>
+      ) : null}
 
-      <div className="grid grid-cols-[280px_1fr] gap-4">
-        <aside className="space-y-2">
-          {executions.map(item => (
-            <button
-              key={item.execution_id}
-              onClick={() => onSelect(item.execution_id)}
-              className={`w-full text-left p-3 rounded border ${
-                selected?.execution_id === item.execution_id ? 'border-accent bg-accent/10' : 'border-border bg-card'
-              }`}
-            >
-              <div className="text-[11px] font-bold truncate">{item.engine?.label || item.engine?.strategy_name || 'Strategy'}</div>
-              <div className="text-[9px] text-text-secondary mt-1 truncate">{item.executor?.symbol || item.engine?.symbol || '—'}</div>
-              <div className="mt-2"><StatusBadge status={item.engine?.status || 'pending'} /></div>
-            </button>
-          ))}
-        </aside>
+      <div className={showSidebar ? 'grid grid-cols-[280px_1fr] gap-4' : ''}>
+        {showSidebar ? (
+          <aside className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+            {executions.map(item => (
+              <button
+                key={item.execution_id}
+                type="button"
+                onClick={() => onSelect(item.execution_id)}
+                className={`w-full rounded border p-3 text-left ${
+                  selected?.execution_id === item.execution_id ? 'border-accent bg-accent/10' : 'border-border bg-card'
+                }`}
+              >
+                <div className="truncate text-[11px] font-bold">{item.engine?.label || item.engine?.strategy_name || 'Strategy'}</div>
+                <div className="mt-1 truncate font-mono text-[9px] text-accent">{item.execution_id}</div>
+                <div className="mt-1 truncate text-[9px] text-text-secondary">{item.executor?.symbol || item.engine?.symbol || '—'}</div>
+                <div className="mt-2"><StatusBadge status={item.engine?.status || 'pending'} /></div>
+              </button>
+            ))}
+          </aside>
+        ) : null}
 
-        <div className="bg-card border border-border rounded p-4 space-y-4">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-bold">{engine.label || selected.execution_id}</div>
-              <div className="text-[10px] text-text-secondary mt-1">
-                {executor.symbol || engine.symbol} · {instrumentLabel(engine.broker)} {executor.token || engine.token}
+      <div className={embedded ? 'space-y-4' : singleExecution ? 'space-y-4' : 'bg-card border border-border rounded p-4 space-y-4'}>
+        {singleExecution && !embedded ? (
+          <h3 className="text-xs font-bold uppercase tracking-[1.5px]">Deploy</h3>
+        ) : null}
+        {!singleExecution && !embedded ? (
+          <>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-bold truncate">{engine.label || engine.strategy_name || selected.execution_id}</div>
+                <div className="text-[10px] font-mono text-accent mt-1 break-all">{selected.execution_id}</div>
+                <div className="text-[10px] text-text-secondary mt-1">
+                  Strategy: {engine.strategy_name || '—'} · {executor.symbol || engine.symbol} · {instrumentLabel(engine.broker)} {executor.token || engine.token}
+                </div>
               </div>
+              <StatusBadge status={engine.status || 'pending'} />
             </div>
-            <StatusBadge status={engine.status || 'pending'} />
-          </div>
 
-          <div className="grid grid-cols-3 gap-3 text-xs">
-            <StatCard label="Broker" value={engine.broker || '-'} />
-            <StatCard label="Environment" value={envLabel(engine.account_env)} />
-            <StatCard label="Strategy" value={engine.strategy_name || '-'} />
-            <StatCard label="Close Price" value={executor.close_price ?? '-'} />
-            <StatCard label="Take Profit" value={executor.long_percent != null ? `${executor.long_percent}%` : '-'} />
-            <StatCard label="Stop Loss" value={executor.short_percent != null ? `${executor.short_percent}%` : '-'} />
-          </div>
+            <div className="grid grid-cols-3 gap-3 text-xs">
+              <StatCard label="Broker" value={engine.broker || '-'} />
+              <StatCard label="Environment" value={envLabel(engine.account_env)} />
+              <StatCard label="Strategy" value={engine.strategy_name || '-'} />
+              <StatCard label="Close Price" value={executor.close_price ?? '-'} />
+              <StatCard label="Take Profit" value={executor.long_percent != null ? `${executor.long_percent}%` : '-'} />
+              <StatCard label="Stop Loss" value={executor.short_percent != null ? `${executor.short_percent}%` : '-'} />
+            </div>
+          </>
+        ) : null}
 
+        {!embedded ? (
           <ServerInfoPanel
             port={startInfo?.port || engine.port}
             apiBaseUrl={startInfo?.apiBaseUrl || engine.api_base_url}
             wsUrl={engine.ws_url}
             logFile={startInfo?.logFile || engine.metadata?.log_file}
             pending={status === 'PENDING' && !(startInfo?.logFile || engine.metadata?.log_file)}
+            hideTitle={singleExecution}
           />
+        ) : null}
 
           {error && <div className="text-xs text-red">{error}</div>}
 
@@ -1353,25 +1512,29 @@ export function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, o
             >
               {starting ? 'Deploying...' : status === 'RUNNING' ? 'Deployed' : 'Deploy'}
             </button>
-            <button
-              onClick={stopExecution}
-              disabled={starting || stopping || !canStop}
-              className="px-5 py-2 bg-red text-white rounded text-xs font-bold disabled:opacity-50"
-            >
-              {stopping ? 'Stopping...' : 'Stop'}
-            </button>
-            <button
-              onClick={() => onDuplicate(selected)}
-              disabled={starting || stopping}
-              className="px-5 py-2 bg-card border border-border rounded text-xs font-bold disabled:opacity-50"
-            >
-              Duplicate
-            </button>
+            {!embedded ? (
+              <>
+                <button
+                  onClick={stopExecution}
+                  disabled={starting || stopping || !canStop}
+                  className="px-5 py-2 bg-red text-white rounded text-xs font-bold disabled:opacity-50"
+                >
+                  {stopping ? 'Stopping...' : 'Stop'}
+                </button>
+                <button
+                  onClick={() => onDuplicate(selected)}
+                  disabled={starting || stopping}
+                  className="px-5 py-2 bg-card border border-border rounded text-xs font-bold disabled:opacity-50"
+                >
+                  Duplicate
+                </button>
+              </>
+            ) : null}
             {!canStart && status !== 'RUNNING' && !canStop && (
               <span className="text-[10px] text-text-secondary">Status: {status}</span>
             )}
           </div>
-        </div>
+      </div>
       </div>
     </div>
   )
@@ -2004,7 +2167,7 @@ function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fa
   return { ltp, connected, marketError }
 }
 
-function computeExecutionLevels(source) {
+export function computeExecutionLevels(source) {
   const closePrice = Number(source.close_price || 0)
   if (!closePrice) {
     return { closePrice: null, buyTrigger: null, takeProfit: null, stopLoss: null }

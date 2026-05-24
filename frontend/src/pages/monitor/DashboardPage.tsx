@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { ArrowRight, Zap } from 'lucide-react'
 
 import { Button } from '../../components/ui/button'
+import { StrategiesTable } from '../../components/StrategiesTable'
 
 import {
   formatInr,
@@ -88,22 +89,6 @@ function Sparkline({ seed }: { seed: number }) {
     <svg className="h-6 w-16 shrink-0 opacity-80" viewBox="0 0 60 24" aria-hidden="true">
       <polyline fill="none" stroke="#1da1f2" strokeWidth="1.5" points={points} />
     </svg>
-  )
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const normalized = status.toLowerCase()
-  if (normalized === 'running' || normalized === 'starting') {
-    return (
-      <span className="rounded-full bg-green/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-green">
-        Running
-      </span>
-    )
-  }
-  return (
-    <span className="rounded-full bg-text-secondary/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-text-secondary">
-      {status.replace(/_/g, ' ')}
-    </span>
   )
 }
 
@@ -276,7 +261,8 @@ function mapEventToActivity(event: ControlEvent): ActivityItem {
 
 export default function DashboardPage() {
   const { summary, holdings } = useAccountSummary()
-  const [runningStrategies, setRunningStrategies] = useState<RunningStrategy[]>([])
+  const [savedStrategies, setSavedStrategies] = useState<RunningStrategy[]>([])
+  const [runningCount, setRunningCount] = useState(0)
   const [activity, setActivity] = useState<ActivityItem[]>([])
 
   useEffect(() => {
@@ -291,39 +277,46 @@ export default function DashboardPage() {
         const executionsData = await executionsRes.json()
         const eventsData = await eventsRes.json()
 
-        const running = (executionsData.status ? executionsData.data || [] : [])
-          .filter((item: { engine?: { status?: string } }) => {
-            const status = String(item.engine?.status || '').toLowerCase()
-            return status === 'running' || status === 'starting'
-          })
+        const allRows = (executionsData.status ? executionsData.data || [] : [])
           .map((item: {
             execution_id: string
             engine?: { label?: string; strategy_name?: string; symbol?: string; status?: string }
             executor?: { symbol?: string }
-          }) => ({
-            id: item.execution_id,
-            name:
-              item.engine?.strategy_name
-              || item.engine?.label
-              || item.engine?.symbol
-              || 'Strategy',
-            symbol: item.executor?.symbol || item.engine?.symbol || '—',
-            status: item.engine?.status || 'running',
-            inPosition: false,
-            pnl: 0,
-          }))
+          }) => {
+            const status = String(item.engine?.status || 'unknown').toLowerCase()
+            return {
+              id: item.execution_id,
+              name:
+                item.engine?.label
+                || item.engine?.strategy_name
+                || item.engine?.symbol
+                || 'Strategy',
+              symbol: item.executor?.symbol || item.engine?.symbol || '—',
+              status,
+              inPosition: false,
+              pnl: 0,
+            }
+          })
+          .sort((a, b) => {
+            const liveDelta = Number(['running', 'starting'].includes(b.status))
+              - Number(['running', 'starting'].includes(a.status))
+            if (liveDelta !== 0) return liveDelta
+            return a.name.localeCompare(b.name)
+          })
 
         const recentActivity = (eventsData.status ? eventsData.data || [] : [])
           .slice(0, 4)
           .map(mapEventToActivity)
 
         if (!cancelled) {
-          setRunningStrategies(running)
+          setSavedStrategies(allRows.slice(0, 5))
+          setRunningCount(allRows.filter(row => ['running', 'starting'].includes(row.status)).length)
           setActivity(recentActivity)
         }
       } catch {
         if (!cancelled) {
-          setRunningStrategies([])
+          setSavedStrategies([])
+          setRunningCount(0)
           setActivity([])
         }
       }
@@ -360,7 +353,7 @@ export default function DashboardPage() {
         />
         <StatCard
           label="Running strategies"
-          value={String(runningStrategies.length || summary.runningStrategies)}
+          value={String(runningCount || summary.runningStrategies)}
         />
         <StatCard label="Open positions" value={String(summary.positions)} />
       </div>
@@ -368,60 +361,16 @@ export default function DashboardPage() {
       <div className="grid gap-4 xl:grid-cols-[1.4fr_0.9fr]">
         <div className="overflow-hidden rounded-lg border border-border bg-card">
           <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3.5">
-            <h3 className="text-[13px] font-semibold">Running strategies</h3>
+            <h3 className="text-[13px] font-semibold">Strategies</h3>
             <Link to="/trade/strategies" className="text-xs font-semibold text-accent hover:underline">
               View all
             </Link>
           </div>
           <div className="overflow-auto">
-            {runningStrategies.length ? (
-              <table className="w-full border-collapse text-xs">
-                <thead>
-                  <tr className="bg-black/15 text-left">
-                    <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
-                      Strategy
-                    </th>
-                    <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
-                      Symbol
-                    </th>
-                    <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
-                      Status
-                    </th>
-                    <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
-                      P&L
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {runningStrategies.map(strategy => (
-                    <tr key={strategy.id} className="border-b border-border hover:bg-white/[0.02]">
-                      <td className="px-3.5 py-2.5">
-                        <Link
-                          to={`/trade/strategies/${encodeURIComponent(strategy.id)}`}
-                          className="font-semibold text-accent hover:underline"
-                        >
-                          {strategy.name}
-                        </Link>
-                      </td>
-                      <td className="px-3.5 py-2.5 font-mono">{strategy.symbol}</td>
-                      <td className="px-3.5 py-2.5">
-                        <StatusBadge status={strategy.status} />
-                        {strategy.inPosition ? (
-                          <span className="ml-1.5 rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-400">
-                            In position
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className={`px-3.5 py-2.5 font-mono ${pnlClass(strategy.pnl)}`}>
-                        {formatSignedInr(strategy.pnl, { maxFractionDigits: 0 })}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <RunningStrategiesEmpty />
-            )}
+            <StrategiesTable
+              rows={savedStrategies}
+              emptyState={<RunningStrategiesEmpty />}
+            />
           </div>
         </div>
 

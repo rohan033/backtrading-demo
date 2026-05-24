@@ -41,14 +41,16 @@ class EtoroClient:
         self.timeout = float(config.get("ETORO_TIMEOUT_SECONDS", "20"))
         self.leverage = int(config.get("ETORO_LEVERAGE", "1"))
         self._session = {"env": self.env, "account_env": self.account_env}
+        auth_mode = "bearer" if self.access_token else "api_key"
         logger.info(
-            "[eToro] Client credentials loaded account_env=%s api_env=%s "
-            "ETORO_API_KEY=%r ETORO_USER_KEY=%r ETORO_ACCESS_TOKEN=%r",
+            "[eToro] Client credentials loaded account_env=%s api_env=%s auth_mode=%s "
+            "api_key_set=%s user_key_set=%s access_token_set=%s",
             self.account_env,
             self.env,
-            self.api_key,
-            self.user_key,
-            self.access_token,
+            auth_mode,
+            bool(self.api_key),
+            bool(self.user_key),
+            bool(self.access_token),
         )
 
     def generate_session(self):
@@ -149,6 +151,12 @@ class EtoroClient:
         raise EtoroApiError(f"eToro request failed: {last_error}")
 
     @staticmethod
+    def _redact_header_value(header_name: str, value: str) -> str:
+        if header_name.lower() in {"authorization", "x-api-key", "x-user-key"}:
+            return "***REDACTED***"
+        return value
+
+    @staticmethod
     def _to_curl(
         method: str,
         url: str,
@@ -157,7 +165,8 @@ class EtoroClient:
     ) -> str:
         parts = ["curl", "-X", method.upper(), shlex.quote(url)]
         for key, value in headers.items():
-            parts.extend(["-H", shlex.quote(f"{key}: {value}")])
+            safe_value = EtoroClient._redact_header_value(key, value)
+            parts.extend(["-H", shlex.quote(f"{key}: {safe_value}")])
         if body:
             parts.extend(["-d", shlex.quote(body.decode("utf-8"))])
         return " ".join(parts)

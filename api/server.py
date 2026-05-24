@@ -328,18 +328,29 @@ async def control_plane_search(
         return {"status": False, "message": str(e), "data": []}
 
 
+def _is_controlled_execution(engine: dict) -> bool:
+    if engine.get("id") == "local-live-engine":
+        return False
+    metadata = engine.get("metadata") or {}
+    if metadata.get("source") == "controlled_execution":
+        return True
+    if metadata.get("executor_payload"):
+        return True
+    return False
+
+
 @app.get("/api/control/executions")
 def list_controlled_executions():
     executions = []
     for engine in engine_registry.list_engines():
-        metadata = engine.get("metadata") or {}
-        if metadata.get("source") != "controlled_execution":
+        if not _is_controlled_execution(engine):
             continue
+        metadata = engine.get("metadata") or {}
         executions.append(
             {
                 "execution_id": engine["id"],
                 "engine": engine,
-                "executor": metadata.get("executor_payload"),
+                "executor": metadata.get("executor_payload") or {},
             }
         )
     return {"status": True, "data": executions}
@@ -410,9 +421,10 @@ def start_controlled_execution(execution_id: str):
     if not engine:
         raise HTTPException(status_code=404, detail="Execution not found")
 
-    metadata = engine.get("metadata") or {}
-    if metadata.get("source") != "controlled_execution":
+    if not _is_controlled_execution(engine):
         raise HTTPException(status_code=400, detail="Not a controlled execution")
+
+    metadata = engine.get("metadata") or {}
 
     if engine.get("status") == "running":
         log_file = metadata.get("log_file")
@@ -513,12 +525,29 @@ def duplicate_execution_template(execution_id: str):
     if not engine:
         raise HTTPException(status_code=404, detail="Execution not found")
 
-    metadata = engine.get("metadata") or {}
-    if metadata.get("source") != "controlled_execution":
+    if not _is_controlled_execution(engine):
         raise HTTPException(status_code=400, detail="Not a controlled execution")
 
+    metadata = engine.get("metadata") or {}
     config = dict(metadata.get("execution_config") or {})
     executor_payload = dict(metadata.get("executor_payload") or {})
+    if not config:
+        config = {
+            "broker": engine.get("broker"),
+            "symbol": engine.get("symbol"),
+            "token": engine.get("token"),
+            "strategy_name": engine.get("strategy_name"),
+            "account_env": engine.get("account_env"),
+            "exchange": metadata.get("exchange") or executor_payload.get("exchange"),
+            "client_mode": metadata.get("client_mode") or "standard",
+            "use_fake_client": metadata.get("use_fake_client") or False,
+            "executor_id": executor_payload.get("executor_id") or execution_id,
+            "close_price": executor_payload.get("close_price"),
+            "long_percent": executor_payload.get("long_percent"),
+            "short_percent": executor_payload.get("short_percent"),
+            "initial_threshold": executor_payload.get("initial_threshold"),
+            "max_available_capital": executor_payload.get("max_available_capital"),
+        }
     base_id = config.get("executor_id") or execution_id
     copy_id = f"{base_id}-copy-{uuid.uuid4().hex[:8]}"
     config["executor_id"] = copy_id
@@ -540,9 +569,10 @@ def stop_controlled_execution(execution_id: str):
     if not engine:
         raise HTTPException(status_code=404, detail="Execution not found")
 
-    metadata = engine.get("metadata") or {}
-    if metadata.get("source") != "controlled_execution":
+    if not _is_controlled_execution(engine):
         raise HTTPException(status_code=400, detail="Not a controlled execution")
+
+    metadata = engine.get("metadata") or {}
 
     if engine.get("pid") and engine.get("status") in {"starting", "running", "stale"}:
         stopped = engine_process_manager.stop_engine(execution_id)

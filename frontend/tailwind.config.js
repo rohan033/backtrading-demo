@@ -18,6 +18,7 @@ export default {
         red: '#ff1744',
       },
       fontFamily: {
+        sans: ['Inter', 'Segoe UI', 'system-ui', 'sans-serif'],
         mono: ['SF Mono', 'Fira Code', 'Consolas', 'monospace'],
       },
     },

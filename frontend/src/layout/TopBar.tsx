@@ -1,10 +1,9 @@
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 
 import { getPageMeta } from './page-meta'
 
 export default function TopBar() {
   const location = useLocation()
-  const navigate = useNavigate()
   const meta = getPageMeta(location.pathname)
 
   return (
@@ -35,17 +34,6 @@ export default function TopBar() {
             {meta.primaryAction.label}
           </button>
         )
-      ) : null}
-
-      {location.pathname.startsWith('/trade/strategies/') &&
-      location.pathname !== '/trade/strategies/new' ? (
-        <button
-          type="button"
-          onClick={() => navigate('/trade/strategies')}
-          className="ml-auto text-[10px] text-text-secondary hover:text-text-primary"
-        >
-          ← All strategies
-        </button>
       ) : null}
     </header>
   )

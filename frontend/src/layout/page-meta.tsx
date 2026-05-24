@@ -18,7 +18,6 @@ const ROUTE_META: Record<string, PageMeta> = {
   '/trade/strategies': {
     title: 'Strategies',
     scope: 'Trade',
-    primaryAction: { label: 'New strategy', to: '/trade/strategies/new' },
   },
   '/trade/strategies/new': { title: 'New strategy', scope: 'Trade' },
   '/trade/activity': { title: 'Activity', scope: 'Trade' },

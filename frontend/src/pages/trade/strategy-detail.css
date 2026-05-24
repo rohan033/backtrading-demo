@@ -1,0 +1,194 @@
+/* Strategy detail — aligned with ux-prototype/styles.css */
+.strategy-detail {
+  --sd-bg: #0b1219;
+  --sd-bg-elevated: #111b26;
+  --sd-bg-card: #152231;
+  --sd-border: #243447;
+  --sd-text: #e7eef4;
+  --sd-text-muted: #8b9cb0;
+  --sd-accent: #1da1f2;
+  --sd-accent-soft: rgba(29, 161, 242, 0.12);
+  --sd-green: #00c853;
+  --sd-green-soft: rgba(0, 200, 83, 0.15);
+  --sd-red: #ff5252;
+  --sd-red-soft: rgba(255, 82, 82, 0.15);
+  --sd-amber: #ffb300;
+  --sd-radius: 10px;
+
+  font-family: Inter, 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--sd-text);
+}
+
+.strategy-detail .sd-card {
+  background: var(--sd-bg-card);
+  border: 1px solid var(--sd-border);
+  border-radius: var(--sd-radius);
+}
+
+.strategy-detail .sd-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.strategy-detail .sd-badge-demo {
+  background: var(--sd-accent-soft);
+  color: var(--sd-accent);
+}
+
+.strategy-detail .sd-badge-live {
+  background: var(--sd-red-soft);
+  color: var(--sd-red);
+}
+
+.strategy-detail .sd-badge-running {
+  background: var(--sd-green-soft);
+  color: var(--sd-green);
+}
+
+.strategy-detail .sd-badge-draft {
+  background: rgba(139, 156, 176, 0.15);
+  color: var(--sd-text-muted);
+}
+
+.strategy-detail .sd-badge-position {
+  background: rgba(255, 179, 0, 0.15);
+  color: var(--sd-amber);
+}
+
+.strategy-detail .sd-chip {
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--sd-border);
+  background: var(--sd-bg-card);
+  color: var(--sd-text-muted);
+}
+
+.strategy-detail .sd-runtime-pill {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--sd-border);
+  background: var(--sd-bg-elevated);
+}
+
+.strategy-detail .sd-runtime-pill .label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sd-text-muted);
+  flex-shrink: 0;
+}
+
+.strategy-detail .sd-runtime-pill .value {
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-size: 11px;
+  color: var(--sd-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.strategy-detail .sd-runtime-pill.accent .value {
+  color: var(--sd-accent);
+  font-weight: 600;
+}
+
+.strategy-detail .sd-stat {
+  padding: 14px 16px;
+  background: var(--sd-bg-card);
+  border: 1px solid var(--sd-border);
+  border-radius: var(--sd-radius);
+}
+
+.strategy-detail .sd-stat .label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sd-text-muted);
+  margin-bottom: 6px;
+}
+
+.strategy-detail .sd-stat .value {
+  font-family: 'SF Mono', 'Fira Code', Consolas, monospace;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.strategy-detail .sd-btn {
+  border: 1px solid var(--sd-border);
+  background: var(--sd-bg-card);
+  color: var(--sd-text);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.strategy-detail .sd-btn:hover:not(:disabled) {
+  border-color: #3a5068;
+}
+
+.strategy-detail .sd-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.strategy-detail .sd-btn-primary {
+  background: var(--sd-accent);
+  border-color: var(--sd-accent);
+  color: #fff;
+}
+
+.strategy-detail .sd-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.strategy-detail .sd-btn-danger {
+  background: var(--sd-red-soft);
+  border-color: rgba(255, 82, 82, 0.35);
+  color: var(--sd-red);
+}
+
+.strategy-detail .sd-accordion summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.strategy-detail .sd-accordion summary::-webkit-details-marker {
+  display: none;
+}
+
+/* Unify nested workspace panels with prototype palette */
+.strategy-detail .border-border.bg-card {
+  background: var(--sd-bg-card);
+  border-color: var(--sd-border);
+}
+
+.strategy-detail .border-border {
+  border-color: var(--sd-border);
+}
+
+.strategy-detail .text-text-secondary {
+  color: var(--sd-text-muted);
+}
+
+.strategy-detail .text-text-primary {
+  color: var(--sd-text);
+}
+
+.strategy-detail .text-accent {
+  color: var(--sd-accent);
+}
