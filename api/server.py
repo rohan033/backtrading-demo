@@ -11,7 +11,9 @@ from typing import Optional
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import asyncio
+import contextlib
 import json
+import re
 import uuid
 
 from client import TotpClient
@@ -19,17 +21,15 @@ from strategy import Strategy
 from backtesting import Backtesting
 from api.manual_robo_routes import router as manual_robo_router
 from control_plane.engine_registry import EngineRegistry
-from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT
+from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
+from control_plane.ops_logging import configure_control_plane_logging
 from event.db_event_consumer import DbEventWriter
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+_control_plane_log_path = configure_control_plane_logging()
 log = logging.getLogger("backtrading")
+log.info("[CONTROL] Control plane logging to %s", _control_plane_log_path)
 
 app = FastAPI(title="Backtrading API")
 
@@ -182,6 +182,7 @@ class ControlPlaneExecutionRequest(BaseModel):
     short_percent: float = 10.0
     initial_threshold: float = 0.2
     max_available_capital: float = 100000
+    allow_partial_stocks: bool = False
     use_fake_client: bool = False
     client_mode: str = "standard"
 
@@ -294,11 +295,23 @@ async def control_plane_search(
             client.generate_session()
             instruments = await client.asearch_instruments(q)
             rows = [_etoro_instrument_to_search_row(item) for item in instruments]
-            log.info(
-                "[CONTROL_SEARCH] etoro returned %d rows for %r using account_env=%s",
-                len(rows), q, account_env,
+            if rows:
+                log.info(
+                    "[CONTROL_SEARCH] etoro returned %d rows for %r using account_env=%s",
+                    len(rows), q, account_env,
+                )
+                return {"status": True, "data": rows}
+
+            log.warning(
+                "[CONTROL_SEARCH] etoro returned 0 instruments for %r account_env=%s",
+                q,
+                account_env,
             )
-            return {"status": True, "data": rows}
+            return {
+                "status": False,
+                "message": f"No eToro instruments found for '{q}' in {account_env} environment",
+                "data": [],
+            }
 
         client = get_client()
         result = client._client.searchScrip(exchange, q)
@@ -315,17 +328,18 @@ async def control_plane_search(
         log.warning("[CONTROL_SEARCH] angel returned no results for %r: %s", q, result)
         return {"status": False, "message": "No results found", "data": []}
     except Exception as e:
+        error_message = str(e)
+        if hasattr(e, "status_code") and hasattr(e, "payload"):
+            error_message = f"{e} payload={getattr(e, 'payload', None)}"
         log.error(
-            "[CONTROL_SEARCH] failed broker=%s env=%s q=%r status=%s payload=%s error=%s",
+            "[CONTROL_SEARCH] failed broker=%s env=%s q=%r error=%s",
             broker_name,
             account_env,
             q,
-            getattr(e, "status_code", None),
-            getattr(e, "payload", None),
-            e,
+            error_message,
             exc_info=True,
         )
-        return {"status": False, "message": str(e), "data": []}
+        return {"status": False, "message": error_message, "data": []}
 
 
 def _is_controlled_execution(engine: dict) -> bool:
@@ -368,6 +382,7 @@ def _controlled_execution_payload(req: ControlPlaneExecutionRequest) -> tuple[st
         "short_percent": req.short_percent,
         "initial_threshold": req.initial_threshold,
         "max_available_capital": req.max_available_capital,
+        "allow_partial_stocks": req.allow_partial_stocks,
     }
     broker = "fake" if req.use_fake_client else req.broker
     label = f"{req.broker}-{req.symbol}-strategy-{req.strategy_name}"
@@ -547,9 +562,12 @@ def duplicate_execution_template(execution_id: str):
             "short_percent": executor_payload.get("short_percent"),
             "initial_threshold": executor_payload.get("initial_threshold"),
             "max_available_capital": executor_payload.get("max_available_capital"),
+            "allow_partial_stocks": executor_payload.get("allow_partial_stocks", False),
         }
-    base_id = config.get("executor_id") or execution_id
-    copy_id = f"{base_id}-copy-{uuid.uuid4().hex[:8]}"
+    broker = config.get("broker") or engine.get("broker") or "angel"
+    symbol = config.get("symbol") or engine.get("symbol") or "symbol"
+    strategy_name = config.get("strategy_name") or engine.get("strategy_name") or "default"
+    copy_id = _execution_id(broker, symbol, strategy_name)
     config["executor_id"] = copy_id
     executor_payload["executor_id"] = copy_id
 
@@ -596,9 +614,17 @@ def stop_controlled_execution(execution_id: str):
     }
 
 
-def _execution_id(broker: str, symbol: str, strategy_name: str) -> str:
+def _execution_timestamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+
+def _execution_slug(broker: str, symbol: str, strategy_name: str) -> str:
     raw = f"{broker}-{symbol}-strategy-{strategy_name}".lower()
-    return "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-")
+    return re.sub(r"-+", "-", "".join(ch if ch.isalnum() else "-" for ch in raw).strip("-"))
+
+
+def _execution_id(broker: str, symbol: str, strategy_name: str) -> str:
+    return f"{_execution_slug(broker, symbol, strategy_name)}-{_execution_timestamp()}"
 
 
 @app.get("/api/control/events")
@@ -667,8 +693,17 @@ def _mock_search_rows(q: str) -> list[dict]:
         {"tradingsymbol": "WIPRO-EQ", "symboltoken": "3787", "exchange": "NSE"},
         {"tradingsymbol": "TATAMOTORS-EQ", "symboltoken": "3456", "exchange": "NSE"},
     ]
+    mock_crypto = [
+        {"tradingsymbol": "BTC", "symboltoken": "100000", "exchange": "ETORO"},
+        {"tradingsymbol": "ETH", "symboltoken": "100001", "exchange": "ETORO"},
+        {"tradingsymbol": "AAPL", "symboltoken": "100002", "exchange": "ETORO"},
+        {"tradingsymbol": "TSLA", "symboltoken": "100003", "exchange": "ETORO"},
+    ]
     needle = q.upper()
-    return [stock for stock in mock_stocks if needle in stock["tradingsymbol"].upper()]
+    return [
+        stock for stock in (mock_stocks + mock_crypto)
+        if needle in stock["tradingsymbol"].upper()
+    ]
 
 
 def _etoro_instrument_to_search_row(instrument: dict) -> dict:
@@ -1040,6 +1075,72 @@ def run_backtest(req: BacktestRequest):
     except Exception as e:
         log.error("[BACKTEST] FAILED: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── WebSocket proxy: browser → control plane → live engine ──
+
+@app.websocket("/ws/control/engines/{engine_id}/live")
+async def ws_proxy_engine_live(ws: WebSocket, engine_id: str):
+    engine = engine_registry.get_engine(engine_id)
+    if not engine:
+        await ws.close(code=4404, reason="Engine not found")
+        return
+
+    port = engine.get("port")
+    if not port:
+        await ws.close(code=4409, reason="Engine not running")
+        return
+
+    upstream_url = f"ws://127.0.0.1:{int(port)}/ws/live"
+    await ws.accept()
+    log.info("[CONTROL_ENGINE_WS] client connected engine_id=%s upstream=%s", engine_id, upstream_url)
+
+    try:
+        import websockets
+    except ImportError as exc:
+        log.error("[CONTROL_ENGINE_WS] missing websockets package: %s", exc)
+        await ws.close(code=1011, reason="websockets package required")
+        return
+
+    try:
+        async with websockets.connect(upstream_url) as upstream:
+            async def forward_upstream() -> None:
+                async for message in upstream:
+                    if isinstance(message, bytes):
+                        await ws.send_bytes(message)
+                    else:
+                        await ws.send_text(message)
+
+            async def forward_client() -> None:
+                while True:
+                    message = await ws.receive()
+                    if message["type"] == "websocket.disconnect":
+                        break
+                    payload = message.get("text")
+                    if payload is None and message.get("bytes") is not None:
+                        payload = message["bytes"]
+                    if payload is not None:
+                        await upstream.send(payload)
+
+            upstream_task = asyncio.create_task(forward_upstream())
+            client_task = asyncio.create_task(forward_client())
+            done, pending = await asyncio.wait(
+                {upstream_task, client_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            for task in done:
+                with contextlib.suppress(Exception):
+                    task.result()
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        log.warning("[CONTROL_ENGINE_WS] proxy ended engine_id=%s error=%s", engine_id, e)
+    finally:
+        log.info("[CONTROL_ENGINE_WS] client disconnected engine_id=%s", engine_id)
 
 
 # ── WebSocket market preview for create/launch panel ──

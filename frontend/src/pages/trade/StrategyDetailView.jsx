@@ -11,6 +11,7 @@ import {
   formatBrokerPrice,
   formatBrokerSignedMoney,
 } from '../../lib/currency'
+import { formatDbTimestamp } from '../../lib/datetime'
 
 import './strategy-detail.css'
 
@@ -259,6 +260,11 @@ export default function StrategyDetailView({
           <div className="min-w-0">
             <h1 className="text-[20px] font-bold tracking-tight">{strategyTitle(execution)}</h1>
             <p className="mt-1 font-mono text-[11px] text-[var(--sd-accent)]">{executionId}</p>
+            {execution?.created_at ? (
+              <p className="mt-1 text-[11px] text-[var(--sd-text-muted)]">
+                Created {formatDbTimestamp(execution.created_at)}
+              </p>
+            ) : null}
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <StatusBadge tone={env === 'demo' ? 'demo' : 'live'}>{envLabel(execution?.account_env)}</StatusBadge>
               <StatusBadge tone={badgeTone}>{statusBadgeLabel(isLive, engineStatus)}</StatusBadge>
@@ -367,6 +373,7 @@ export default function StrategyDetailView({
                 ['Take profit %', execution?.long_percent != null ? `${execution.long_percent}%` : '—'],
                 ['Stop loss %', execution?.short_percent != null ? `${execution.short_percent}%` : '—'],
                 ['Client mode', execution?.is_bracket_order_client ? 'Bracket orders' : 'Feed TP/SL'],
+                ['Partial stocks', execution?.allow_partial_stocks ? 'Yes (2 dp)' : 'No (whole shares)'],
               ].map(([label, value]) => (
                 <div key={label} className="flex justify-between gap-4 border-b border-[var(--sd-border)]/40 pb-1.5">
                   <dt>{label}</dt>

@@ -1,28 +1,54 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowRight, Zap } from 'lucide-react'
 
 import { Button } from '../../components/ui/button'
 import { StrategiesTable } from '../../components/StrategiesTable'
 
-import {
-  formatInr,
-  formatSignedInr,
-  pnlClass,
-  useAccountSummary,
-} from '../../layout/useAccountSummary'
-import {
-  formatIndianNumber,
-  formatUsd as formatUsdCurrency,
-} from '../../lib/currency'
-
 type RunningStrategy = {
   id: string
   name: string
   symbol: string
   status: string
+  createdAt?: string | null
+  startedAt?: string | null
   inPosition: boolean
   pnl: number
+}
+
+type StrategyMetrics = {
+  total: number
+  running: number
+  stopped: number
+  pending: number
+}
+
+type ExecutionRecord = {
+  status: string
+  startedAt?: string | null
+}
+
+function computeStrategyMetrics(records: ExecutionRecord[]): StrategyMetrics {
+  const metrics = { total: records.length, running: 0, stopped: 0, pending: 0 }
+
+  for (const record of records) {
+    const status = String(record.status || 'unknown').toLowerCase()
+    if (['running', 'starting'].includes(status)) {
+      metrics.running += 1
+      continue
+    }
+    if (status === 'pending' && !record.startedAt) {
+      metrics.pending += 1
+      continue
+    }
+    if (['stopped', 'stale', 'failed'].includes(status) || record.startedAt) {
+      metrics.stopped += 1
+      continue
+    }
+    metrics.pending += 1
+  }
+
+  return metrics
 }
 
 type ActivityItem = {
@@ -47,48 +73,12 @@ type ControlEvent = {
   executor_id?: string
 }
 
-const FALLBACK_WATCHLIST = [
-  { symbol: 'TSLA', last: 256.2, change: 1.24 },
-  { symbol: 'AAPL', last: 189.4, change: 0.82 },
-  { symbol: 'BTC', last: 67240, change: -0.45 },
-  { symbol: 'EURUSD', last: 1.0842, change: 0.12 },
-]
-
-function formatWatchlistPrice(symbol: string, last: number, broker?: string) {
-  if (!Number.isFinite(last)) return '—'
-  if (broker === 'etoro') {
-    return formatUsdCurrency(last, symbol === 'EURUSD' ? 4 : 2)
-  }
-  if (symbol === 'EURUSD') {
-    return formatIndianNumber(last, 4)
-  }
-  return formatInr(last, { maxFractionDigits: 2 })
-}
-
 function StatCard({ label, value, valueClass = '' }: { label: string; value: string; valueClass?: string }) {
   return (
     <div className="rounded-lg border border-border bg-card px-4 py-3.5">
       <div className="mb-1.5 text-[10px] uppercase tracking-widest text-text-secondary">{label}</div>
       <div className={`font-mono text-xl font-bold ${valueClass}`}>{value}</div>
     </div>
-  )
-}
-
-function Sparkline({ seed }: { seed: number }) {
-  const points = useMemo(() => {
-    const pts: string[] = []
-    let y = 12
-    for (let x = 0; x <= 60; x += 5) {
-      y += Math.sin((x + seed * 9) / 7) * 2
-      pts.push(`${x},${y}`)
-    }
-    return pts.join(' ')
-  }, [seed])
-
-  return (
-    <svg className="h-6 w-16 shrink-0 opacity-80" viewBox="0 0 60 24" aria-hidden="true">
-      <polyline fill="none" stroke="#1da1f2" strokeWidth="1.5" points={points} />
-    </svg>
   )
 }
 
@@ -260,9 +250,13 @@ function mapEventToActivity(event: ControlEvent): ActivityItem {
 }
 
 export default function DashboardPage() {
-  const { summary, holdings } = useAccountSummary()
   const [savedStrategies, setSavedStrategies] = useState<RunningStrategy[]>([])
-  const [runningCount, setRunningCount] = useState(0)
+  const [strategyMetrics, setStrategyMetrics] = useState<StrategyMetrics>({
+    total: 0,
+    running: 0,
+    stopped: 0,
+    pending: 0,
+  })
   const [activity, setActivity] = useState<ActivityItem[]>([])
 
   useEffect(() => {
@@ -280,7 +274,14 @@ export default function DashboardPage() {
         const allRows = (executionsData.status ? executionsData.data || [] : [])
           .map((item: {
             execution_id: string
-            engine?: { label?: string; strategy_name?: string; symbol?: string; status?: string }
+            engine?: {
+              label?: string
+              strategy_name?: string
+              symbol?: string
+              status?: string
+              created_at?: string
+              started_at?: string
+            }
             executor?: { symbol?: string }
           }) => {
             const status = String(item.engine?.status || 'unknown').toLowerCase()
@@ -293,11 +294,18 @@ export default function DashboardPage() {
                 || 'Strategy',
               symbol: item.executor?.symbol || item.engine?.symbol || '—',
               status,
+              createdAt: item.engine?.created_at,
+              startedAt: item.engine?.started_at,
               inPosition: false,
               pnl: 0,
             }
           })
           .sort((a, b) => {
+            const createdA = String(a.createdAt || '')
+            const createdB = String(b.createdAt || '')
+            if (createdA && createdB && createdA !== createdB) {
+              return createdB.localeCompare(createdA)
+            }
             const liveDelta = Number(['running', 'starting'].includes(b.status))
               - Number(['running', 'starting'].includes(a.status))
             if (liveDelta !== 0) return liveDelta
@@ -310,13 +318,13 @@ export default function DashboardPage() {
 
         if (!cancelled) {
           setSavedStrategies(allRows.slice(0, 5))
-          setRunningCount(allRows.filter(row => ['running', 'starting'].includes(row.status)).length)
+          setStrategyMetrics(computeStrategyMetrics(allRows))
           setActivity(recentActivity)
         }
       } catch {
         if (!cancelled) {
           setSavedStrategies([])
-          setRunningCount(0)
+          setStrategyMetrics({ total: 0, running: 0, stopped: 0, pending: 0 })
           setActivity([])
         }
       }
@@ -330,101 +338,45 @@ export default function DashboardPage() {
     }
   }, [])
 
-  const watchlistRows = useMemo(() => {
-    if (holdings.length) {
-      return holdings.slice(0, 4).map((row, index) => ({
-        symbol: row.symbol,
-        last: Number.isFinite(row.ltp) ? row.ltp : 0,
-        change: row.changePct ?? ((index % 2 === 0 ? 1 : -1) * (0.3 + index * 0.2)),
-        broker: row.broker,
-      }))
-    }
-    return FALLBACK_WATCHLIST
-  }, [holdings])
-
   return (
     <div className="h-full overflow-auto p-5">
       <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <StatCard label="Equity" value={formatInr(summary.angelEquity, { maxFractionDigits: 0 })} />
-        <StatCard
-          label="Day P&L"
-          value={formatSignedInr(summary.dayPnl, { maxFractionDigits: 0 })}
-          valueClass={pnlClass(summary.dayPnl)}
-        />
-        <StatCard
-          label="Running strategies"
-          value={String(runningCount || summary.runningStrategies)}
-        />
-        <StatCard label="Open positions" value={String(summary.positions)} />
+        <StatCard label="Total saved" value={String(strategyMetrics.total)} />
+        <StatCard label="Running now" value={String(strategyMetrics.running)} valueClass="text-green" />
+        <StatCard label="Stopped" value={String(strategyMetrics.stopped)} />
+        <StatCard label="Pending deploy" value={String(strategyMetrics.pending)} />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[1.4fr_0.9fr]">
-        <div className="overflow-hidden rounded-lg border border-border bg-card">
-          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3.5">
-            <h3 className="text-[13px] font-semibold">Strategies</h3>
-            <Link to="/trade/strategies" className="text-xs font-semibold text-accent hover:underline">
-              View all
-            </Link>
-          </div>
-          <div className="overflow-auto">
-            <StrategiesTable
-              rows={savedStrategies}
-              emptyState={<RunningStrategiesEmpty />}
-            />
-          </div>
+      <div className="overflow-hidden rounded-lg border border-border bg-card">
+        <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3.5">
+          <h3 className="text-[13px] font-semibold">Strategies</h3>
+          <Link to="/trade/strategies" className="text-xs font-semibold text-accent hover:underline">
+            View all
+          </Link>
         </div>
-
-        <div className="overflow-hidden rounded-lg border border-border bg-card">
-          <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3.5">
-            <h3 className="text-[13px] font-semibold">Recent activity</h3>
-            <Link to="/trade/activity" className="text-xs font-semibold text-accent hover:underline">
-              Open activity
-            </Link>
-          </div>
-          <div className="px-4">
-            {activity.length ? (
-              activity.map((item, index) => <ActivityRow key={`${item.title}-${index}`} item={item} />)
-            ) : (
-              <div className="py-10 text-center text-sm text-text-secondary">
-                No recent activity yet.
-              </div>
-            )}
-          </div>
+        <div className="overflow-auto">
+          <StrategiesTable
+            rows={savedStrategies}
+            emptyState={<RunningStrategiesEmpty />}
+          />
         </div>
       </div>
 
       <div className="mt-4 overflow-hidden rounded-lg border border-border bg-card">
         <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3.5">
-          <h3 className="text-[13px] font-semibold">Watchlist snapshot</h3>
-          <Link to="/watchlist" className="text-xs font-semibold text-accent hover:underline">
-            Manage watchlist
+          <h3 className="text-[13px] font-semibold">Recent activity</h3>
+          <Link to="/trade/activity" className="text-xs font-semibold text-accent hover:underline">
+            Open activity
           </Link>
         </div>
         <div className="px-4">
-          {watchlistRows.map((row, index) => (
-            <div
-              key={row.symbol}
-              className="flex items-center justify-between gap-4 border-b border-border py-3 last:border-b-0"
-            >
-              <div>
-                <strong className="text-sm">{row.symbol}</strong>
-                <div className="mt-0.5 font-mono text-[11px] text-text-secondary">
-                  {formatWatchlistPrice(row.symbol, row.last, row.broker)}
-                </div>
-              </div>
-              <Sparkline seed={index} />
-              <div className={`font-mono text-sm ${pnlClass(row.change)}`}>
-                {Number.isFinite(row.change) ? (
-                  <>
-                    {row.change >= 0 ? '+' : ''}
-                    {row.change.toFixed(2)}%
-                  </>
-                ) : (
-                  '—'
-                )}
-              </div>
+          {activity.length ? (
+            activity.map((item, index) => <ActivityRow key={`${item.title}-${index}`} item={item} />)
+          ) : (
+            <div className="py-10 text-center text-sm text-text-secondary">
+              No recent activity yet.
             </div>
-          ))}
+          )}
         </div>
       </div>
     </div>

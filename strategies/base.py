@@ -9,7 +9,7 @@ class TradeSignal:
     entry_price: float = 0.0
     take_profit_price: float = 0.0
     stop_loss_price: float = 0.0
-    quantity: int = 0
+    quantity: float = 0.0
     pct_change: float = 0.0
     threshold: float = 0.0
     ref_price: float = 0.0

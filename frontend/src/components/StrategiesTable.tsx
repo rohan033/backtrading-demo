@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 
 import { formatSignedInr } from '../lib/currency'
+import { formatDbTimestamp } from '../lib/datetime'
 import { pnlClass } from '../layout/useAccountSummary'
 
 export type StrategyTableRow = {
@@ -9,6 +10,7 @@ export type StrategyTableRow = {
   name: string
   symbol: string
   status: string
+  createdAt?: string | null
   pnl?: number
   inPosition?: boolean
 }
@@ -92,6 +94,9 @@ export function StrategiesTable({
               Status
             </th>
             <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
+              Created
+            </th>
+            <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
               P&amp;L
             </th>
           </tr>
@@ -115,6 +120,9 @@ export function StrategiesTable({
                     In position
                   </span>
                 ) : null}
+              </td>
+              <td className="px-3.5 py-2.5 whitespace-nowrap text-text-secondary">
+                {formatDbTimestamp(row.createdAt)}
               </td>
               <td className={`px-3.5 py-2.5 font-mono ${pnlClass(row.pnl ?? 0)}`}>
                 {formatSignedInr(row.pnl ?? 0, { maxFractionDigits: 0 })}

@@ -47,5 +47,14 @@ def round_off(value):
     return round(value, 4)
 
 
+def order_quantity_from_capital(capital: float, price: float, *, allow_partial: bool = False) -> float:
+    if not capital or not price or price <= 0:
+        return 0.0
+    raw = capital / price
+    if allow_partial:
+        return round(raw, 2)
+    return float(int(raw))
+
+
 def required_empty(args):
     return not all(args)

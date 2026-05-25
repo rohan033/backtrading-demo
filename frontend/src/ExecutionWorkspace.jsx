@@ -9,6 +9,7 @@ import {
   formatPriceInput,
   isIndianBroker,
 } from './lib/currency'
+import { formatDbTimestamp } from './lib/datetime'
 
 const CONTROL_API = '/api/control'
 const CONTROL_MARKET_WS = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/control/market`
@@ -25,6 +26,10 @@ const NOTIFY_ACTIONS = new Set([
   'STOP_LOSS_EXIT_PLACED',
 ])
 const TOAST_DURATION_MS = 4500
+const BROKER_OPTIONS = [
+  { value: 'angel', label: 'Angel One' },
+  { value: 'etoro', label: 'eToro' },
+]
 const DEFAULT_DATA_PLANE = {
   id: 'local-live-engine',
   label: 'angel-local-live-strategy-default',
@@ -50,10 +55,17 @@ const TABS = [
 
 const EMPTY_PLANE_STREAM = {
   connected: false,
+  connectedAt: null,
+  connectExhausted: false,
   ticks: {},
   tickHistory: {},
+  lastTickAt: {},
   realtimeEvents: [],
 }
+
+const PRICE_STREAM_STALE_MS = 15000
+const PRICE_STREAM_FIRST_TICK_MS = 10000
+const PRICE_STREAM_STATUS_POLL_MS = 5000
 
 const ExecutionContext = createContext(null)
 
@@ -111,6 +123,11 @@ export function ExecutionProvider({ children }) {
       byId.set(execution.executor_id, existing ? mergeLiveExecution(existing, execution) : execution)
     }
     return Array.from(byId.values()).sort((a, b) => {
+      const createdA = String(a.created_at || '')
+      const createdB = String(b.created_at || '')
+      if (createdA && createdB && createdA !== createdB) {
+        return createdB.localeCompare(createdA)
+      }
       const liveDelta = Number(Boolean(b.data_plane_port)) - Number(Boolean(a.data_plane_port))
       if (liveDelta !== 0) return liveDelta
       return String(a.label || a.executor_id).localeCompare(String(b.label || b.executor_id))
@@ -380,18 +397,36 @@ export function ExecutionProvider({ children }) {
         if (msg.type === 'tick') {
           const tokenKey = normalizeTokenKey(msg.token)
           if (!tokenKey) return
+          const ltp = Number(msg.ltp)
+          if (!Number.isFinite(ltp) || ltp <= 0) return
           const streamKey = planeTickKey(planeId, tokenKey)
+          const now = Date.now()
           persistPlaneStream(current => {
             const nextTicks = {
               ...current.ticks,
-              [streamKey]: { symbol: msg.symbol, ltp: msg.ltp, exchange: msg.exchange },
+              [streamKey]: { symbol: msg.symbol, ltp, exchange: msg.exchange },
             }
             const existing = current.tickHistory[streamKey] || []
+            const hadTick = Boolean(current.lastTickAt?.[streamKey])
+            if (!hadTick) {
+              console.info(
+                '[PriceStream] first_tick plane=%s symbol=%s token=%s ltp=%s',
+                planeId,
+                msg.symbol,
+                tokenKey,
+                ltp,
+              )
+            }
             const nextHistory = {
               ...current.tickHistory,
-              [streamKey]: appendTickPoint(existing, msg.ltp),
+              [streamKey]: appendTickPoint(existing, ltp),
             }
-            return { ...current, ticks: nextTicks, tickHistory: nextHistory }
+            return {
+              ...current,
+              ticks: nextTicks,
+              tickHistory: nextHistory,
+              lastTickAt: { ...current.lastTickAt, [streamKey]: now },
+            }
           })
           return
         }
@@ -416,14 +451,21 @@ export function ExecutionProvider({ children }) {
 
       const connect = () => {
         if (cancelled || planeHandlerGenerationRef.current[planeId] !== handlerGeneration) return
-        const socket = new WebSocket(plane.ws_url)
+        const wsUrl = resolvePlaneWsUrl(plane)
+        const socket = new WebSocket(wsUrl)
         planeSocketsRef.current[planeId] = socket
 
         socket.onopen = () => {
           if (planeHandlerGenerationRef.current[planeId] !== handlerGeneration) return
           planeConnectedUrlRef.current[planeId] = plane.ws_url
           planeFailuresRef.current[planeId] = 0
-          persistPlaneStream(current => ({ ...current, connected: true }))
+          console.info('[PriceStream] ws_open plane=%s url=%s', planeId, wsUrl)
+          persistPlaneStream(current => ({
+            ...current,
+            connected: true,
+            connectedAt: Date.now(),
+            connectExhausted: false,
+          }))
         }
 
         socket.onerror = () => {
@@ -432,11 +474,23 @@ export function ExecutionProvider({ children }) {
 
         socket.onclose = () => {
           if (planeHandlerGenerationRef.current[planeId] !== handlerGeneration) return
-          persistPlaneStream(current => ({ ...current, connected: false }))
-          delete planeSocketsRef.current[planeId]
           const failures = (planeFailuresRef.current[planeId] || 0) + 1
           planeFailuresRef.current[planeId] = failures
           const stillActive = filterActiveDataPlanes(dataPlanesRef.current).some(item => item.id === planeId)
+          const exhausted = stillActive && failures >= MAX_PLANE_CONNECT_FAILURES
+          console.warn(
+            '[PriceStream] ws_close plane=%s failures=%d exhausted=%s',
+            planeId,
+            failures,
+            exhausted,
+          )
+          persistPlaneStream(current => ({
+            ...current,
+            connected: false,
+            connectedAt: null,
+            connectExhausted: exhausted,
+          }))
+          delete planeSocketsRef.current[planeId]
           if (!cancelled && stillActive && failures < MAX_PLANE_CONNECT_FAILURES) {
             planeReconnectRef.current[planeId] = setTimeout(connect, 3000)
           }
@@ -786,6 +840,51 @@ function TabBar({ activeTab, setActiveTab }) {
 }
 
 export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
+  const stream = getPlaneStream(planeStreams, execution?.data_plane_id)
+  const resolvedStream = useMemo(
+    () => (execution ? resolveExecutionStream(stream, execution) : { tickHistory: [], tick: null, streamKey: '' }),
+    [stream, execution],
+  )
+  const ltp = selectedTick?.ltp ?? resolvedStream.tick?.ltp ?? null
+  const chartSeries = useMemo(
+    () => (execution ? buildChartSeries(resolvedStream.tickHistory, execution, ltp) : []),
+    [resolvedStream.tickHistory, execution, ltp],
+  )
+  const isStreaming = Boolean(execution?.ws_url)
+    && ['running', 'starting'].includes(String(execution?.data_plane_status || '').toLowerCase())
+  const nowMs = useNow(isStreaming ? PRICE_STREAM_STATUS_POLL_MS : null)
+  const priceStreamStatus = useMemo(
+    () => resolveExecutionPriceStreamStatus({
+      isStreaming,
+      stream,
+      streamKey: resolvedStream.streamKey,
+      nowMs,
+    }),
+    [isStreaming, stream, resolvedStream.streamKey, nowMs],
+  )
+
+  useEffect(() => {
+    if (!execution?.executor_id) return
+    console.info(
+      '[PriceStream] status=%s label=%s executor=%s plane=%s streamKey=%s connected=%s lastTickAge=%s',
+      priceStreamStatus.status,
+      priceStreamStatus.label,
+      execution.executor_id,
+      execution.data_plane_id || '-',
+      resolvedStream.streamKey || '-',
+      stream.connected,
+      priceStreamStatus.lastTickAgeSec ?? 'none',
+    )
+  }, [
+    priceStreamStatus.status,
+    priceStreamStatus.label,
+    priceStreamStatus.lastTickAgeSec,
+    execution?.executor_id,
+    execution?.data_plane_id,
+    resolvedStream.streamKey,
+    stream.connected,
+  ])
+
   if (!execution) {
     return (
       <div className="flex min-h-[360px] items-center justify-center rounded-lg border border-border bg-card p-8">
@@ -794,12 +893,6 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
     )
   }
 
-  const stream = getPlaneStream(planeStreams, execution.data_plane_id)
-  const streamKey = planeTickKey(execution.data_plane_id, execution.token)
-  const tickHistory = stream.tickHistory[streamKey] || []
-  const ltp = selectedTick?.ltp ?? stream.ticks[streamKey]?.ltp
-  const isStreaming = Boolean(execution.ws_url)
-    && ['running', 'starting'].includes(String(execution.data_plane_status || '').toLowerCase())
   const realtimeEvents = stream.realtimeEvents.filter(event =>
     event.executor_id === execution.executor_id
     || event.details?.executor_id === execution.executor_id,
@@ -810,27 +903,31 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
       <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3.5">
         <div>
           <h3 className="text-[13px] font-semibold">Live chart</h3>
-          <p className="mt-0.5 text-[10px] text-text-secondary">Live price stream</p>
+          <PriceStreamStatusLine status={priceStreamStatus} />
         </div>
         <div className="text-right">
           <div className="text-sm font-bold">{execution.symbol || '—'}</div>
           <div className="font-mono text-xl font-bold text-text-primary">
-            {ltp != null ? formatBrokerPrice(execution.broker, ltp) : '—'}
+            {ltp != null
+              ? formatBrokerPrice(execution.broker, ltp)
+              : execution.close_price != null
+                ? formatBrokerPrice(execution.broker, execution.close_price)
+                : '—'}
           </div>
         </div>
       </div>
-      <div className="p-4">
+      <div className="p-4 min-w-0">
         {isStreaming ? (
           <LiveExecutionChart
             execution={execution}
-            data={tickHistory}
+            data={chartSeries}
             realtimeEvents={realtimeEvents}
           />
         ) : (
           <div className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-border bg-secondary/20 px-6 text-center">
             <p className="text-sm font-semibold">Chart unavailable</p>
             <p className="mt-2 max-w-sm text-xs text-text-secondary">
-              Deploy this strategy from Runtime configuration to start live price streaming.
+              Deploy this strategy to start live price streaming.
             </p>
           </div>
         )}
@@ -847,6 +944,7 @@ export function ChartTab({ executions, planeStreams, selectedExecutionId }) {
     ),
     [executions],
   )
+  const nowMs = useNow(liveExecutions.length ? PRICE_STREAM_STATUS_POLL_MS : null)
 
   if (!liveExecutions.length) {
     return (
@@ -861,7 +959,16 @@ export function ChartTab({ executions, planeStreams, selectedExecutionId }) {
     <div className="p-4 space-y-4">
       {liveExecutions.map(execution => {
         const stream = getPlaneStream(planeStreams, execution.data_plane_id)
-        const streamKey = planeTickKey(execution.data_plane_id, execution.token)
+        const resolvedStream = resolveExecutionStream(stream, execution)
+        const { tickHistory, tick: streamTick, streamKey } = resolvedStream
+        const liveLtp = streamTick?.ltp ?? null
+        const chartSeries = buildChartSeries(tickHistory, execution, liveLtp)
+        const priceStreamStatus = resolveExecutionPriceStreamStatus({
+          isStreaming: true,
+          stream,
+          streamKey,
+          nowMs,
+        })
         const realtimeEvents = stream.realtimeEvents.filter(event =>
           event.executor_id === execution.executor_id
           || event.details?.executor_id === execution.executor_id,
@@ -876,9 +983,11 @@ export function ChartTab({ executions, planeStreams, selectedExecutionId }) {
             <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border/60">
               <div>
                 <div className="text-sm font-bold">{execution.label || execution.executor_id}</div>
-                <div className="text-[10px] text-text-secondary mt-1">
-                  {execution.symbol || '-'} · server :{execution.data_plane_port || '-'} · {stream.connected ? 'live ws' : 'reconnecting'}
+                <div className="text-[10px] text-text-secondary mt-0.5">
+                  {execution.symbol || '-'} · server :{execution.data_plane_port || '-'}
+                  {execution.created_at ? ` · created ${formatDbTimestamp(execution.created_at)}` : ''}
                 </div>
+                <PriceStreamStatusLine status={priceStreamStatus} />
               </div>
               {selected ? (
                 <span className="text-[10px] px-2 py-1 rounded bg-accent/15 text-accent font-bold">Selected</span>
@@ -887,7 +996,7 @@ export function ChartTab({ executions, planeStreams, selectedExecutionId }) {
             <div className="p-4 space-y-4">
               <LiveExecutionChart
                 execution={execution}
-                data={stream.tickHistory[streamKey] || []}
+                data={chartSeries}
                 realtimeEvents={realtimeEvents}
               />
               <ExecutionLevels execution={execution} />
@@ -908,35 +1017,58 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
   const chartData = useMemo(() => sanitizeChartSeries(data), [data])
 
   useEffect(() => {
-    if (!containerRef.current) return
-    const chart = createChart(containerRef.current, {
-      width: containerRef.current.clientWidth,
-      height: 420,
-      layout: { background: { color: '#111d28' }, textColor: '#8899a6' },
-      grid: { vertLines: { color: '#1a2733' }, horzLines: { color: '#1a2733' } },
-      timeScale: { timeVisible: true, secondsVisible: true, borderColor: '#2a3f52' },
-      rightPriceScale: { borderColor: '#2a3f52' },
-    })
-    const series = chart.addLineSeries({ color: '#1da1f2', lineWidth: 2 })
-    chartRef.current = chart
-    seriesRef.current = series
-    lastPointRef.current = null
+    const container = containerRef.current
+    if (!container) return undefined
 
-    const resizeObserver = new ResizeObserver(() => {
-      if (containerRef.current) chart.resize(containerRef.current.clientWidth, 420)
-    })
-    resizeObserver.observe(containerRef.current)
+    let chart = null
+    let resizeObserver = null
+    let cancelled = false
+
+    const mountChart = () => {
+      if (cancelled || !containerRef.current) return
+      const width = containerRef.current.clientWidth
+      if (width <= 0) {
+        requestAnimationFrame(mountChart)
+        return
+      }
+
+      chart = createChart(containerRef.current, {
+        width,
+        height: 420,
+        layout: { background: { color: '#111d28' }, textColor: '#8899a6' },
+        grid: { vertLines: { color: '#1a2733' }, horzLines: { color: '#1a2733' } },
+        timeScale: { timeVisible: true, secondsVisible: true, borderColor: '#2a3f52' },
+        rightPriceScale: { borderColor: '#2a3f52', autoScale: true },
+      })
+      const series = chart.addLineSeries({ color: '#1da1f2', lineWidth: 2, priceLineVisible: false })
+      chartRef.current = chart
+      seriesRef.current = series
+      lastPointRef.current = null
+
+      resizeObserver = new ResizeObserver(() => {
+        if (!containerRef.current || !chartRef.current) return
+        const nextWidth = containerRef.current.clientWidth
+        if (nextWidth > 0) chartRef.current.resize(nextWidth, 420)
+      })
+      resizeObserver.observe(containerRef.current)
+    }
+
+    mountChart()
 
     return () => {
-      resizeObserver.disconnect()
-      chart.remove()
+      cancelled = true
+      resizeObserver?.disconnect()
+      chart?.remove()
+      chartRef.current = null
+      seriesRef.current = null
       lastPointRef.current = null
     }
   }, [execution.executor_id])
 
   useEffect(() => {
-    if (!seriesRef.current) return
+    if (!seriesRef.current || !chartRef.current) return
     const series = seriesRef.current
+    const chart = chartRef.current
     if (!chartData.length) {
       series.setData([])
       lastPointRef.current = null
@@ -957,7 +1089,7 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
       series.setData(chartData)
     }
     lastPointRef.current = lastPoint
-    chartRef.current?.timeScale().scrollToPosition(2, false)
+    chart.timeScale().fitContent()
   }, [chartData])
 
   useEffect(() => {
@@ -965,7 +1097,8 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
     const series = seriesRef.current
     priceLinesRef.current.forEach(line => series.removePriceLine(line))
     priceLinesRef.current = getPriceLines(execution).map(line => series.createPriceLine(line))
-  }, [execution])
+    chartRef.current?.timeScale().fitContent()
+  }, [execution, chartData.length])
 
   useEffect(() => {
     if (!seriesRef.current || !chartData.length) return
@@ -977,7 +1110,7 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
     }
   }, [chartData, execution.executor_id, realtimeEvents])
 
-  return <div ref={containerRef} className="w-full h-[420px]" />
+  return <div ref={containerRef} className="w-full min-w-0 h-[420px]" />
 }
 
 function PortfolioTab({ ticks, liveApi, execution }) {
@@ -1457,6 +1590,11 @@ export function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, o
                 <div className="truncate text-[11px] font-bold">{item.engine?.label || item.engine?.strategy_name || 'Strategy'}</div>
                 <div className="mt-1 truncate font-mono text-[9px] text-accent">{item.execution_id}</div>
                 <div className="mt-1 truncate text-[9px] text-text-secondary">{item.executor?.symbol || item.engine?.symbol || '—'}</div>
+                {item.engine?.created_at ? (
+                  <div className="mt-1 truncate text-[9px] text-text-secondary">
+                    Created {formatDbTimestamp(item.engine.created_at)}
+                  </div>
+                ) : null}
                 <div className="mt-2"><StatusBadge status={item.engine?.status || 'pending'} /></div>
               </button>
             ))}
@@ -1473,6 +1611,11 @@ export function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, o
               <div className="min-w-0">
                 <div className="text-sm font-bold truncate">{engine.label || engine.strategy_name || selected.execution_id}</div>
                 <div className="text-[10px] font-mono text-accent mt-1 break-all">{selected.execution_id}</div>
+                {engine.created_at ? (
+                  <div className="text-[10px] text-text-secondary mt-1">
+                    Created {formatDbTimestamp(engine.created_at)}
+                  </div>
+                ) : null}
                 <div className="text-[10px] text-text-secondary mt-1">
                   Strategy: {engine.strategy_name || '—'} · {executor.symbol || engine.symbol} · {instrumentLabel(engine.broker)} {executor.token || engine.token}
                 </div>
@@ -1555,6 +1698,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     short_percent: '10.0',
     initial_threshold: '0.2',
     max_available_capital: '100000',
+    allow_partial_stocks: false,
     use_fake_client: false,
     client_mode: 'standard',
   })
@@ -1562,7 +1706,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
   const [submitting, setSubmitting] = useState(false)
   const [startingLive, setStartingLive] = useState(false)
   const [showStartConfirm, setShowStartConfirm] = useState(false)
-  const { ltp, connected: marketConnected, marketError } = useMarketPreview({
+  const { ltp, marketError, streamStatus: marketStreamStatus } = useMarketPreview({
     broker: form.broker,
     token: selectedStock?.symboltoken,
     symbol: selectedStock?.tradingsymbol,
@@ -1574,7 +1718,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
 
   const levels = useMemo(
     () => computeExecutionLevels(form),
-    [form.close_price, form.initial_threshold, form.long_percent, form.short_percent],
+    [form.close_price, form.initial_threshold, form.long_percent, form.short_percent, form.max_available_capital, form.allow_partial_stocks],
   )
 
   useEffect(() => {
@@ -1591,6 +1735,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       short_percent: String(template.short_percent ?? executor.short_percent ?? '10.0'),
       initial_threshold: String(template.initial_threshold ?? executor.initial_threshold ?? '0.2'),
       max_available_capital: String(template.max_available_capital ?? executor.max_available_capital ?? '100000'),
+      allow_partial_stocks: Boolean(template.allow_partial_stocks ?? executor.allow_partial_stocks),
       use_fake_client: Boolean(template.use_fake_client),
       client_mode: template.client_mode || 'standard',
     })
@@ -1634,12 +1779,15 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       }
       setResults(data.data || [])
       if (!(data.data || []).length) {
-        const cryptoHint = /btc|eth|crypto|usd|eur/i.test(query.trim()) && form.broker === 'angel'
-          ? ' Angel search only covers NSE/BSE symbols — switch Broker to eToro for crypto and global instruments.'
-          : form.broker === 'etoro'
-            ? ' Check eToro credentials and that the selected environment (Demo/Live) is configured.'
-            : ''
-        setError(`No results found for "${query.trim()}".${cryptoHint}`)
+        let hint = ''
+        if (form.use_fake_client) {
+          hint = ' Fake client only includes a small mock symbol list (e.g. BTC, ETH, AAPL, TSLA, INFY-EQ).'
+        } else if (form.broker === 'etoro') {
+          hint = ' Check eToro credentials and that the selected environment (Demo/Live) is configured.'
+        } else if (/btc|eth|crypto|usd|eur/i.test(query.trim()) && form.broker === 'angel') {
+          hint = ' Angel search only covers NSE/BSE symbols — switch Broker to eToro for crypto and global instruments.'
+        }
+        setError(`No results found for "${query.trim()}".${hint}`)
       }
     } catch (err) {
       console.error('[CreateExecution] Search request failed', err)
@@ -1652,8 +1800,13 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     setSelectedStock(stock)
     setClosePriceManual(false)
     setShowStartConfirm(false)
-    const nextId = `${form.broker}-${stock.tradingsymbol}-strategy-${form.strategy_name}`.toLowerCase().replace(/[^a-z0-9-]+/g, '-')
-    setForm(prev => ({ ...prev, executor_id: nextId, close_price: '' }))
+    const nextId = buildExecutionId(form.broker, stock.tradingsymbol, form.strategy_name)
+    setForm(prev => ({
+      ...prev,
+      executor_id: nextId,
+      close_price: '',
+      allow_partial_stocks: prev.broker === 'etoro' ? true : prev.allow_partial_stocks,
+    }))
     setResults([])
     setQuery('')
   }
@@ -1671,6 +1824,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     short_percent: Number(form.short_percent),
     initial_threshold: Number(form.initial_threshold),
     max_available_capital: Number(form.max_available_capital),
+    allow_partial_stocks: Boolean(form.allow_partial_stocks),
     use_fake_client: form.use_fake_client,
     client_mode: form.broker === 'etoro' ? form.client_mode : 'standard',
   })
@@ -1762,7 +1916,27 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
 
       <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-5">
         <div className="grid grid-cols-2 gap-4 content-start">
-          <FormField label="Broker" value={form.broker} onChange={value => setForm(prev => ({ ...prev, broker: value }))} />
+          <div>
+            <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Broker</label>
+            <select
+              value={form.broker}
+              onChange={e => {
+                const value = e.target.value
+                setSelectedStock(null)
+                setResults([])
+                setForm(prev => ({
+                  ...prev,
+                  broker: value,
+                  allow_partial_stocks: value === 'etoro' ? true : prev.allow_partial_stocks,
+                }))
+              }}
+              className="w-full px-3 py-2 bg-card border border-border rounded text-xs outline-none focus:border-accent"
+            >
+              {BROKER_OPTIONS.map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
           <div>
             <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Environment</label>
             <select
@@ -1826,6 +2000,14 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
           <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
             <input
               type="checkbox"
+              checked={form.allow_partial_stocks}
+              onChange={e => setForm(prev => ({ ...prev, allow_partial_stocks: e.target.checked }))}
+            />
+            Allow partial stocks (quantity rounded to 2 decimals)
+          </label>
+          <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
+            <input
+              type="checkbox"
               checked={form.use_fake_client}
               onChange={e => setForm(prev => ({ ...prev, use_fake_client: e.target.checked }))}
             />
@@ -1836,7 +2018,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
         <MarketPreviewPanel
           selectedStock={selectedStock}
           ltp={ltp}
-          connected={marketConnected}
+          streamStatus={marketStreamStatus}
           marketError={marketError}
           closePrice={form.close_price}
           onClosePriceChange={value => {
@@ -1934,7 +2116,7 @@ function ExecutionLevels({ execution }) {
 function MarketPreviewPanel({
   selectedStock,
   ltp,
-  connected,
+  streamStatus,
   marketError,
   closePrice,
   onClosePriceChange,
@@ -1972,8 +2154,16 @@ function MarketPreviewPanel({
             {selectedStock.exchange} · {instrumentLabel(form.broker)} {selectedStock.symboltoken}
           </div>
         </div>
-        <div className={`text-[10px] px-2 py-1 rounded ${connected ? 'bg-green/15 text-green' : 'bg-secondary text-text-secondary'}`}>
-          {connected ? 'WS Live' : 'Connecting...'}
+        <div className={`text-[10px] px-2 py-1 rounded ${
+          streamStatus.tone === 'ok'
+            ? 'bg-green/15 text-green'
+            : streamStatus.tone === 'error'
+              ? 'bg-red/15 text-red'
+              : streamStatus.tone === 'warn'
+                ? 'bg-yellow-400/15 text-yellow-400'
+                : 'bg-secondary text-text-secondary'
+        }`}>
+          {streamStatus.label}
         </div>
       </div>
 
@@ -2013,6 +2203,12 @@ function MarketPreviewPanel({
         <PreviewLevelRow label="Buy Trigger" value={formatBrokerPrice(form.broker, levels.buyTrigger)} hint={`+${form.initial_threshold}% from close`} tone="accent" />
         <PreviewLevelRow label="Take Profit" value={formatBrokerPrice(form.broker, levels.takeProfit)} hint={`+${form.long_percent}% from trigger`} tone="green" />
         <PreviewLevelRow label="Stop Loss" value={formatBrokerPrice(form.broker, levels.stopLoss)} hint={`-${form.short_percent}% from trigger`} tone="red" />
+        <PreviewLevelRow
+          label="Order Qty"
+          value={levels.orderQuantity != null ? levels.orderQuantity.toFixed(form.allow_partial_stocks ? 2 : 0) : '--'}
+          hint={form.allow_partial_stocks ? 'Partial units · 2 dp' : 'Whole shares only'}
+          tone="default"
+        />
       </div>
 
       {marketError && <div className="mt-3 text-[10px] text-red">{marketError}</div>}
@@ -2039,31 +2235,62 @@ function CountdownConfirmOverlay({
   title,
   body,
   confirmLabel = 'Confirming...',
+  skipLabel = 'Looks good',
   onCancel,
   onComplete,
 }) {
   const [remaining, setRemaining] = useState(seconds)
   const completedRef = useRef(false)
+  const intervalRef = useRef(null)
   const onCompleteRef = useRef(onComplete)
 
   useEffect(() => {
     onCompleteRef.current = onComplete
   }, [onComplete])
 
+  const finishNow = useCallback(() => {
+    if (completedRef.current) return
+    completedRef.current = true
+    if (intervalRef.current != null) {
+      window.clearInterval(intervalRef.current)
+      intervalRef.current = null
+    }
+    setRemaining(0)
+    onCompleteRef.current()
+  }, [])
+
   useEffect(() => {
     if (!open) {
       setRemaining(seconds)
       completedRef.current = false
+      if (intervalRef.current != null) {
+        window.clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
       return undefined
     }
 
     setRemaining(seconds)
     completedRef.current = false
-    const intervalId = window.setInterval(() => {
-      setRemaining(prev => (prev <= 1 ? 0 : prev - 1))
+    intervalRef.current = window.setInterval(() => {
+      setRemaining(prev => {
+        if (prev <= 1) {
+          if (intervalRef.current != null) {
+            window.clearInterval(intervalRef.current)
+            intervalRef.current = null
+          }
+          return 0
+        }
+        return prev - 1
+      })
     }, 1000)
 
-    return () => window.clearInterval(intervalId)
+    return () => {
+      if (intervalRef.current != null) {
+        window.clearInterval(intervalRef.current)
+        intervalRef.current = null
+      }
+    }
   }, [open, seconds])
 
   useEffect(() => {
@@ -2073,6 +2300,8 @@ function CountdownConfirmOverlay({
   }, [open, remaining])
 
   if (!open) return null
+
+  const finishing = remaining === 0
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
@@ -2090,9 +2319,18 @@ function CountdownConfirmOverlay({
           <button
             type="button"
             onClick={onCancel}
-            className="px-4 py-2 rounded border border-border bg-background text-xs font-bold text-text-primary"
+            disabled={finishing}
+            className="px-4 py-2 rounded border border-border bg-background text-xs font-bold text-text-primary disabled:opacity-50"
           >
             Cancel
+          </button>
+          <button
+            type="button"
+            onClick={finishNow}
+            disabled={finishing}
+            className="px-4 py-2 rounded bg-green text-xs font-bold text-white disabled:opacity-50"
+          >
+            {skipLabel}
           </button>
         </div>
       </div>
@@ -2103,13 +2341,54 @@ function CountdownConfirmOverlay({
 function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fake_client, enabled }) {
   const [ltp, setLtp] = useState(null)
   const [connected, setConnected] = useState(false)
+  const [connectedAt, setConnectedAt] = useState(null)
+  const [lastTickAt, setLastTickAt] = useState(null)
   const [marketError, setMarketError] = useState('')
   const socketRef = useRef(null)
+  const nowMs = useNow(enabled ? PRICE_STREAM_STATUS_POLL_MS : null)
+
+  const streamStatus = useMemo(() => {
+    if (!enabled || !token || !symbol) {
+      return { status: 'idle', label: 'Select a stock to preview', tone: 'muted' }
+    }
+    if (marketError) {
+      return { status: 'error', label: marketError, tone: 'error' }
+    }
+    if (!connected) {
+      return { status: 'connecting', label: 'Connecting to market feed…', tone: 'warn' }
+    }
+    if (!lastTickAt) {
+      const connectedForMs = connectedAt ? nowMs - connectedAt : 0
+      if (connectedForMs >= PRICE_STREAM_FIRST_TICK_MS) {
+        return { status: 'no_ticks', label: 'Connected — no prices received', tone: 'error' }
+      }
+      return { status: 'waiting', label: 'Waiting for first tick…', tone: 'warn' }
+    }
+    const ageMs = nowMs - lastTickAt
+    const ageSec = Math.max(0, Math.round(ageMs / 1000))
+    if (ageMs > PRICE_STREAM_STALE_MS) {
+      return { status: 'stale', label: `Prices stale (${ageSec}s ago)`, tone: 'error' }
+    }
+    return { status: 'flowing', label: 'Live prices flowing', tone: 'ok' }
+  }, [enabled, token, symbol, marketError, connected, connectedAt, lastTickAt, nowMs])
+
+  useEffect(() => {
+    console.info(
+      '[MarketPreview] status=%s label=%s symbol=%s connected=%s lastTickAge=%s',
+      streamStatus.status,
+      streamStatus.label,
+      symbol || '-',
+      connected,
+      lastTickAt ? Math.round((nowMs - lastTickAt) / 1000) : 'none',
+    )
+  }, [streamStatus.status, streamStatus.label, symbol, connected, lastTickAt, nowMs])
 
   useEffect(() => {
     if (!enabled || !token || !symbol) {
       setLtp(null)
       setConnected(false)
+      setConnectedAt(null)
+      setLastTickAt(null)
       setMarketError('')
       if (socketRef.current) {
         socketRef.current.close()
@@ -2120,6 +2399,8 @@ function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fa
 
     setLtp(null)
     setConnected(false)
+    setConnectedAt(null)
+    setLastTickAt(null)
     setMarketError('')
 
     const ws = new WebSocket(CONTROL_MARKET_WS)
@@ -2127,6 +2408,8 @@ function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fa
 
     ws.onopen = () => {
       setConnected(true)
+      setConnectedAt(Date.now())
+      console.info('[MarketPreview] ws_open symbol=%s token=%s', symbol, token)
       ws.send(JSON.stringify({
         type: 'subscribe',
         broker,
@@ -2142,7 +2425,10 @@ function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fa
       try {
         const msg = JSON.parse(event.data)
         if (msg.type === 'tick' && msg.ltp != null) {
-          setLtp(Number(msg.ltp))
+          const nextLtp = Number(msg.ltp)
+          if (!Number.isFinite(nextLtp) || nextLtp <= 0) return
+          setLtp(nextLtp)
+          setLastTickAt(Date.now())
           setMarketError('')
         } else if (msg.type === 'error') {
           setMarketError(msg.message || 'Market preview failed')
@@ -2155,6 +2441,8 @@ function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fa
     ws.onerror = () => setMarketError('Market websocket connection failed')
     ws.onclose = () => {
       setConnected(false)
+      setConnectedAt(null)
+      console.warn('[MarketPreview] ws_close symbol=%s token=%s', symbol, token)
       if (socketRef.current === ws) socketRef.current = null
     }
 
@@ -2164,25 +2452,38 @@ function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fa
     }
   }, [broker, token, symbol, exchange, account_env, use_fake_client, enabled])
 
-  return { ltp, connected, marketError }
+  return { ltp, connected, marketError, streamStatus }
 }
 
 export function computeExecutionLevels(source) {
   const closePrice = Number(source.close_price || 0)
   if (!closePrice) {
-    return { closePrice: null, buyTrigger: null, takeProfit: null, stopLoss: null }
+    return { closePrice: null, buyTrigger: null, takeProfit: null, stopLoss: null, orderQuantity: null }
   }
 
   const buyTrigger = closePrice * (1 + Number(source.initial_threshold || 0) / 100)
   const takeProfit = buyTrigger * (1 + Number(source.long_percent || 0) / 100)
   const stopLoss = buyTrigger * (1 - Number(source.short_percent || 0) / 100)
+  const orderQuantity = computeOrderQuantity(
+    Number(source.max_available_capital || 0),
+    buyTrigger,
+    Boolean(source.allow_partial_stocks),
+  )
 
   return {
     closePrice,
     buyTrigger,
     takeProfit,
     stopLoss,
+    orderQuantity,
   }
+}
+
+export function computeOrderQuantity(capital, price, allowPartial = false) {
+  if (!capital || !price || price <= 0) return null
+  const raw = capital / price
+  if (allowPartial) return Math.round(raw * 100) / 100
+  return Math.floor(raw)
 }
 
 function formatPrice(value) {
@@ -2326,6 +2627,27 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function resolvePlaneWsUrl(plane) {
+  const raw = String(plane?.ws_url || '').trim()
+  if (!raw) return raw
+  if (raw.startsWith('/')) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${protocol}//${window.location.host}${raw}`
+  }
+  if (plane?.id) {
+    try {
+      const url = new URL(raw)
+      if (url.pathname === '/ws/live') {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+        return `${protocol}//${window.location.host}/ws/control/engines/${plane.id}/live`
+      }
+    } catch {
+      // fall through
+    }
+  }
+  return raw
+}
+
 function filterActiveDataPlanes(engines) {
   return (engines || []).filter(engine =>
     ACTIVE_DATA_PLANE_STATUSES.has(String(engine.status || '').toLowerCase())
@@ -2335,9 +2657,168 @@ function filterActiveDataPlanes(engines) {
   )
 }
 
+function executionTimestamp() {
+  const now = new Date()
+  const pad = value => String(value).padStart(2, '0')
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`
+}
+
+function buildExecutionId(broker, symbol, strategyName) {
+  const slug = `${broker}-${symbol}-strategy-${strategyName}`
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+  return `${slug}-${executionTimestamp()}`
+}
+
 function getPlaneStream(planeStreams, planeId) {
   if (!planeId) return EMPTY_PLANE_STREAM
   return planeStreams[planeId] || EMPTY_PLANE_STREAM
+}
+
+function resolveExecutionStream(stream, execution) {
+  const planeId = execution?.data_plane_id
+  const token = execution?.token
+  const symbol = String(execution?.symbol || '').trim().toUpperCase()
+  const primaryKey = planeTickKey(planeId, token)
+
+  let tickHistory = stream.tickHistory[primaryKey] || []
+  let tick = stream.ticks[primaryKey]
+  let streamKey = primaryKey
+
+  if ((!tickHistory.length || !tick) && planeId && symbol) {
+    for (const [key, entry] of Object.entries(stream.ticks)) {
+      if (!key.startsWith(`${planeId}:`)) continue
+      if (String(entry?.symbol || '').trim().toUpperCase() !== symbol) continue
+      tick = entry
+      tickHistory = stream.tickHistory[key] || tickHistory
+      streamKey = key
+      break
+    }
+  }
+
+  return { tickHistory, tick, streamKey }
+}
+
+export function resolveExecutionPriceStreamStatus({
+  isStreaming,
+  stream,
+  streamKey,
+  nowMs = Date.now(),
+}) {
+  if (!isStreaming) {
+    return {
+      status: 'offline',
+      label: 'Price stream offline',
+      detail: 'Deploy the strategy to start streaming.',
+      tone: 'muted',
+      lastTickAgeSec: null,
+    }
+  }
+  if (!stream.connected) {
+    if (stream.connectExhausted) {
+      return {
+        status: 'disconnected',
+        label: 'Data plane unreachable',
+        detail: 'WebSocket connection failed after several retries.',
+        tone: 'error',
+        lastTickAgeSec: null,
+      }
+    }
+    return {
+      status: 'connecting',
+      label: 'Connecting to data plane…',
+      detail: 'Waiting for WebSocket to the live engine.',
+      tone: 'warn',
+      lastTickAgeSec: null,
+    }
+  }
+
+  const lastTickAt = streamKey ? stream.lastTickAt?.[streamKey] : null
+  if (!lastTickAt) {
+    const connectedForMs = stream.connectedAt ? nowMs - stream.connectedAt : 0
+    if (connectedForMs >= PRICE_STREAM_FIRST_TICK_MS) {
+      return {
+        status: 'no_ticks',
+        label: 'Connected — no prices received',
+        detail: 'WebSocket is open but no tick messages have arrived yet.',
+        tone: 'error',
+        lastTickAgeSec: null,
+      }
+    }
+    return {
+      status: 'waiting',
+      label: 'Connected — waiting for first tick…',
+      detail: 'WebSocket open; awaiting first price from the live engine.',
+      tone: 'warn',
+      lastTickAgeSec: null,
+    }
+  }
+
+  const ageMs = nowMs - lastTickAt
+  const lastTickAgeSec = Math.max(0, Math.round(ageMs / 1000))
+  if (ageMs > PRICE_STREAM_STALE_MS) {
+    return {
+      status: 'stale',
+      label: `Prices stale (${lastTickAgeSec}s ago)`,
+      detail: 'Ticks stopped arriving from the live engine.',
+      tone: 'error',
+      lastTickAgeSec,
+    }
+  }
+
+  return {
+    status: 'flowing',
+    label: 'Live prices flowing',
+    detail: `Last tick ${lastTickAgeSec}s ago.`,
+    tone: 'ok',
+    lastTickAgeSec,
+  }
+}
+
+function PriceStreamStatusLine({ status }) {
+  const toneClass = status.tone === 'ok'
+    ? 'text-green'
+    : status.tone === 'warn'
+      ? 'text-yellow-400'
+      : status.tone === 'error'
+        ? 'text-red'
+        : 'text-text-secondary'
+
+  return (
+    <div className="mt-0.5">
+      <p className={`text-[10px] font-semibold ${toneClass}`}>{status.label}</p>
+      {status.detail ? (
+        <p className="text-[9px] text-text-secondary mt-0.5">{status.detail}</p>
+      ) : null}
+    </div>
+  )
+}
+
+function useNow(intervalMs) {
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    if (!intervalMs) return undefined
+    const id = setInterval(() => setNowMs(Date.now()), intervalMs)
+    return () => clearInterval(id)
+  }, [intervalMs])
+  return nowMs
+}
+
+function buildChartSeries(history, execution, liveLtp) {
+  const sanitized = sanitizeChartSeries(history)
+  if (sanitized.length) return sanitized
+
+  const price = Number(liveLtp ?? execution?.close_price)
+  if (!Number.isFinite(price) || price <= 0) return []
+
+  const now = Math.floor(Date.now() / 1000)
+  return sanitizeChartSeries([
+    { time: now - 180, value: price },
+    { time: now - 60, value: price },
+    { time: now, value: price },
+  ])
 }
 
 function normalizeTokenKey(token) {
@@ -2353,7 +2834,7 @@ function planeTickKey(planeId, token) {
 
 function appendTickPoint(history, ltp) {
   const value = Number(ltp)
-  if (!Number.isFinite(value)) return history
+  if (!Number.isFinite(value) || value <= 0) return history
 
   const nextSec = Math.floor(Date.now() / 1000)
   const last = history[history.length - 1]
@@ -2373,7 +2854,7 @@ function sanitizeChartSeries(points) {
   for (const point of points) {
     const time = Number(point.time)
     const value = Number(point.value)
-    if (!Number.isFinite(time) || !Number.isFinite(value)) continue
+    if (!Number.isFinite(time) || !Number.isFinite(value) || value <= 0) continue
 
     const last = sanitized[sanitized.length - 1]
     if (last && time <= last.time) {
@@ -2450,6 +2931,7 @@ function buildTradeMarkers(realtimeEvents, executorId, chartData) {
 
 function mergeLiveExecution(registryExecution, liveExecution) {
   const merged = { ...registryExecution, ...liveExecution }
+  merged.created_at = registryExecution.created_at || liveExecution.created_at
   if (['running', 'starting'].includes(liveExecution.data_plane_status)) {
     merged.data_plane_id = liveExecution.data_plane_id || registryExecution.data_plane_id
     merged.data_plane_label = liveExecution.data_plane_label || registryExecution.data_plane_label
@@ -2482,6 +2964,8 @@ function normalizeControlledExecution(item) {
   return normalizeExecution({
     ...executor,
     executor_id: executorId,
+    created_at: engine.created_at || null,
+    started_at: engine.started_at || null,
     broker: engine.broker || executor.broker,
     symbol: engine.symbol || executor.symbol,
     token: engine.token || executor.token,

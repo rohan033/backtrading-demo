@@ -28,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from logzero import logger
 from pydantic import BaseModel
 
+from control_plane.ops_logging import live_engine_log_path
 from brokers.interfaces import TickData
 from brokers.etoro.env import load_etoro_env
 from event.db_event_consumer import DbEventWriter
@@ -48,7 +49,11 @@ class ConnectionManager:
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self.active_connections.append(ws)
-        logger.info("[WS] Client connected (%d total)", len(self.active_connections))
+        logger.info(
+            "[WS] Client connected (%d total) engine_id=%s",
+            len(self.active_connections),
+            getattr(self, "engine_id", None),
+        )
 
     def disconnect(self, ws: WebSocket):
         self.active_connections.remove(ws)
@@ -99,9 +104,14 @@ class LiveEngine:
         self.tick_provider: Optional[TickProvider] = None
         self.executors: dict[str, StrategyExecutor] = {}
         self.ws_manager = ConnectionManager()
+        self.ws_manager.engine_id = self.engine_id
         self._broadcast_queue: asyncio.Queue = asyncio.Queue(maxsize=5000)
         self._broadcast_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
+        self._logged_first_ticks: set[str] = set()
+        self._tick_stats = {"generated": 0, "broadcast": 0, "dropped_no_clients": 0}
+        self._last_flow_log_at = 0.0
+        self._last_no_client_warn_at = 0.0
 
     async def start(self):
         if self.use_fake_client:
@@ -146,7 +156,14 @@ class LiveEngine:
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
         if self.engine_id and self.control_url:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-        logger.info("[ENGINE] Live engine started broker=%s env=%s", self.broker, self.account_env)
+        logger.info(
+            "[ENGINE] Live engine started engine_id=%s broker=%s env=%s client_mode=%s fake=%s",
+            self.engine_id or "-",
+            self.broker,
+            self.account_env,
+            self.client_mode,
+            self.use_fake_client,
+        )
 
     def _create_status_client(self):
         if self.broker != "etoro":
@@ -196,6 +213,28 @@ class LiveEngine:
         logger.info("[ENGINE] Live engine shut down")
 
     def _on_tick(self, tick: TickData):
+        tick_key = f"{tick.symbol}:{tick.token}"
+        ltp = float(tick.ltp or 0)
+        if ltp <= 0:
+            logger.warning(
+                "[TICK] Ignoring invalid tick symbol=%s token=%s ltp=%s",
+                tick.symbol,
+                tick.token,
+                tick.ltp,
+            )
+            return
+
+        self._tick_stats["generated"] += 1
+        if tick_key not in self._logged_first_ticks:
+            self._logged_first_ticks.add(tick_key)
+            logger.info(
+                "[TICK] First tick symbol=%s token=%s exchange=%s ltp=%s",
+                tick.symbol,
+                tick.token,
+                tick.exchange,
+                tick.ltp,
+            )
+
         if self.order_manager and not self.is_bo_client():
             self.order_manager.enqueue_tick(tick)
         msg = {
@@ -230,13 +269,54 @@ class LiveEngine:
             len(self.ws_manager.active_connections),
         )
 
+    def _maybe_log_tick_flow(self, now: float) -> None:
+        if now - self._last_flow_log_at < 60:
+            return
+        self._last_flow_log_at = now
+        generated = self._tick_stats["generated"]
+        broadcast = self._tick_stats["broadcast"]
+        logger.info(
+            "[TICK] Flow stats generated=%d broadcast=%d ws_clients=%d engine_id=%s",
+            generated,
+            broadcast,
+            len(self.ws_manager.active_connections),
+            self.engine_id or "-",
+        )
+        self._tick_stats = {"generated": 0, "broadcast": 0, "dropped_no_clients": 0}
+
     async def _broadcast_loop(self):
+        import time
+
         while True:
             msg = await self._broadcast_queue.get()
+            client_count = len(self.ws_manager.active_connections)
             if msg.get("type") != "tick":
                 self._log_broadcast(msg)
-            if self.ws_manager.active_connections:
+                if client_count:
+                    await self.ws_manager.broadcast(msg)
+                continue
+
+            if client_count:
+                self._tick_stats["broadcast"] += 1
                 await self.ws_manager.broadcast(msg)
+            else:
+                self._tick_stats["dropped_no_clients"] += 1
+                now = time.monotonic()
+                if now - self._last_no_client_warn_at >= 30:
+                    self._last_no_client_warn_at = now
+                    dropped = self._tick_stats["dropped_no_clients"]
+                    self._tick_stats["dropped_no_clients"] = 0
+                    logger.warning(
+                        "[TICK] Broker prices flowing but no UI WS clients connected "
+                        "symbol=%s token=%s ltp=%s dropped_ticks=%d engine_id=%s",
+                        msg.get("symbol"),
+                        msg.get("token"),
+                        msg.get("ltp"),
+                        dropped,
+                        self.engine_id or "-",
+                    )
+
+            self._maybe_log_tick_flow(time.monotonic())
 
     def _on_executor_status(self, executor_id: str, status: str, is_in_position: bool):
         msg = {
@@ -293,6 +373,7 @@ class LiveEngine:
             token=req.token,
             exchange=req.exchange,
             max_available_capital=req.max_available_capital,
+            allow_partial_stocks=req.allow_partial_stocks,
         )
 
         executor = StrategyExecutor(
@@ -363,6 +444,7 @@ class RegisterExecutorRequest(BaseModel):
     short_percent: float = 10.0
     initial_threshold: float = 0.2
     max_available_capital: float = 100000
+    allow_partial_stocks: bool = False
     close_price: float
 
 
@@ -376,12 +458,16 @@ async def lifespan(app: FastAPI):
     global engine
     use_fake = "--fake" in sys.argv
     account_env = _arg_value("--env", os.getenv("BROKER_ENV", "live"))
+    engine_id = _arg_value("--engine-id", "")
     load_etoro_env(account_env)
+    log_path = live_engine_log_path(engine_id) if engine_id else None
+    if log_path:
+        logger.info("[ENGINE] Live engine log file path=%s", log_path)
     engine = LiveEngine(
         use_fake_client=use_fake,
         account_env=account_env,
         broker=_arg_value("--broker", "angel"),
-        engine_id=_arg_value("--engine-id", ""),
+        engine_id=engine_id,
         control_url=_arg_value("--control-url", ""),
         heartbeat_interval=float(_arg_value("--heartbeat-interval", "5")),
         symbol=_arg_value("--symbol", ""),
@@ -544,10 +630,18 @@ async def register_executor(req: RegisterExecutorRequest):
     eng = get_engine()
     try:
         state = await eng.register_executor(req)
+        logger.info(
+            "[ENGINE] Registered executor via API id=%s symbol=%s token=%s",
+            req.executor_id,
+            req.symbol,
+            req.token,
+        )
         return {"status": True, "data": state}
     except ValueError as e:
+        logger.warning("[ENGINE] Register executor rejected id=%s: %s", req.executor_id, e)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.error("[ENGINE] Register executor failed id=%s: %s", req.executor_id, e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -90,6 +90,7 @@ export function StrategiesListPage() {
         name: execution.label || execution.symbol || execution.strategy_name || 'Strategy',
         symbol: execution.symbol || '—',
         status: engineStatus,
+        createdAt: execution.created_at,
         pnl: 0,
         inPosition: Boolean(execution.is_in_position),
         isLive: ['running', 'starting'].includes(engineStatus),
@@ -289,10 +290,23 @@ export function StrategyDetailPage() {
     queuedItem?.engine?.status || execution?.data_plane_status || '',
   ).toLowerCase()
   const isLive = ['running', 'starting'].includes(engineStatus)
-  const overviewExecution = useMemo(
-    () => panelExecutions.find(ex => ex.executor_id === id) || execution || null,
-    [panelExecutions, id, execution],
-  )
+  const overviewExecution = useMemo(() => {
+    const fromPanel = panelExecutions.find(ex => ex.executor_id === id)
+    const base = fromPanel || execution || null
+    if (!base || !queuedItem?.engine) return base
+
+    const engine = queuedItem.engine
+    return {
+      ...base,
+      created_at: base.created_at || engine.created_at,
+      data_plane_id: base.data_plane_id || engine.id,
+      data_plane_port: base.data_plane_port || engine.port,
+      data_plane_status: base.data_plane_status || engine.status,
+      api_base_url: base.api_base_url || engine.api_base_url,
+      ws_url: base.ws_url || engine.ws_url,
+      log_file: base.log_file || engine.metadata?.log_file,
+    }
+  }, [panelExecutions, id, execution, queuedItem])
   const strategyActivityEvents = useMemo(() => {
     if (!id) return []
     return executionEvents.filter(event => {

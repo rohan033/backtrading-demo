@@ -1,5 +1,5 @@
 from brokers.interfaces import TickData
-from utils import round_off
+from utils import order_quantity_from_capital, round_off
 from .base import BaseStrategy, TradeSignal
 
 
@@ -47,7 +47,8 @@ class OnePercentStrategy(BaseStrategy):
             if available_capital and hasattr(self.strategy_config, 'max_available_capital') and self.strategy_config.max_available_capital:
                 capital_to_use = min(available_capital, self.strategy_config.max_available_capital)
             
-            quantity = int(capital_to_use / entry_price) if capital_to_use else 0
+            allow_partial = bool(getattr(self.strategy_config, 'allow_partial_stocks', False))
+            quantity = order_quantity_from_capital(capital_to_use, entry_price, allow_partial=allow_partial)
             
             reason = f"chg={change_percentage:+.3f}% >= init={self.initial_threshold}% (ref={self.last_close_price})"
             

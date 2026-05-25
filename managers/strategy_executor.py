@@ -62,6 +62,7 @@ class StrategyExecutor(TickListener):
             'short_percent': getattr(cfg, 'short_percent', None) if cfg else None,
             'initial_threshold': getattr(cfg, 'initial_threshold', None) if cfg else None,
             'max_available_capital': getattr(cfg, 'max_available_capital', None) if cfg else None,
+            'allow_partial_stocks': getattr(cfg, 'allow_partial_stocks', False) if cfg else False,
             'close_price': close_price,
         }
 
@@ -146,7 +147,7 @@ class StrategyExecutor(TickListener):
                     self.is_in_position = True
                     self._set_status("POSITION_OPEN")
                     logger.info(
-                        "%s[%s]%s %sORDER   PLACED%s  order_id=%s  entry=%.2f  TP=%.2f  SL=%.2f  qty=%d",
+                        "%s[%s]%s %sORDER   PLACED%s  order_id=%s  entry=%.2f  TP=%.2f  SL=%.2f  qty=%.2f",
                         CYAN, self.executor_id, RESET,
                         BOLD + GREEN, RESET,
                         res.order_id,

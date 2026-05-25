@@ -83,7 +83,11 @@ class FakeTradingClient(TickClient):
         order_id = f"FAKE-{self._order_counter:04d}"
         unique_order_id = str(uuid.uuid4())[:8]
 
-        quantity = int(available_capital / ltp)
+        quantity = round(available_capital / ltp, 2)
+        if quantity <= 0:
+            logger.warning("Capital %.2f too low for LTP=%.2f", available_capital, ltp)
+            return {}
+
         self._orders_placed.append({
             "order_id": order_id,
             "unique_order_id": unique_order_id,
@@ -97,7 +101,7 @@ class FakeTradingClient(TickClient):
         })
 
         logger.info(
-            "%s[BROKER]%s %sFILLED%s   %s  qty=%d  price=%.2f  order_id=%s",
+            "%s[BROKER]%s %sFILLED%s   %s  qty=%.2f  price=%.2f  order_id=%s",
             YELLOW, RESET, BOLD + GREEN, RESET,
             symbol, quantity, ltp, order_id
         )

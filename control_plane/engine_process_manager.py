@@ -4,16 +4,22 @@ import socket
 import subprocess
 import sys
 import uuid
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from control_plane.engine_registry import EngineRegistry
+from control_plane.ops_logging import live_engine_log_path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ENGINE_ID = "local-live-engine"
 ACTIVE_ENGINE_STATUSES = {"starting", "running", "stale"}
+
+
+def engine_live_ws_path(engine_id: str) -> str:
+    return f"/ws/control/engines/{engine_id}/live"
 
 
 class EngineProcessManager:
@@ -43,7 +49,7 @@ class EngineProcessManager:
         port = int(data.get("port") or self.allocate_port())
         label = data.get("label") or f"{broker}-{symbol or '*'}-strategy-{strategy_name}"
         api_base_url = data.get("api_base_url") or f"http://{host}:{port}/api/live"
-        ws_url = data.get("ws_url") or f"ws://{host}:{port}/ws/live"
+        ws_url = data.get("ws_url") or engine_live_ws_path(engine_id)
 
         engine = self.registry.upsert_engine(
             {
@@ -89,7 +95,13 @@ class EngineProcessManager:
         if broker == "fake" or data.get("use_fake_client"):
             cmd.append("--fake")
 
-        log_file = self._log_file(label)
+        log_file = live_engine_log_path(engine_id)
+        logging.getLogger("backtrading").info(
+            "[CONTROL] Starting live engine id=%s port=%s log_file=%s",
+            engine_id,
+            port,
+            log_file,
+        )
         env = {**os.environ, "PYTHONUNBUFFERED": "1"}
         with log_file.open("a") as stream:
             process = subprocess.Popen(
@@ -171,12 +183,6 @@ class EngineProcessManager:
                 return False
         return True
 
-    @staticmethod
-    def _log_file(name: str) -> Path:
-        log_dir = REPO_ROOT / "logs" / "executions"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        return (log_dir / f"{_safe_filename(name)}.log").resolve()
-
 
 def _normalize_env(value: Any) -> str:
     return "demo" if str(value or "live").lower() == "demo" else "live"
@@ -188,6 +194,3 @@ def _engine_id(broker: str, symbol: str | None, strategy_name: str, account_env:
     return "".join(ch if ch.isalnum() else "-" for ch in base).strip("-")
 
 
-def _safe_filename(value: str) -> str:
-    safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in value.lower())
-    return safe.strip("-") or "execution"

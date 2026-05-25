@@ -91,7 +91,7 @@ class TradingManager:
     async def _handle_buy_signal(self, executor_id: str, signal):
         """Handle BUY signal by placing buy order"""
         logger.info(
-            "%s[TM]%s Placing BUY  executor=%s  entry=%.2f  qty=%d  TP=%.2f  SL=%.2f",
+            "%s[TM]%s Placing BUY  executor=%s  entry=%.2f  qty=%.2f  TP=%.2f  SL=%.2f",
             MAGENTA, RESET, executor_id,
             signal.entry_price, signal.quantity,
             signal.take_profit_price, signal.stop_loss_price
