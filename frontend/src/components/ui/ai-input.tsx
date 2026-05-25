@@ -9,10 +9,10 @@ import type { ChatMessage } from '@/lib/useCursorAgentChat'
 
 const MIN_W = 320
 const MIN_H = 280
-const DEFAULT_W = 380
-const DEFAULT_H = 340
-const MAXIMIZED_W = 560
-const MAXIMIZED_H = 520
+const DEFAULT_W = 460
+const DEFAULT_H = 640
+const MAXIMIZED_W = 620
+const MAXIMIZED_H = 820
 
 type PanelSize = { width: number; height: number }
 type PanelAnchor = { right: number; bottom: number }
