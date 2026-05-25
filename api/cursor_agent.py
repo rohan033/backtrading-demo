@@ -19,6 +19,7 @@ from control_plane.engine_process_manager import REPO_ROOT
 log = logging.getLogger("backtrading.cursor_agent")
 
 CURSOR_API_KEY_ENV = "CURSOR_API_KEY"
+CURSOR_API_ENV_FILE = ".cursor-api.env"
 CURSOR_AGENT_MODEL_ENV = "CURSOR_AGENT_MODEL"
 CURSOR_AGENT_WORKSPACE_ENV = "CURSOR_AGENT_WORKSPACE"
 CURSOR_AGENT_MAX_SESSIONS_ENV = "CURSOR_AGENT_MAX_SESSIONS"
@@ -71,8 +72,9 @@ class CursorAgentService:
     async def startup(self) -> None:
         if not self.configured:
             log.warning(
-                "[CURSOR_AGENT] %s is not set; cursor agent WebSocket is disabled",
+                "[CURSOR_AGENT] %s is not set; add it to %s to enable Strategy AI",
                 CURSOR_API_KEY_ENV,
+                CURSOR_API_ENV_FILE,
             )
             return
 
@@ -104,7 +106,7 @@ class CursorAgentService:
                 "configured": False,
                 "ready": False,
                 "api_key_env": CURSOR_API_KEY_ENV,
-                "message": f"Set {CURSOR_API_KEY_ENV} to enable the Cursor agent endpoint.",
+                "message": f"Set {CURSOR_API_KEY_ENV} in {CURSOR_API_ENV_FILE} to enable the Cursor agent.",
             }
 
         client = await self._require_client()

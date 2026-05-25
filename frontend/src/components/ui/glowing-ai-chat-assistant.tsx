@@ -9,7 +9,7 @@ export function FloatingAiAssistant() {
 
   const statusText = useMemo(() => {
     if (!connected) return 'Connecting…'
-    if (!health?.ready) return health?.message || 'Set CURSOR_API_KEY to enable'
+    if (!health?.ready) return health?.message || 'Set CURSOR_API_KEY in .cursor-api.env'
     return 'Connected via WebSocket'
   }, [connected, health])
 

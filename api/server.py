@@ -33,6 +33,16 @@ from control_plane.log_stream import (
 from event.db_event_consumer import DbEventWriter
 
 load_dotenv()
+_cursor_api_env_path = REPO_ROOT / ".cursor-api.env"
+if _cursor_api_env_path.is_file():
+    load_dotenv(_cursor_api_env_path, override=True)
+    log_pre = logging.getLogger("backtrading")
+    log_pre.info("[CONTROL] Loaded Cursor agent env from %s", _cursor_api_env_path)
+else:
+    logging.getLogger("backtrading").debug(
+        "[CONTROL] %s not found; copy .cursor-api.env.example if using Strategy AI",
+        _cursor_api_env_path,
+    )
 
 _control_plane_log_path = configure_control_plane_logging()
 log = logging.getLogger("backtrading")
