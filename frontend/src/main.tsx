@@ -12,6 +12,7 @@ import MarketPage from './pages/monitor/MarketPage'
 import PortfolioPage from './pages/monitor/PortfolioPage'
 import WatchlistPage from './pages/monitor/WatchlistPage'
 import HistoryPage from './pages/insights/HistoryPage'
+import LiveServersPage from './pages/insights/LiveServersPage'
 import PerformancePage from './pages/insights/PerformancePage'
 import FeaturesPage from './pages/FeaturesPage'
 import SettingsPage from './pages/SettingsPage'
@@ -51,6 +52,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route path="/learn/simulation" element={<SimulationPage />} />
           <Route path="/learn/tools" element={<ToolsPage />} />
 
+          <Route path="/insights/live-servers" element={<LiveServersPage />} />
           <Route path="/insights/performance" element={<PerformancePage />} />
           <Route path="/insights/history" element={<HistoryPage />} />
           <Route path="/settings" element={<SettingsPage />} />

@@ -22,3 +22,23 @@ export function formatDbTimestamp(value: string | number | null | undefined): st
     minute: '2-digit',
   })
 }
+
+export function formatRelativeTimestamp(value: string | number | null | undefined): string {
+  const date = parseDbTimestamp(value)
+  if (!date) return '—'
+
+  const diffSec = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000))
+  if (diffSec < 5) return 'just now'
+  if (diffSec < 60) return `${diffSec}s ago`
+  const diffMin = Math.floor(diffSec / 60)
+  if (diffMin < 60) return `${diffMin}m ago`
+  const diffHr = Math.floor(diffMin / 60)
+  if (diffHr < 24) return `${diffHr}h ago`
+  return `${Math.floor(diffHr / 24)}d ago`
+}
+
+export function heartbeatAgeSeconds(value: string | number | null | undefined): number | null {
+  const date = parseDbTimestamp(value)
+  if (!date) return null
+  return Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000))
+}

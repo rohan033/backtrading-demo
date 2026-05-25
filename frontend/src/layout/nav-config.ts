@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   LineChart,
   PlayCircle,
+  Radio,
   Settings,
   Star,
   TrendingUp,
@@ -119,6 +120,13 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: 'Insights',
     items: [
+      {
+        label: 'Live servers',
+        to: '/insights/live-servers',
+        icon: Radio,
+        iconBg: 'bg-teal-400/20',
+        iconFg: 'text-teal-400',
+      },
       {
         label: 'Performance',
         to: '/insights/performance',

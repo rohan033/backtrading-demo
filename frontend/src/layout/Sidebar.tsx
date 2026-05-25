@@ -1,6 +1,5 @@
 import { NavLink } from 'react-router-dom'
 
-import AccountSummary from './AccountSummary'
 import { NAV_GROUPS, SETTINGS_NAV } from './nav-config'
 
 function navClass({ isActive }: { isActive: boolean }) {
@@ -31,8 +30,6 @@ export default function Sidebar() {
           </div>
         </div>
       </div>
-
-      <AccountSummary />
 
       <nav className="flex-1 overflow-auto px-3 py-4">
         {NAV_GROUPS.map(group => (

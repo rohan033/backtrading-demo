@@ -29,6 +29,7 @@ const ROUTE_META: Record<string, PageMeta> = {
   },
   '/learn/simulation': { title: 'Simulation', scope: 'Learn' },
   '/learn/tools': { title: 'Tools', scope: 'Learn' },
+  '/insights/live-servers': { title: 'Live servers', scope: 'Insights' },
   '/insights/performance': { title: 'Performance', scope: 'Insights' },
   '/insights/history': { title: 'History & Reports', scope: 'Insights' },
   '/settings': { title: 'Settings', scope: 'Platform' },

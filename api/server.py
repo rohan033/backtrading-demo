@@ -4,8 +4,9 @@ import logging
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime, timezone, timedelta
@@ -20,9 +21,15 @@ from client import TotpClient
 from strategy import Strategy
 from backtesting import Backtesting
 from api.manual_robo_routes import router as manual_robo_router
+from api.cursor_agent import cursor_agent_service, router as cursor_agent_router
 from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
 from control_plane.ops_logging import configure_control_plane_logging
+from control_plane.log_stream import (
+    resolve_engine_log_path,
+    sse_encode,
+    stream_engine_log_events,
+)
 from event.db_event_consumer import DbEventWriter
 
 load_dotenv()
@@ -42,6 +49,7 @@ app.add_middleware(
 )
 
 app.include_router(manual_robo_router)
+app.include_router(cursor_agent_router)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 TRADE_FEE = 25  # ₹25 per buy-sell round trip
@@ -193,10 +201,12 @@ class ControlPlaneExecutionRequest(BaseModel):
 async def start_engine_sweeper():
     global _engine_sweeper_task
     _engine_sweeper_task = asyncio.create_task(_mark_stale_engines_loop())
+    await cursor_agent_service.startup()
 
 
 @app.on_event("shutdown")
 async def stop_engine_sweeper():
+    await cursor_agent_service.shutdown()
     if _engine_sweeper_task:
         _engine_sweeper_task.cancel()
         try:
@@ -252,6 +262,64 @@ def heartbeat_data_plane_engine(engine_id: str, payload: dict = Body(default_fac
     if not engine:
         raise HTTPException(status_code=404, detail="Data-plane engine not found")
     return {"status": True, "data": engine}
+
+
+@app.get("/api/control/engines/{engine_id}/logs")
+def get_engine_log_meta(engine_id: str):
+    engine = engine_registry.get_engine(engine_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Data-plane engine not found")
+
+    log_path = resolve_engine_log_path(engine_registry, engine_id)
+    if not log_path:
+        raise HTTPException(status_code=404, detail="Log file path is not available for this engine")
+
+    exists = log_path.exists()
+    size = log_path.stat().st_size if exists else 0
+    metadata = engine.get("metadata") or {}
+    return {
+        "status": True,
+        "data": {
+            "engine_id": engine_id,
+            "path": str(log_path),
+            "exists": exists,
+            "size": size,
+            "log_file": metadata.get("log_file"),
+        },
+    }
+
+
+@app.get("/api/control/engines/{engine_id}/logs/stream")
+async def stream_engine_logs(engine_id: str, request: Request):
+    engine = engine_registry.get_engine(engine_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Data-plane engine not found")
+
+    log_path = resolve_engine_log_path(engine_registry, engine_id)
+    if not log_path:
+        raise HTTPException(status_code=404, detail="Log file path is not available for this engine")
+
+    async def event_stream():
+        try:
+            async for event in stream_engine_log_events(log_path):
+                if await request.is_disconnected():
+                    break
+                yield sse_encode({"engine_id": engine_id, **event})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.exception("[CONTROL] Log stream failed engine=%s", engine_id)
+            yield sse_encode({"type": "error", "engine_id": engine_id, "message": str(exc)})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/api/control/engines/{engine_id}/stop")
