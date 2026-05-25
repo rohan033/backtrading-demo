@@ -154,6 +154,8 @@ class CursorAgentService:
         prompt: str,
         agent_id: Optional[str],
         ws: WebSocket | None = None,
+        cancel_event: asyncio.Event | None = None,
+        active_run: dict[str, Any] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         if not self.configured:
             yield {"type": "error", "phase": "config", "message": CURSOR_CONFIG_HINT}
@@ -188,6 +190,8 @@ class CursorAgentService:
 
         try:
             run = await agent.send(message)
+            if active_run is not None:
+                active_run["run"] = run
             yield {
                 "type": "start",
                 "agent_id": agent.agent_id,
@@ -196,6 +200,16 @@ class CursorAgentService:
             }
 
             async for message_event in run.stream():
+                if cancel_event is not None and cancel_event.is_set():
+                    if run.supports("cancel"):
+                        await run.cancel()
+                    yield {
+                        "type": "stopped",
+                        "agent_id": agent.agent_id,
+                        "run_id": run.id,
+                    }
+                    return
+
                 if ws is not None and ws.client_state.name != "CONNECTED":
                     if run.supports("cancel"):
                         await run.cancel()
@@ -258,6 +272,9 @@ class CursorAgentService:
                 "run_id": getattr(run, "id", None),
                 "message": str(exc),
             }
+        finally:
+            if active_run is not None:
+                active_run["run"] = None
 
     async def _require_client(self) -> AsyncClient:
         if self._client is None:
@@ -325,6 +342,30 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
     load_cursor_api_env()
     await ws.accept()
     log.info("[CURSOR_AGENT_WS] Client connected")
+    cancel_event = asyncio.Event()
+    active_run: dict[str, Any] = {"run": None}
+    chat_task: asyncio.Task | None = None
+
+    async def run_chat(prompt: str, agent_id: Optional[str]) -> None:
+        cancel_event.clear()
+        try:
+            async for event in cursor_agent_service.stream_chat(
+                prompt=prompt,
+                agent_id=agent_id,
+                ws=ws,
+                cancel_event=cancel_event,
+                active_run=active_run,
+            ):
+                await ws.send_json(event)
+        except asyncio.CancelledError:
+            run = active_run.get("run")
+            if run is not None and run.supports("cancel"):
+                with contextlib.suppress(Exception):
+                    await run.cancel()
+            with contextlib.suppress(Exception):
+                await ws.send_json({"type": "stopped"})
+            raise
+
     try:
         while True:
             raw = await ws.receive_text()
@@ -341,6 +382,23 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
 
             if msg_type == "health":
                 await ws.send_json({"type": "health", "data": await cursor_agent_service.health()})
+                continue
+
+            if msg_type == "stop":
+                log.info("[CURSOR_AGENT_WS] stop requested")
+                cancel_event.set()
+                run = active_run.get("run")
+                if run is not None and run.supports("cancel"):
+                    with contextlib.suppress(Exception):
+                        await run.cancel()
+                if chat_task is not None and not chat_task.done():
+                    chat_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await chat_task
+                else:
+                    await ws.send_json({"type": "stopped"})
+                cancel_event.clear()
+                chat_task = None
                 continue
 
             if msg_type != "chat":
@@ -360,15 +418,27 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
                 await ws.send_json({"type": "error", "phase": "request", "message": "prompt is required"})
                 continue
 
+            if chat_task is not None and not chat_task.done():
+                cancel_event.set()
+                run = active_run.get("run")
+                if run is not None and run.supports("cancel"):
+                    with contextlib.suppress(Exception):
+                        await run.cancel()
+                chat_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await chat_task
+                cancel_event.clear()
+                chat_task = None
+
             log.info("[CURSOR_AGENT_WS] chat agent_id=%s prompt_len=%d", agent_id or "-", len(prompt))
-            async for event in cursor_agent_service.stream_chat(
-                prompt=prompt,
-                agent_id=agent_id,
-                ws=ws,
-            ):
-                await ws.send_json(event)
+            chat_task = asyncio.create_task(run_chat(prompt, agent_id))
     except WebSocketDisconnect:
         log.info("[CURSOR_AGENT_WS] Client disconnected")
+        if chat_task is not None and not chat_task.done():
+            cancel_event.set()
+            chat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await chat_task
     except Exception as exc:
         log.exception("[CURSOR_AGENT_WS] Session error: %s", exc)
         with contextlib.suppress(Exception):

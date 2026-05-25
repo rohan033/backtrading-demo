@@ -20,6 +20,7 @@ type CursorAgentEvent =
   | { type: 'start'; agent_id?: string; run_id?: string; model?: string }
   | { type: 'text_delta'; text?: string }
   | { type: 'done'; agent_id?: string; text?: string }
+  | { type: 'stopped'; agent_id?: string; run_id?: string }
   | { type: 'error'; message?: string; phase?: string }
   | { type: 'health'; data?: AgentHealth }
   | { type: 'pong' }
@@ -75,7 +76,7 @@ export function useCursorAgentChat(enabled: boolean) {
     )
   }, [])
 
-  const finalizeAssistant = useCallback((finalText?: string) => {
+  const finalizeAssistant = useCallback((finalText?: string, stopped = false) => {
     const draftId = assistantDraftIdRef.current
     if (!draftId) return
     assistantDraftIdRef.current = null
@@ -84,7 +85,11 @@ export function useCursorAgentChat(enabled: boolean) {
         msg.id === draftId
           ? {
               ...msg,
-              content: finalText?.trim() ? finalText : msg.content,
+              content: finalText?.trim()
+                ? finalText
+                : stopped
+                  ? msg.content || 'Response stopped.'
+                  : msg.content,
               streaming: false,
             }
           : msg,
@@ -121,6 +126,13 @@ export function useCursorAgentChat(enabled: boolean) {
       if (event.type === 'done') {
         if (event.agent_id) agentIdRef.current = event.agent_id
         finalizeAssistant(event.text)
+        setSending(false)
+        return
+      }
+
+      if (event.type === 'stopped') {
+        if (event.agent_id) agentIdRef.current = event.agent_id
+        finalizeAssistant(undefined, true)
         setSending(false)
         return
       }
@@ -267,6 +279,22 @@ export function useCursorAgentChat(enabled: boolean) {
     [health, sending],
   )
 
+  const stopMessage = useCallback(() => {
+    if (!sending) return false
+
+    const socket = socketRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      finalizeAssistant(undefined, true)
+      setSending(false)
+      return false
+    }
+
+    socket.send(JSON.stringify({ type: 'stop' }))
+    finalizeAssistant(undefined, true)
+    setSending(false)
+    return true
+  }, [finalizeAssistant, sending])
+
   return {
     messages,
     health,
@@ -274,5 +302,6 @@ export function useCursorAgentChat(enabled: boolean) {
     sending,
     error,
     sendMessage,
+    stopMessage,
   }
 }

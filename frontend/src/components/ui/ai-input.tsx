@@ -1,6 +1,6 @@
 import React from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { GripHorizontal, Maximize2, Minimize2, Send, Sparkles, X } from 'lucide-react'
+import { GripHorizontal, Maximize2, Minimize2, Send, Sparkles, Square, X } from 'lucide-react'
 
 import { ChatMarkdown } from '@/components/ui/chat-markdown'
 import { ChatTypingDots } from '@/components/ui/chat-typing-dots'
@@ -52,6 +52,7 @@ function clampAnchor(anchor: PanelAnchor, size: PanelSize): PanelAnchor {
 
 export type MorphPanelProps = {
   onSubmit: (message: string) => Promise<boolean> | boolean
+  onStop?: () => void
   sending?: boolean
   connected?: boolean
   statusText?: string
@@ -63,6 +64,7 @@ export type MorphPanelProps = {
 
 export function MorphPanel({
   onSubmit,
+  onStop,
   sending = false,
   connected = false,
   statusText = 'Connecting…',
@@ -307,13 +309,25 @@ export function MorphPanel({
                   placeholder="Type a message…"
                   className="min-h-[44px] flex-1 resize-none rounded-lg border border-border bg-primary px-3 py-2 text-sm text-text-primary outline-none placeholder:text-text-secondary focus:border-accent/60"
                 />
-                <button
-                  type="submit"
-                  disabled={!canSend}
-                  className="rounded-lg bg-accent/20 p-2.5 text-accent transition-colors hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  <Send className="h-4 w-4" />
-                </button>
+                {sending ? (
+                  <button
+                    type="button"
+                    onClick={() => onStop?.()}
+                    aria-label="Stop response"
+                    title="Stop response"
+                    className="rounded-lg bg-red-500/15 p-2.5 text-red-300 transition-colors hover:bg-red-500/25"
+                  >
+                    <Square className="h-4 w-4 fill-current" />
+                  </button>
+                ) : (
+                  <button
+                    type="submit"
+                    disabled={!canSend}
+                    className="rounded-lg bg-accent/20 p-2.5 text-accent transition-colors hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <Send className="h-4 w-4" />
+                  </button>
+                )}
               </div>
               <p className="mt-2 text-[11px] text-text-secondary">
                 {statusLabel} · Enter to send · Shift+Enter for new line

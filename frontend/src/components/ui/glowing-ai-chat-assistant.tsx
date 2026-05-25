@@ -5,7 +5,7 @@ import { useCursorAgentChat } from '@/lib/useCursorAgentChat'
 
 export function FloatingAiAssistant() {
   const [open, setOpen] = useState(false)
-  const { messages, health, connected, sending, error, sendMessage } = useCursorAgentChat(open)
+  const { messages, health, connected, sending, error, sendMessage, stopMessage } = useCursorAgentChat(open)
 
   const statusText = useMemo(() => {
     if (error && !connected) return error
@@ -22,6 +22,7 @@ export function FloatingAiAssistant() {
       statusText={statusText}
       error={error}
       onSubmit={sendMessage}
+      onStop={stopMessage}
       onOpenChange={setOpen}
     />
   )
