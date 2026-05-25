@@ -26,6 +26,18 @@ CURSOR_AGENT_MAX_SESSIONS_ENV = "CURSOR_AGENT_MAX_SESSIONS"
 
 DEFAULT_MODEL = "composer-2.5"
 MAX_AGENT_SESSIONS = 32
+CURSOR_CONFIG_HINT = f"Set {CURSOR_API_KEY_ENV} in {CURSOR_API_ENV_FILE} and restart the control plane."
+
+
+def load_cursor_api_env() -> bool:
+    """Load gitignored Cursor credentials from repo root."""
+    from dotenv import load_dotenv
+
+    path = REPO_ROOT / CURSOR_API_ENV_FILE
+    if not path.is_file():
+        return False
+    load_dotenv(path, override=True)
+    return bool(os.getenv(CURSOR_API_KEY_ENV, "").strip())
 
 STRATEGY_AGENT_HINT = """You are the in-repo assistant for a backtrading / live-strategy platform.
 
@@ -70,6 +82,7 @@ class CursorAgentService:
             return MAX_AGENT_SESSIONS
 
     async def startup(self) -> None:
+        load_cursor_api_env()
         if not self.configured:
             log.warning(
                 "[CURSOR_AGENT] %s is not set; add it to %s to enable Strategy AI",
@@ -106,7 +119,7 @@ class CursorAgentService:
                 "configured": False,
                 "ready": False,
                 "api_key_env": CURSOR_API_KEY_ENV,
-                "message": f"Set {CURSOR_API_KEY_ENV} in {CURSOR_API_ENV_FILE} to enable the Cursor agent.",
+                "message": CURSOR_CONFIG_HINT,
             }
 
         client = await self._require_client()
@@ -143,7 +156,7 @@ class CursorAgentService:
         ws: WebSocket | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         if not self.configured:
-            yield {"type": "error", "phase": "config", "message": f"{CURSOR_API_KEY_ENV} is not set"}
+            yield {"type": "error", "phase": "config", "message": CURSOR_CONFIG_HINT}
             return
 
         user_prompt = prompt.strip()
@@ -304,10 +317,12 @@ router = APIRouter(prefix="/api/control/cursor-agent", tags=["cursor-agent"])
 
 @router.get("/health")
 async def cursor_agent_health():
+    load_cursor_api_env()
     return {"status": True, "data": await cursor_agent_service.health()}
 
 
 async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
+    load_cursor_api_env()
     await ws.accept()
     log.info("[CURSOR_AGENT_WS] Client connected")
     try:

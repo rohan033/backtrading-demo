@@ -5,13 +5,14 @@ import { useCursorAgentChat } from '@/lib/useCursorAgentChat'
 
 export function FloatingAiAssistant() {
   const [open, setOpen] = useState(false)
-  const { messages, health, connected, sending, sendMessage } = useCursorAgentChat(open)
+  const { messages, health, connected, sending, error, sendMessage } = useCursorAgentChat(open)
 
   const statusText = useMemo(() => {
-    if (!connected) return 'Connecting…'
-    if (!health?.ready) return health?.message || 'Set CURSOR_API_KEY in .cursor-api.env'
+    if (error && !connected) return error
+    if (!connected) return 'Connecting to control plane…'
+    if (!health?.ready) return health?.message || 'Set CURSOR_API_KEY in .cursor-api.env and restart the control plane'
     return 'Connected via WebSocket'
-  }, [connected, health])
+  }, [connected, error, health])
 
   return (
     <MorphPanel
@@ -19,6 +20,7 @@ export function FloatingAiAssistant() {
       sending={sending}
       connected={connected}
       statusText={statusText}
+      error={error}
       onSubmit={sendMessage}
       onOpenChange={setOpen}
     />

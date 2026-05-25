@@ -2,6 +2,8 @@ import React from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { GripHorizontal, Maximize2, Minimize2, Send, Sparkles, X } from 'lucide-react'
 
+import { ChatMarkdown } from '@/components/ui/chat-markdown'
+import { ChatTypingDots } from '@/components/ui/chat-typing-dots'
 import { cn } from '@/lib/utils'
 import type { ChatMessage } from '@/lib/useCursorAgentChat'
 
@@ -9,8 +11,6 @@ const MIN_W = 320
 const MIN_H = 280
 const DEFAULT_W = 380
 const DEFAULT_H = 340
-const MAX_W = 720
-const MAX_H = 640
 const MAXIMIZED_W = 560
 const MAXIMIZED_H = 520
 
@@ -35,11 +35,9 @@ function AiMark({ size = 'md' }: { size?: 'sm' | 'md' }) {
 }
 
 function clampSize(size: PanelSize): PanelSize {
-  const maxWidth = Math.min(MAX_W, window.innerWidth - 48)
-  const maxHeight = Math.min(MAX_H, window.innerHeight - 48)
   return {
-    width: Math.min(maxWidth, Math.max(MIN_W, size.width)),
-    height: Math.min(maxHeight, Math.max(MIN_H, size.height)),
+    width: Math.max(MIN_W, size.width),
+    height: Math.max(MIN_H, size.height),
   }
 }
 
@@ -57,6 +55,7 @@ export type MorphPanelProps = {
   sending?: boolean
   connected?: boolean
   statusText?: string
+  error?: string
   messages?: ChatMessage[]
   className?: string
   onOpenChange?: (open: boolean) => void
@@ -67,6 +66,7 @@ export function MorphPanel({
   sending = false,
   connected = false,
   statusText = 'Connecting…',
+  error = '',
   messages = [],
   className,
   onOpenChange,
@@ -85,7 +85,12 @@ export function MorphPanel({
   const [anchor, setAnchor] = React.useState<PanelAnchor>({ right: 0, bottom: 0 })
 
   const dragSession = React.useRef<{ startX: number; startY: number; startAnchor: PanelAnchor } | null>(null)
-  const resizeSession = React.useRef<{ startX: number; startY: number; startSize: PanelSize } | null>(null)
+  const resizeSession = React.useRef<{
+    axis: 'corner' | 'left' | 'top'
+    startX: number
+    startY: number
+    startSize: PanelSize
+  } | null>(null)
 
   const setOpenState = React.useCallback(
     (next: boolean) => {
@@ -121,13 +126,14 @@ export function MorphPanel({
         )
       }
       if (resizeSession.current) {
-        const dx = event.clientX - resizeSession.current.startX
-        const dy = resizeSession.current.startY - event.clientY
+        const { axis, startX, startY, startSize } = resizeSession.current
+        const dx = startX - event.clientX
+        const dy = startY - event.clientY
         setSizePreset('custom')
         setPanelSize(
           clampSize({
-            width: resizeSession.current.startSize.width + dx,
-            height: resizeSession.current.startSize.height + dy,
+            width: axis === 'top' ? startSize.width : startSize.width + dx,
+            height: axis === 'left' ? startSize.height : startSize.height + dy,
           }),
         )
       }
@@ -159,9 +165,10 @@ export function MorphPanel({
   const submitDraft = React.useCallback(async () => {
     const text = draft.trim()
     if (!text || sending) return
+    if (!connected) return
     const sent = await onSubmit(text)
     if (sent) setDraft('')
-  }, [draft, onSubmit, sending])
+  }, [connected, draft, onSubmit, sending])
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault()
@@ -169,6 +176,7 @@ export function MorphPanel({
   }
 
   const statusLabel = connected ? statusText : 'Connecting…'
+  const canSend = connected && !sending && Boolean(draft.trim())
 
   return (
     <div className={cn('font-sans', className)}>
@@ -205,9 +213,9 @@ export function MorphPanel({
           >
             {/* Draggable header */}
             <div
-              className="flex shrink-0 cursor-grab items-center justify-between gap-2 border-b border-border/80 bg-primary/40 px-3 py-2 active:cursor-grabbing"
+              className="relative flex shrink-0 cursor-grab items-center justify-between gap-2 border-b border-border/80 bg-primary/40 py-2 pr-3 pl-8 active:cursor-grabbing"
               onMouseDown={event => {
-                if ((event.target as HTMLElement).closest('button')) return
+                if ((event.target as HTMLElement).closest('button, [data-panel-resize]')) return
                 dragSession.current = {
                   startX: event.clientX,
                   startY: event.clientY,
@@ -247,16 +255,35 @@ export function MorphPanel({
                 <div
                   key={msg.id}
                   className={cn(
-                    'rounded-lg px-3 py-2 whitespace-pre-wrap',
-                    msg.role === 'user' && 'ml-8 bg-accent/15 text-text-primary',
+                    'rounded-lg px-3 py-2',
+                    msg.role === 'user' && 'ml-8 whitespace-pre-wrap bg-accent/15 text-text-primary',
                     msg.role === 'assistant' && 'mr-6 border border-border/60 bg-primary/60 text-text-primary',
-                    msg.role === 'system' && 'border border-red-500/30 bg-red-500/10 text-red-300',
+                    msg.role === 'system' && 'whitespace-pre-wrap border border-red-500/30 bg-red-500/10 text-red-300',
                   )}
                 >
-                  {msg.content || (msg.streaming ? 'Thinking…' : '')}
+                  {msg.role === 'assistant' ? (
+                    <>
+                      {msg.content ? <ChatMarkdown content={msg.content} /> : null}
+                      {msg.streaming ? (
+                        msg.content ? (
+                          <ChatTypingDots className="mt-2" />
+                        ) : (
+                          <span className="text-text-secondary">Thinking…</span>
+                        )
+                      ) : null}
+                    </>
+                  ) : (
+                    msg.content
+                  )}
                 </div>
               ))}
             </div>
+
+            {error ? (
+              <div className="shrink-0 border-b border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                {error}
+              </div>
+            ) : null}
 
             {/* Input — always bottom */}
             <form
@@ -282,7 +309,7 @@ export function MorphPanel({
                 />
                 <button
                   type="submit"
-                  disabled={sending || !draft.trim()}
+                  disabled={!canSend}
                   className="rounded-lg bg-accent/20 p-2.5 text-accent transition-colors hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   <Send className="h-4 w-4" />
@@ -293,21 +320,63 @@ export function MorphPanel({
               </p>
             </form>
 
-            {/* Resize handle */}
+            {/* Resize handles — top-left anchor (panel grows down/right) */}
             <div
-              aria-label="Resize panel"
-              className="absolute right-0 bottom-0 h-4 w-4 cursor-nwse-resize"
+              data-panel-resize
+              aria-label="Resize width"
+              title="Drag to resize width"
+              className="absolute top-14 bottom-14 left-0 z-10 w-2 cursor-ew-resize"
               onMouseDown={event => {
                 event.preventDefault()
+                event.stopPropagation()
                 resizeSession.current = {
+                  axis: 'left',
+                  startX: event.clientX,
+                  startY: event.clientY,
+                  startSize: panelSize,
+                }
+              }}
+            />
+            <div
+              data-panel-resize
+              aria-label="Resize height"
+              title="Drag to resize height"
+              className="absolute top-0 right-14 left-14 z-10 h-2 cursor-ns-resize"
+              onMouseDown={event => {
+                event.preventDefault()
+                event.stopPropagation()
+                resizeSession.current = {
+                  axis: 'top',
+                  startX: event.clientX,
+                  startY: event.clientY,
+                  startSize: panelSize,
+                }
+              }}
+            />
+            <div
+              data-panel-resize
+              aria-label="Resize panel"
+              title="Drag to resize"
+              className="absolute top-0 left-0 z-20 flex h-5 w-5 cursor-nwse-resize items-start justify-start rounded-br-md bg-primary/50 p-0.5 transition-colors hover:bg-primary/80"
+              onMouseDown={event => {
+                event.preventDefault()
+                event.stopPropagation()
+                resizeSession.current = {
+                  axis: 'corner',
                   startX: event.clientX,
                   startY: event.clientY,
                   startSize: panelSize,
                 }
               }}
             >
-              <svg viewBox="0 0 16 16" className="h-full w-full text-text-secondary/60">
-                <path d="M14 14L8 14L14 8Z" fill="currentColor" />
+              <svg viewBox="0 0 12 12" className="h-3 w-3 text-text-secondary">
+                <path
+                  d="M0 0H4M0 0V4M0 0L5 5M0 4H2M4 0V2"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.25"
+                  strokeLinecap="round"
+                />
               </svg>
             </div>
           </motion.div>

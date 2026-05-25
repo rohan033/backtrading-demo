@@ -27,6 +27,9 @@ type CursorAgentEvent =
   | { type: 'tool_call'; tool_name?: string; tool_status?: string }
   | { type: 'message'; message_type?: string; text?: string }
 
+const CONNECT_TIMEOUT_MS = 8000
+const RECONNECT_DELAY_MS = 3000
+
 function cursorAgentWsUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}/ws/control/cursor-agent`
@@ -46,6 +49,19 @@ export function useCursorAgentChat(enabled: boolean) {
   const socketRef = useRef<WebSocket | null>(null)
   const agentIdRef = useRef<string | null>(null)
   const assistantDraftIdRef = useRef<string | null>(null)
+  const reconnectTimerRef = useRef<number | null>(null)
+  const connectTimerRef = useRef<number | null>(null)
+
+  const clearTimers = useCallback(() => {
+    if (reconnectTimerRef.current != null) {
+      window.clearTimeout(reconnectTimerRef.current)
+      reconnectTimerRef.current = null
+    }
+    if (connectTimerRef.current != null) {
+      window.clearTimeout(connectTimerRef.current)
+      connectTimerRef.current = null
+    }
+  }, [])
 
   const appendAssistantDelta = useCallback((delta: string) => {
     const draftId = assistantDraftIdRef.current
@@ -80,6 +96,11 @@ export function useCursorAgentChat(enabled: boolean) {
     (event: CursorAgentEvent) => {
       if (event.type === 'health' && event.data) {
         setHealth(event.data)
+        if (!event.data.ready && event.data.message) {
+          setError(event.data.message)
+        } else if (event.data.ready) {
+          setError('')
+        }
         return
       }
 
@@ -88,6 +109,7 @@ export function useCursorAgentChat(enabled: boolean) {
         if (event.model) {
           setHealth(prev => ({ ...prev, configured: true, ready: true, model: event.model }))
         }
+        setError('')
         return
       }
 
@@ -104,17 +126,22 @@ export function useCursorAgentChat(enabled: boolean) {
       }
 
       if (event.type === 'error') {
-        setError(event.message || 'Cursor agent error')
+        const message = event.message || 'Cursor agent error'
+        setError(message)
         finalizeAssistant()
         setSending(false)
-        setMessages(prev => [
-          ...prev,
-          {
-            id: nextId('system'),
-            role: 'system',
-            content: event.message || 'Cursor agent error',
-          },
-        ])
+        setMessages(prev => {
+          const last = prev[prev.length - 1]
+          if (last?.role === 'system' && last.content === message) return prev
+          return [
+            ...prev,
+            {
+              id: nextId('system'),
+              role: 'system',
+              content: message,
+            },
+          ]
+        })
       }
     },
     [appendAssistantDelta, finalizeAssistant],
@@ -122,6 +149,7 @@ export function useCursorAgentChat(enabled: boolean) {
 
   useEffect(() => {
     if (!enabled) {
+      clearTimers()
       setConnected(false)
       socketRef.current?.close()
       socketRef.current = null
@@ -129,42 +157,69 @@ export function useCursorAgentChat(enabled: boolean) {
     }
 
     let cancelled = false
-    const socket = new WebSocket(cursorAgentWsUrl())
-    socketRef.current = socket
 
-    socket.onopen = () => {
-      if (cancelled) return
-      setConnected(true)
-      setError('')
-      socket.send(JSON.stringify({ type: 'health' }))
+    const scheduleReconnect = () => {
+      if (cancelled || reconnectTimerRef.current != null) return
+      reconnectTimerRef.current = window.setTimeout(() => {
+        reconnectTimerRef.current = null
+        if (!cancelled) connect()
+      }, RECONNECT_DELAY_MS)
     }
 
-    socket.onmessage = evt => {
-      try {
-        const payload = JSON.parse(evt.data) as CursorAgentEvent
-        handleEvent(payload)
-      } catch {
-        setError('Invalid response from Cursor agent')
+    const connect = () => {
+      if (cancelled) return
+
+      clearTimers()
+      setConnected(false)
+
+      const socket = new WebSocket(cursorAgentWsUrl())
+      socketRef.current = socket
+
+      connectTimerRef.current = window.setTimeout(() => {
+        if (cancelled || socket.readyState === WebSocket.OPEN) return
+        setError('Control plane not reachable. Run make dev or make cp on port 8000.')
+      }, CONNECT_TIMEOUT_MS)
+
+      socket.onopen = () => {
+        if (cancelled) return
+        clearTimers()
+        setConnected(true)
+        setError('')
+        socket.send(JSON.stringify({ type: 'health' }))
+      }
+
+      socket.onmessage = evt => {
+        try {
+          const payload = JSON.parse(evt.data) as CursorAgentEvent
+          handleEvent(payload)
+        } catch {
+          setError('Invalid response from Cursor agent')
+        }
+      }
+
+      socket.onerror = () => {
+        if (cancelled) return
+        setConnected(false)
+        setError('WebSocket connection failed. Is the control plane running?')
+      }
+
+      socket.onclose = () => {
+        if (cancelled) return
+        setConnected(false)
+        if (socketRef.current === socket) socketRef.current = null
+        scheduleReconnect()
       }
     }
 
-    socket.onerror = () => {
-      if (cancelled) return
-      setConnected(false)
-      setError('WebSocket connection failed')
-    }
-
-    socket.onclose = () => {
-      if (cancelled) return
-      setConnected(false)
-    }
+    connect()
 
     return () => {
       cancelled = true
-      socket.close()
-      if (socketRef.current === socket) socketRef.current = null
+      clearTimers()
+      socketRef.current?.close()
+      socketRef.current = null
     }
-  }, [enabled, handleEvent])
+  }, [enabled, handleEvent, clearTimers])
 
   const sendMessage = useCallback(
     async (prompt: string) => {
@@ -173,7 +228,12 @@ export function useCursorAgentChat(enabled: boolean) {
 
       const socket = socketRef.current
       if (!socket || socket.readyState !== WebSocket.OPEN) {
-        setError('Not connected to Cursor agent')
+        setError('Not connected to Strategy AI. Start the control plane with make dev.')
+        return false
+      }
+
+      if (health && !health.ready) {
+        setError(health.message || 'Cursor agent is not ready.')
         return false
       }
 
@@ -204,7 +264,7 @@ export function useCursorAgentChat(enabled: boolean) {
       )
       return true
     },
-    [sending],
+    [health, sending],
   )
 
   return {
