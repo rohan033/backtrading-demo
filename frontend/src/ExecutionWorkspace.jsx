@@ -1930,7 +1930,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
                   allow_partial_stocks: value === 'etoro' ? true : prev.allow_partial_stocks,
                 }))
               }}
-              className="w-full px-3 py-2 bg-card border border-border rounded text-xs outline-none focus:border-accent"
+              className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent"
             >
               {BROKER_OPTIONS.map(option => (
                 <option key={option.value} value={option.value}>{option.label}</option>
@@ -1942,7 +1942,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
             <select
               value={form.account_env}
               onChange={e => setForm(prev => ({ ...prev, account_env: e.target.value }))}
-              className="w-full px-3 py-2 bg-card border border-border rounded text-xs outline-none focus:border-accent"
+              className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent"
             >
               <option value="live">LIVE</option>
               <option value="demo">DEMO</option>
@@ -1955,7 +1955,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
               value={form.client_mode}
               onChange={e => setForm(prev => ({ ...prev, client_mode: e.target.value }))}
               disabled={form.broker !== 'etoro'}
-              className="w-full px-3 py-2 bg-card border border-border rounded text-xs outline-none focus:border-accent disabled:opacity-50"
+              className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent disabled:opacity-50"
             >
               <option value="standard">Standard (feed TP/SL)</option>
               <option value="bracket">Bracket Order</option>
@@ -1973,7 +1973,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
                 onChange={e => setQuery(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && search()}
                 placeholder="Search stock"
-                className="flex-1 px-3 py-2 bg-card border border-border rounded text-xs outline-none focus:border-accent"
+                className="flex-1 px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent placeholder:text-text-secondary"
               />
               <button onClick={search} className="px-4 py-2 bg-accent text-white rounded text-xs font-bold">Search</button>
             </div>
@@ -2185,7 +2185,7 @@ function MarketPreviewPanel({
             step="0.01"
             value={closePrice}
             onChange={e => onClosePriceChange(e.target.value)}
-            className="flex-1 px-3 py-2.5 bg-background border border-border rounded text-sm font-semibold outline-none focus:border-accent"
+            className="flex-1 px-3 py-2.5 bg-card border border-border rounded text-sm font-semibold font-mono text-text-primary outline-none focus:border-accent [color-scheme:dark]"
           />
           <button
             type="button"
@@ -2517,7 +2517,7 @@ function FormField({ label, value, onChange, type = 'text' }) {
         type={type}
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="w-full px-3 py-2 bg-card border border-border rounded text-xs outline-none focus:border-accent"
+        className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent [color-scheme:dark]"
       />
     </div>
   )
