@@ -21,7 +21,7 @@ from client import TotpClient
 from strategy import Strategy
 from backtesting import Backtesting
 from api.manual_robo_routes import router as manual_robo_router
-from api.cursor_agent import cursor_agent_service, router as cursor_agent_router
+from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket, router as cursor_agent_router
 from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
 from control_plane.ops_logging import configure_control_plane_logging
@@ -1297,6 +1297,11 @@ async def _run_market_preview(ws: WebSocket, cfg: dict) -> None:
             await asyncio.gather(*subtasks, return_exceptions=True)
         if feed_client is not None:
             await feed_client.stop()
+
+
+@app.websocket("/ws/control/cursor-agent")
+async def ws_control_cursor_agent(ws: WebSocket):
+    await handle_cursor_agent_websocket(ws)
 
 
 @app.websocket("/ws/control/market")

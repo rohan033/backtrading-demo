@@ -59,6 +59,98 @@ body {
   animation: toastIn 0.35s ease, toastOut 0.4s ease 1.8s forwards;
 }
 
+@keyframes aiChatPopIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.8) translateY(20px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.ai-chat-pop-in {
+  animation: aiChatPopIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+}
+
+.floating-ai-button:hover {
+  transform: scale(1.1) rotate(5deg);
+  box-shadow: 0 0 30px rgba(139, 92, 246, 0.9), 0 0 50px rgba(124, 58, 237, 0.7), 0 0 70px rgba(109, 40, 217, 0.5);
+}
+
+.ai-chat-scroll::-webkit-scrollbar {
+  display: none;
+}
+.ai-chat-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+/* Color orb (ai-input) */
+@property --angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.color-orb {
+  display: grid;
+  grid-template-areas: stack;
+  overflow: hidden;
+  border-radius: 50%;
+  position: relative;
+  transform: scale(1.1);
+}
+
+.color-orb::before,
+.color-orb::after {
+  content: "";
+  display: block;
+  grid-area: stack;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  transform: translateZ(0);
+}
+
+.color-orb::before {
+  background:
+    conic-gradient(from calc(var(--angle) * 2) at 25% 70%, var(--accent3), transparent 20% 80%, var(--accent3)),
+    conic-gradient(from calc(var(--angle) * 2) at 45% 75%, var(--accent2), transparent 30% 60%, var(--accent2)),
+    conic-gradient(from calc(var(--angle) * -3) at 80% 20%, var(--accent1), transparent 40% 60%, var(--accent1)),
+    conic-gradient(from calc(var(--angle) * 2) at 15% 5%, var(--accent2), transparent 10% 90%, var(--accent2)),
+    conic-gradient(from calc(var(--angle) * 1) at 20% 80%, var(--accent1), transparent 10% 90%, var(--accent1)),
+    conic-gradient(from calc(var(--angle) * -2) at 85% 10%, var(--accent3), transparent 20% 80%, var(--accent3));
+  box-shadow: inset var(--base) 0 0 var(--shadow) calc(var(--shadow) * 0.2);
+  filter: blur(var(--blur)) contrast(var(--contrast));
+  animation: colorOrbSpin var(--spin-duration) linear infinite;
+}
+
+.color-orb::after {
+  background-image: radial-gradient(circle at center, var(--base) var(--dot), transparent var(--dot));
+  background-size: calc(var(--dot) * 2) calc(var(--dot) * 2);
+  backdrop-filter: blur(calc(var(--blur) * 2)) contrast(calc(var(--contrast) * 2));
+  mix-blend-mode: overlay;
+  mask-image: radial-gradient(black var(--mask), transparent 75%);
+}
+
+.color-orb[data-mask-none="true"]::after {
+  mask-image: none;
+}
+
+@keyframes colorOrbSpin {
+  to {
+    --angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .color-orb::before {
+    animation: none;
+  }
+}
+
 /* Range slider */
 input[type="range"] {
   -webkit-appearance: none;

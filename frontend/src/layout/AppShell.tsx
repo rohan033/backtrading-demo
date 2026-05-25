@@ -1,5 +1,6 @@
 import { Outlet } from 'react-router-dom'
 
+import { FloatingAiAssistant } from '@/components/ui/glowing-ai-chat-assistant'
 import Sidebar from './Sidebar'
 import { SidebarProvider } from './sidebar-context'
 import TopBar from './TopBar'
@@ -15,6 +16,7 @@ export default function AppShell() {
             <Outlet />
           </main>
         </div>
+        <FloatingAiAssistant />
       </div>
     </SidebarProvider>
   )

@@ -11,8 +11,7 @@ from collections import OrderedDict
 from typing import Any, AsyncIterator, Optional
 
 from cursor_sdk import AsyncClient, CursorAgentError, LocalAgentOptions
-from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from control_plane.engine_process_manager import REPO_ROOT
@@ -72,7 +71,7 @@ class CursorAgentService:
     async def startup(self) -> None:
         if not self.configured:
             log.warning(
-                "[CURSOR_AGENT] %s is not set; /api/control/cursor-agent endpoints are disabled",
+                "[CURSOR_AGENT] %s is not set; cursor agent WebSocket is disabled",
                 CURSOR_API_KEY_ENV,
             )
             return
@@ -139,15 +138,15 @@ class CursorAgentService:
         *,
         prompt: str,
         agent_id: Optional[str],
-        http_request: Request,
-    ) -> AsyncIterator[str]:
+        ws: WebSocket | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
         if not self.configured:
-            yield _sse({"type": "error", "phase": "config", "message": f"{CURSOR_API_KEY_ENV} is not set"})
+            yield {"type": "error", "phase": "config", "message": f"{CURSOR_API_KEY_ENV} is not set"}
             return
 
         user_prompt = prompt.strip()
         if not user_prompt:
-            yield _sse({"type": "error", "phase": "request", "message": "prompt is required"})
+            yield {"type": "error", "phase": "request", "message": "prompt is required"}
             return
 
         client = await self._require_client()
@@ -157,16 +156,16 @@ class CursorAgentService:
             agent = await self._get_or_create_agent(client, agent_id)
         except CursorAgentError as exc:
             log.error("[CURSOR_AGENT] Agent startup failed: %s", exc)
-            yield _sse({
+            yield {
                 "type": "error",
                 "phase": "startup",
                 "message": exc.message,
                 "retryable": exc.is_retryable,
-            })
+            }
             return
         except Exception as exc:
             log.exception("[CURSOR_AGENT] Unexpected agent startup failure")
-            yield _sse({"type": "error", "phase": "startup", "message": str(exc)})
+            yield {"type": "error", "phase": "startup", "message": str(exc)}
             return
 
         message = _wrap_prompt(user_prompt, new_agent=created_new_agent)
@@ -174,15 +173,15 @@ class CursorAgentService:
 
         try:
             run = await agent.send(message)
-            yield _sse({
+            yield {
                 "type": "start",
                 "agent_id": agent.agent_id,
                 "run_id": run.id,
                 "model": self.model(),
-            })
+            }
 
             async for message_event in run.stream():
-                if await http_request.is_disconnected():
+                if ws is not None and ws.client_state.name != "CONNECTED":
                     if run.supports("cancel"):
                         await run.cancel()
                     return
@@ -193,43 +192,43 @@ class CursorAgentService:
 
                 message_type = payload.get("message_type")
                 if message_type == "assistant" and payload.get("text"):
-                    yield _sse({"type": "text_delta", "text": payload["text"]})
+                    yield {"type": "text_delta", "text": payload["text"]}
                 elif message_type == "tool_call":
-                    yield _sse({"type": "tool_call", **payload})
+                    yield {"type": "tool_call", **payload}
                 elif message_type == "status":
-                    yield _sse({"type": "status", **payload})
+                    yield {"type": "status", **payload}
                 else:
-                    yield _sse({"type": "message", **payload})
+                    yield {"type": "message", **payload}
 
             result = await run.wait()
             if result.status == "error":
-                yield _sse({
+                yield {
                     "type": "error",
                     "phase": "run",
                     "agent_id": agent.agent_id,
                     "run_id": run.id,
                     "status": result.status,
                     "message": "Cursor agent run failed",
-                })
+                }
                 return
 
-            yield _sse({
+            yield {
                 "type": "done",
                 "agent_id": agent.agent_id,
                 "run_id": run.id,
                 "status": result.status,
                 "text": result.result or await run.text(),
-            })
+            }
         except CursorAgentError as exc:
             log.error("[CURSOR_AGENT] Run startup failed agent=%s: %s", agent.agent_id, exc)
-            yield _sse({
+            yield {
                 "type": "error",
                 "phase": "startup",
                 "agent_id": agent.agent_id,
                 "run_id": getattr(run, "id", None),
                 "message": exc.message,
                 "retryable": exc.is_retryable,
-            })
+            }
         except asyncio.CancelledError:
             if run is not None and run.supports("cancel"):
                 with contextlib.suppress(Exception):
@@ -237,13 +236,13 @@ class CursorAgentService:
             raise
         except Exception as exc:
             log.exception("[CURSOR_AGENT] Streaming failure agent=%s", agent.agent_id)
-            yield _sse({
+            yield {
                 "type": "error",
                 "phase": "stream",
                 "agent_id": agent.agent_id,
                 "run_id": getattr(run, "id", None),
                 "message": str(exc),
-            })
+            }
 
     async def _require_client(self) -> AsyncClient:
         if self._client is None:
@@ -306,41 +305,63 @@ async def cursor_agent_health():
     return {"status": True, "data": await cursor_agent_service.health()}
 
 
-@router.post("/stream")
-async def cursor_agent_stream(body: CursorAgentChatRequest, request: Request):
-    if not cursor_agent_service.configured:
-        raise HTTPException(
-            status_code=503,
-            detail=f"{CURSOR_API_KEY_ENV} is not set. Add it to your environment to use the Cursor agent.",
-        )
+async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
+    await ws.accept()
+    log.info("[CURSOR_AGENT_WS] Client connected")
+    try:
+        while True:
+            raw = await ws.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await ws.send_json({"type": "error", "phase": "request", "message": "Invalid JSON payload"})
+                continue
 
-    async def event_stream() -> AsyncIterator[str]:
-        async for event in cursor_agent_service.stream_chat(
-            prompt=body.prompt,
-            agent_id=body.agent_id,
-            http_request=request,
-        ):
-            yield event
+            msg_type = msg.get("type")
+            if msg_type == "ping":
+                await ws.send_json({"type": "pong"})
+                continue
 
-    return StreamingResponse(
-        event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+            if msg_type == "health":
+                await ws.send_json({"type": "health", "data": await cursor_agent_service.health()})
+                continue
+
+            if msg_type != "chat":
+                await ws.send_json({
+                    "type": "error",
+                    "phase": "request",
+                    "message": f"Unsupported message type: {msg_type or 'missing'}",
+                })
+                continue
+
+            prompt = str(msg.get("prompt") or "").strip()
+            agent_id = msg.get("agent_id")
+            if agent_id is not None:
+                agent_id = str(agent_id).strip() or None
+
+            if not prompt:
+                await ws.send_json({"type": "error", "phase": "request", "message": "prompt is required"})
+                continue
+
+            log.info("[CURSOR_AGENT_WS] chat agent_id=%s prompt_len=%d", agent_id or "-", len(prompt))
+            async for event in cursor_agent_service.stream_chat(
+                prompt=prompt,
+                agent_id=agent_id,
+                ws=ws,
+            ):
+                await ws.send_json(event)
+    except WebSocketDisconnect:
+        log.info("[CURSOR_AGENT_WS] Client disconnected")
+    except Exception as exc:
+        log.exception("[CURSOR_AGENT_WS] Session error: %s", exc)
+        with contextlib.suppress(Exception):
+            await ws.send_json({"type": "error", "phase": "session", "message": str(exc)})
 
 
 def _wrap_prompt(user_prompt: str, *, new_agent: bool) -> str:
     if not new_agent:
         return user_prompt
     return f"{STRATEGY_AGENT_HINT}\n\nUser question:\n{user_prompt}"
-
-
-def _sse(payload: dict[str, Any]) -> str:
-    return f"data: {json.dumps(payload, default=str)}\n\n"
 
 
 def _sdk_message_payload(message: Any) -> dict[str, Any] | None:
