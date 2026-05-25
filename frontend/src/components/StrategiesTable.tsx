@@ -13,6 +13,7 @@ export type StrategyTableRow = {
   createdAt?: string | null
   pnl?: number
   inPosition?: boolean
+  logFile?: string | null
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -67,12 +68,14 @@ function StrategyNameCell({
 export function StrategiesTable({
   rows,
   onRowClick,
+  onOpenLogs,
   selectedId,
   showExecutionId = true,
   emptyState,
 }: {
   rows: StrategyTableRow[]
   onRowClick?: (id: string) => void
+  onOpenLogs?: (row: StrategyTableRow) => void
   selectedId?: string | null
   showExecutionId?: boolean
   emptyState?: ReactNode
@@ -99,6 +102,11 @@ export function StrategiesTable({
             <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
               P&amp;L
             </th>
+            {onOpenLogs ? (
+              <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
+                Logs
+              </th>
+            ) : null}
           </tr>
         </thead>
         <tbody>
@@ -127,6 +135,22 @@ export function StrategiesTable({
               <td className={`px-3.5 py-2.5 font-mono ${pnlClass(row.pnl ?? 0)}`}>
                 {formatSignedInr(row.pnl ?? 0, { maxFractionDigits: 0 })}
               </td>
+              {onOpenLogs ? (
+                <td className="px-3.5 py-2.5">
+                  <button
+                    type="button"
+                    onClick={event => {
+                      event.stopPropagation()
+                      onOpenLogs(row)
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded border border-accent/40 bg-accent/10 px-2 py-1 text-[10px] font-bold uppercase tracking-wide text-accent hover:bg-accent/20"
+                    title={row.logFile || 'Open execution log stream'}
+                  >
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+                    Logs
+                  </button>
+                </td>
+              ) : null}
             </tr>
           ))}
         </tbody>

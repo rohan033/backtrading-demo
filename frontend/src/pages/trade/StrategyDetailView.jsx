@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
+import LiveLogPanel from '../../components/LiveLogPanel'
 import {
   EmptyState,
   StrategyChartPanel,
@@ -232,6 +233,7 @@ export default function StrategyDetailView({
   onDuplicate,
   actionError,
 }) {
+  const [logOpen, setLogOpen] = useState(false)
   const levels = useMemo(() => computeExecutionLevels(execution || {}), [execution])
   const broker = execution?.broker
   const port = execution?.data_plane_port || queuedItem?.engine?.port
@@ -252,9 +254,31 @@ export default function StrategyDetailView({
 
   const canStop = isLive && ['running', 'starting', 'stale'].includes(engineStatus)
   const canDeploy = !isLive
+  const logFile = execution?.log_file || queuedItem?.engine?.metadata?.log_file || null
+  const logEngineId = execution?.data_plane_id || queuedItem?.engine?.id || executionId
 
   return (
     <div className="strategy-detail flex h-full flex-col overflow-hidden">
+      {logOpen ? (
+        <>
+          <button
+            type="button"
+            aria-label="Close live log panel"
+            className="fixed inset-0 z-30 bg-black/40"
+            onClick={() => setLogOpen(false)}
+          />
+          <LiveLogPanel
+            target={{
+              id: logEngineId,
+              label: strategyTitle(execution),
+              logFile,
+              isControlled: true,
+            }}
+            onClose={() => setLogOpen(false)}
+          />
+        </>
+      ) : null}
+
       <div className="shrink-0 border-b border-[var(--sd-border)] px-5 py-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
@@ -297,6 +321,15 @@ export default function StrategyDetailView({
                 {stopping ? 'Stopping…' : 'Stop'}
               </button>
             ) : null}
+            <button
+              type="button"
+              onClick={() => setLogOpen(true)}
+              className="sd-btn inline-flex items-center gap-1.5 border-accent/40 bg-accent/10 text-accent hover:bg-accent/20"
+              title={logFile || 'Open execution log stream'}
+            >
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+              Logs
+            </button>
             <button
               type="button"
               onClick={onDuplicate}

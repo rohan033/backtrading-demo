@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, Outlet, useNavigate, useParams } from 'react-router-dom'
 
 import { StrategiesTable } from '../../components/StrategiesTable'
+import LiveLogPanel from '../../components/LiveLogPanel'
 import StrategyDetailView from './StrategyDetailView'
 import {
   CreateExecutionPanel,
@@ -65,6 +66,7 @@ export function StrategiesListPage() {
   const navigate = useNavigate()
   const [filter, setFilter] = useState('all')
   const [page, setPage] = useState(1)
+  const [logTarget, setLogTarget] = useState(null)
   const {
     panelExecutions,
     controlledExecutionsLoading,
@@ -94,6 +96,7 @@ export function StrategiesListPage() {
         pnl: 0,
         inPosition: Boolean(execution.is_in_position),
         isLive: ['running', 'starting'].includes(engineStatus),
+        logFile: execution.log_file || null,
       }
     })
   }, [panelExecutions])
@@ -120,6 +123,26 @@ export function StrategiesListPage() {
 
   return (
     <div className="h-full overflow-auto p-6">
+      {logTarget ? (
+        <>
+          <button
+            type="button"
+            aria-label="Close live log panel"
+            className="fixed inset-0 z-30 bg-black/40"
+            onClick={() => setLogTarget(null)}
+          />
+          <LiveLogPanel
+            target={{
+              id: logTarget.id,
+              label: logTarget.label,
+              logFile: logTarget.logFile,
+              isControlled: true,
+            }}
+            onClose={() => setLogTarget(null)}
+          />
+        </>
+      ) : null}
+
       <div className="mb-6 flex items-center justify-between gap-4">
         <div>
           <p className="text-sm text-text-secondary">
@@ -187,6 +210,11 @@ export function StrategiesListPage() {
               setSelectedLaunchId(rowId)
               navigate(`/trade/strategies/${encodeURIComponent(rowId)}`)
             }}
+            onOpenLogs={row => setLogTarget({
+              id: row.id,
+              label: row.name,
+              logFile: row.logFile,
+            })}
           />
           <div className="px-4 pb-4">
             <PaginationBar
