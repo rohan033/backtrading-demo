@@ -1,14 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import {
+  formatToolLabel,
+  normalizeToolStatus,
+  summarizeToolDetail,
+  type ToolCallStatus,
+} from '@/lib/tool-call-display'
+
 export type AgentInteractionMode = 'ask' | 'execute'
 
-export type ChatRole = 'user' | 'assistant' | 'system'
+export type ChatRole = 'user' | 'assistant' | 'system' | 'tool'
 
 export type ChatMessage = {
   id: string
   role: ChatRole
   content: string
   streaming?: boolean
+  toolName?: string
+  toolStatus?: ToolCallStatus
+  toolDetail?: string
 }
 
 export type AgentHealth = {
@@ -27,7 +37,7 @@ type CursorAgentEvent =
   | { type: 'health'; data?: AgentHealth }
   | { type: 'pong' }
   | { type: 'status'; message?: string }
-  | { type: 'tool_call'; tool_name?: string; tool_status?: string }
+  | { type: 'tool_call'; tool_name?: string; tool_status?: string; args?: string; input?: string; arguments?: string; path?: string; command?: string; parameters?: string; content?: string }
   | { type: 'message'; message_type?: string; text?: string }
 
 const CONNECT_TIMEOUT_MS = 8000
@@ -99,6 +109,49 @@ export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInter
     )
   }, [])
 
+  const upsertToolCall = useCallback((event: Extract<CursorAgentEvent, { type: 'tool_call' }>) => {
+    const toolName = event.tool_name?.trim() || 'tool'
+    const toolStatus = normalizeToolStatus(event.tool_status)
+    const toolDetail = summarizeToolDetail(event)
+    const label = formatToolLabel(toolName)
+
+    setMessages(prev => {
+      let openIdx = -1
+      for (let index = prev.length - 1; index >= 0; index -= 1) {
+        const msg = prev[index]
+        if (msg.role === 'tool' && msg.toolName === toolName && msg.toolStatus === 'running') {
+          openIdx = index
+          break
+        }
+      }
+
+      if (openIdx >= 0) {
+        return prev.map((msg, index) =>
+          index === openIdx
+            ? {
+                ...msg,
+                content: label,
+                toolStatus,
+                toolDetail: toolDetail || msg.toolDetail,
+              }
+            : msg,
+        )
+      }
+
+      return [
+        ...prev,
+        {
+          id: nextId('tool'),
+          role: 'tool',
+          content: label,
+          toolName,
+          toolStatus,
+          toolDetail,
+        },
+      ]
+    })
+  }, [])
+
   const handleEvent = useCallback(
     (event: CursorAgentEvent) => {
       if (event.type === 'health' && event.data) {
@@ -122,6 +175,11 @@ export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInter
 
       if (event.type === 'text_delta' && event.text) {
         appendAssistantDelta(event.text)
+        return
+      }
+
+      if (event.type === 'tool_call') {
+        upsertToolCall(event)
         return
       }
 
@@ -158,7 +216,7 @@ export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInter
         })
       }
     },
-    [appendAssistantDelta, finalizeAssistant],
+    [appendAssistantDelta, finalizeAssistant, upsertToolCall],
   )
 
   useEffect(() => {

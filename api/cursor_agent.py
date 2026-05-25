@@ -68,6 +68,7 @@ EXECUTE_MODE_HINT = """You are in EXECUTE mode.
 You may inspect the repo, use tools, and interact with the control plane when the user asks (create/start/stop executions, apply code changes). Prefer minimal, safe diffs and explain consequential actions before destructive control-plane operations."""
 
 VALID_INTERACTION_MODES = frozenset({"ask", "execute"})
+CONTROL_PLANE_MCP_SERVER = "backtrading-control-plane"
 
 ASK_READ_ONLY_TOOL_NAMES = frozenset({
     "read",
@@ -271,6 +272,9 @@ class CursorAgentService:
             from cursor_sdk import SendOptions
 
             send_options = SendOptions(mode=sdk_mode)
+            mcp_servers = _control_plane_mcp_servers(mode)
+            if mcp_servers is not None:
+                send_options = SendOptions(mode=sdk_mode, mcp_servers=mcp_servers)
             try:
                 run = await agent.send(message, send_options)
             except Exception as exc:
@@ -396,11 +400,13 @@ class CursorAgentService:
 
         api_key = os.environ[CURSOR_API_KEY_ENV].strip()
         sdk_mode = "agent" if interaction_mode == "execute" else "ask"
+        mcp_servers = _control_plane_mcp_servers(interaction_mode)
         options = AgentOptions(
             api_key=api_key,
             model=self.model(),
             local=LocalAgentOptions(cwd=self.workspace()),
             mode=sdk_mode,
+            mcp_servers=mcp_servers,
         )
 
         if agent_id:
@@ -578,6 +584,23 @@ def _wrap_prompt(user_prompt: str, *, new_agent: bool, interaction_mode: str = "
     else:
         parts.append(user_prompt)
     return "\n\n".join(parts)
+
+
+def _control_plane_mcp_servers(interaction_mode: str) -> dict[str, Any] | None:
+    """Attach control-plane MCP tools only in Execute mode."""
+    if interaction_mode != "execute":
+        return None
+
+    from cursor_sdk import HttpMcpServerConfig
+
+    from api.control_plane_mcp import CONTROL_PLANE_MCP_PATH
+
+    control_plane_url = os.getenv("CONTROL_PLANE_URL", "http://127.0.0.1:8000").strip().rstrip("/")
+    return {
+        CONTROL_PLANE_MCP_SERVER: HttpMcpServerConfig(
+            url=f"{control_plane_url}{CONTROL_PLANE_MCP_PATH}",
+        )
+    }
 
 
 def _sdk_message_payload(message: Any) -> dict[str, Any] | None:

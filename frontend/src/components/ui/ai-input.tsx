@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { GripHorizontal, Maximize2, Minimize2, Send, Sparkles, Square, X } from 'lucide-react'
 
 import { AI_WORKFLOWS } from '@/lib/ai-workflows'
+import { ToolCallHint } from '@/components/ui/tool-call-hint'
 import { ChatMarkdown } from '@/components/ui/chat-markdown'
 import { ChatTypingDots } from '@/components/ui/chat-typing-dots'
 import { cn } from '@/lib/utils'
@@ -290,13 +291,21 @@ export function MorphPanel({
                 <div
                   key={msg.id}
                   className={cn(
-                    'rounded-lg px-3 py-2',
+                    msg.role === 'tool'
+                      ? undefined
+                      : 'rounded-lg px-3 py-2',
                     msg.role === 'user' && 'ml-8 whitespace-pre-wrap bg-accent/15 text-text-primary',
                     msg.role === 'assistant' && 'mr-6 border border-border/60 bg-primary/60 text-text-primary',
                     msg.role === 'system' && 'whitespace-pre-wrap border border-red-500/30 bg-red-500/10 text-red-300',
                   )}
                 >
-                  {msg.role === 'assistant' ? (
+                  {msg.role === 'tool' ? (
+                    <ToolCallHint
+                      label={msg.content}
+                      status={msg.toolStatus ?? 'running'}
+                      detail={msg.toolDetail}
+                    />
+                  ) : msg.role === 'assistant' ? (
                     <>
                       {msg.content ? <ChatMarkdown content={msg.content} /> : null}
                       {msg.streaming ? (

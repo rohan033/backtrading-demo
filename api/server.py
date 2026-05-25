@@ -16,6 +16,7 @@ import contextlib
 import json
 import re
 import uuid
+from contextlib import asynccontextmanager
 
 from client import TotpClient
 from strategy import Strategy
@@ -207,26 +208,23 @@ class ControlPlaneExecutionRequest(BaseModel):
 
 # ── Endpoints ──
 
-@app.on_event("startup")
-async def start_engine_sweeper():
+@asynccontextmanager
+async def control_plane_lifespan(_app: FastAPI):
     global _engine_sweeper_task
     _engine_sweeper_task = asyncio.create_task(_mark_stale_engines_loop())
     await cursor_agent_service.startup()
+    try:
+        yield
+    finally:
+        await cursor_agent_service.shutdown()
+        if _engine_sweeper_task:
+            _engine_sweeper_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _engine_sweeper_task
 
-
-@app.on_event("shutdown")
-async def stop_engine_sweeper():
-    await cursor_agent_service.shutdown()
-    if _engine_sweeper_task:
-        _engine_sweeper_task.cancel()
-        try:
-            await _engine_sweeper_task
-        except asyncio.CancelledError:
-            pass
-
-    stopped = engine_process_manager.stop_all_engines()
-    if stopped:
-        log.info("[CONTROL] Shutdown stopped %d live trading server(s)", len(stopped))
+        stopped = engine_process_manager.stop_all_engines()
+        if stopped:
+            log.info("[CONTROL] Shutdown stopped %d live trading server(s)", len(stopped))
 
 
 async def _mark_stale_engines_loop():
@@ -1690,6 +1688,12 @@ async def ws_backtest(ws: WebSocket):
         except Exception:
             pass
 
+
+from api.control_plane_mcp import mount_control_plane_mcp
+from fastmcp.utilities.lifespan import combine_lifespans
+
+_, _mcp_app = mount_control_plane_mcp(app)
+app.router.lifespan_context = combine_lifespans(control_plane_lifespan, _mcp_app.lifespan)
 
 if __name__ == "__main__":
     import uvicorn
