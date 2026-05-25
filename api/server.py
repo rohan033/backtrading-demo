@@ -692,6 +692,47 @@ def stop_controlled_execution(execution_id: str):
     }
 
 
+@app.post("/api/control/executions/stop-all")
+def stop_all_controlled_executions():
+    stopped: list[str] = []
+    failed: list[str] = []
+
+    for engine in engine_registry.list_engines():
+        if not _is_controlled_execution(engine):
+            continue
+
+        execution_id = engine.get("id")
+        if not execution_id:
+            continue
+
+        status = str(engine.get("status") or "").lower()
+        if status not in {"starting", "running", "stale"}:
+            continue
+
+        if engine.get("pid"):
+            result = engine_process_manager.stop_engine(execution_id)
+        else:
+            result = engine_registry.update_engine(
+                execution_id,
+                {"status": "stopped", "pid": None},
+            )
+
+        if result:
+            stopped.append(execution_id)
+            log.info("[CONTROL] Stopped execution %s (stop-all)", execution_id)
+        else:
+            failed.append(execution_id)
+
+    return {
+        "status": True,
+        "data": {
+            "stopped": stopped,
+            "failed": failed,
+            "count": len(stopped),
+        },
+    }
+
+
 def _execution_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 

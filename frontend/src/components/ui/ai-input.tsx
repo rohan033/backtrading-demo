@@ -2,10 +2,11 @@ import React from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { GripHorizontal, Maximize2, Minimize2, Send, Sparkles, Square, X } from 'lucide-react'
 
+import { AI_WORKFLOWS } from '@/lib/ai-workflows'
 import { ChatMarkdown } from '@/components/ui/chat-markdown'
 import { ChatTypingDots } from '@/components/ui/chat-typing-dots'
 import { cn } from '@/lib/utils'
-import type { ChatMessage } from '@/lib/useCursorAgentChat'
+import type { AgentInteractionMode, ChatMessage } from '@/lib/useCursorAgentChat'
 
 const MIN_W = 320
 const MIN_H = 280
@@ -53,6 +54,8 @@ function clampAnchor(anchor: PanelAnchor, size: PanelSize): PanelAnchor {
 export type MorphPanelProps = {
   onSubmit: (message: string) => Promise<boolean> | boolean
   onStop?: () => void
+  interactionMode?: AgentInteractionMode
+  onInteractionModeChange?: (mode: AgentInteractionMode) => void
   sending?: boolean
   connected?: boolean
   statusText?: string
@@ -65,6 +68,8 @@ export type MorphPanelProps = {
 export function MorphPanel({
   onSubmit,
   onStop,
+  interactionMode = 'ask',
+  onInteractionModeChange,
   sending = false,
   connected = false,
   statusText = 'Connecting…',
@@ -172,6 +177,14 @@ export function MorphPanel({
     if (sent) setDraft('')
   }, [connected, draft, onSubmit, sending])
 
+  const runQuickPrompt = React.useCallback(
+    async (prompt: string) => {
+      if (sending || !connected) return
+      await onSubmit(prompt)
+    },
+    [connected, onSubmit, sending],
+  )
+
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault()
     void submitDraft()
@@ -249,9 +262,29 @@ export function MorphPanel({
               className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3 text-sm leading-relaxed"
             >
               {messages.length === 0 ? (
-                <p className="text-text-secondary">
-                  Ask about strategies, live executions, brokers, or this codebase.
-                </p>
+                <div className="space-y-3">
+                  <p className="text-text-secondary">
+                    Ask about strategies, live executions, brokers, or this codebase.
+                  </p>
+                  <div>
+                    <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+                      Quick workflows
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {AI_WORKFLOWS.map(workflow => (
+                        <button
+                          key={workflow.id}
+                          type="button"
+                          disabled={!connected || sending}
+                          onClick={() => void runQuickPrompt(workflow.prompt)}
+                          className="rounded-full border border-border/70 bg-primary/50 px-2.5 py-1 text-[11px] text-text-primary transition-colors hover:border-accent/40 hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {workflow.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
               ) : null}
               {messages.map(msg => (
                 <div
@@ -292,6 +325,56 @@ export function MorphPanel({
               onSubmit={event => void handleSubmit(event)}
               className="shrink-0 border-t border-border/80 bg-primary/30 p-3"
             >
+              <div className="mb-2">
+                <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-text-secondary">
+                  Quick workflows
+                </p>
+                <div className="flex gap-1.5 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  {AI_WORKFLOWS.map(workflow => (
+                    <button
+                      key={workflow.id}
+                      type="button"
+                      disabled={!connected || sending}
+                      onClick={() => void runQuickPrompt(workflow.prompt)}
+                      className="shrink-0 rounded-full border border-border/70 bg-primary/50 px-2.5 py-1 text-[11px] text-text-primary transition-colors hover:border-accent/40 hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {workflow.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <div
+                  className="inline-flex rounded-lg border border-border/60 bg-primary/50 p-0.5"
+                  role="group"
+                  aria-label="Agent interaction mode"
+                >
+                  {(['ask', 'execute'] as const).map(mode => (
+                    <button
+                      key={mode}
+                      type="button"
+                      disabled={sending}
+                      aria-pressed={interactionMode === mode}
+                      onClick={() => onInteractionModeChange?.(mode)}
+                      className={cn(
+                        'rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                        interactionMode === mode
+                          ? mode === 'execute'
+                            ? 'bg-amber-500/20 text-amber-200'
+                            : 'bg-card text-text-primary shadow-sm'
+                          : 'text-text-secondary hover:text-text-primary',
+                      )}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+                <span className="text-[11px] text-text-secondary">
+                  {interactionMode === 'ask'
+                    ? 'Read-only · no control plane changes'
+                    : 'Can edit, run tools & control plane'}
+                </span>
+              </div>
               <div className="flex items-end gap-2">
                 <textarea
                   ref={textareaRef}

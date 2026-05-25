@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 from collections import OrderedDict
 from typing import Any, AsyncIterator, Optional
 
@@ -49,6 +50,80 @@ Help the user with:
 
 Prefer answers grounded in this repo (`api/`, `frontend/`, `strategies/`, `control_plane/`, `brokers/`).
 If you need to inspect files or logs, use available tools. Be concise and practical."""
+
+ASK_MODE_HINT = """You are in ASK mode (read-only guardrails).
+
+- Answer questions and explain tradeoffs using the codebase and read-only context.
+- You may use read-only repo tools (search/read files) when needed to ground answers.
+- Do NOT modify files, run shell commands, or use write/edit/terminal tools.
+- Do NOT interact with the control plane or live trading runtime in any way, including:
+  - Creating, deploying, starting, duplicating, or stopping strategy executions
+  - Calling `/api/control/executions`, `/api/control/engines`, or related POST/DELETE routes
+  - Running `make dev`, `make cp`, `uvicorn`, or scripts that spawn/stop data-plane engines
+  - Writing to `control_plane.db` or mutating engine registry state
+- If the user wants strategies created/stopped or code changed, explain the steps and tell them to switch to Execute mode."""
+
+EXECUTE_MODE_HINT = """You are in EXECUTE mode.
+
+You may inspect the repo, use tools, and interact with the control plane when the user asks (create/start/stop executions, apply code changes). Prefer minimal, safe diffs and explain consequential actions before destructive control-plane operations."""
+
+VALID_INTERACTION_MODES = frozenset({"ask", "execute"})
+
+ASK_READ_ONLY_TOOL_NAMES = frozenset({
+    "read",
+    "grep",
+    "glob",
+    "glob_file_search",
+    "codebase_search",
+    "semanticsearch",
+    "list_dir",
+    "websearch",
+    "webfetch",
+    "read_file",
+    "readfile",
+    "list_mcp_resources",
+    "fetch_mcp_resource",
+})
+
+ASK_BLOCKED_TOOL_NAMES = frozenset({
+    "shell",
+    "run_terminal_cmd",
+    "terminal",
+    "write",
+    "search_replace",
+    "strreplace",
+    "edit",
+    "delete",
+    "apply_patch",
+    "create",
+    "execute",
+    "task",
+})
+
+CONTROL_PLANE_MUTATION_RE = re.compile(
+    r"|".join(
+        [
+            r"/api/control/executions",
+            r"/api/control/engines",
+            r"engine_process_manager",
+            r"stop_all_controlled_executions",
+            r"stop_controlled_execution",
+            r"stop_engine",
+            r"start_controlled_execution",
+            r"create_controlled_execution",
+            r"controlled_execution",
+            r"control_plane\.db",
+            r"engine_registry\.(upsert|update|delete)",
+            r"make\s+(dev|cp)\b",
+            r"uvicorn.*api\.(server|live_server)",
+            r"executions/[^\s/]+/(start|stop)",
+            r"executions/stop-all",
+            r"deploy\s+live",
+            r"stop\s+all\s+running",
+        ]
+    ),
+    re.IGNORECASE,
+)
 
 
 class CursorAgentChatRequest(BaseModel):
@@ -153,6 +228,7 @@ class CursorAgentService:
         *,
         prompt: str,
         agent_id: Optional[str],
+        interaction_mode: str = "ask",
         ws: WebSocket | None = None,
         cancel_event: asyncio.Event | None = None,
         active_run: dict[str, Any] | None = None,
@@ -166,11 +242,14 @@ class CursorAgentService:
             yield {"type": "error", "phase": "request", "message": "prompt is required"}
             return
 
+        mode = interaction_mode if interaction_mode in VALID_INTERACTION_MODES else "ask"
+        sdk_mode = "agent" if mode == "execute" else "ask"
+
         client = await self._require_client()
         created_new_agent = not agent_id
 
         try:
-            agent = await self._get_or_create_agent(client, agent_id)
+            agent = await self._get_or_create_agent(client, agent_id, interaction_mode=mode)
         except CursorAgentError as exc:
             log.error("[CURSOR_AGENT] Agent startup failed: %s", exc)
             yield {
@@ -185,11 +264,20 @@ class CursorAgentService:
             yield {"type": "error", "phase": "startup", "message": str(exc)}
             return
 
-        message = _wrap_prompt(user_prompt, new_agent=created_new_agent)
+        message = _wrap_prompt(user_prompt, new_agent=created_new_agent, interaction_mode=mode)
         run = None
 
         try:
-            run = await agent.send(message)
+            from cursor_sdk import SendOptions
+
+            send_options = SendOptions(mode=sdk_mode)
+            try:
+                run = await agent.send(message, send_options)
+            except Exception as exc:
+                if sdk_mode != "ask":
+                    raise
+                log.warning("[CURSOR_AGENT] ask mode rejected by SDK, using prompt guardrails only: %s", exc)
+                run = await agent.send(message)
             if active_run is not None:
                 active_run["run"] = run
             yield {
@@ -197,6 +285,7 @@ class CursorAgentService:
                 "agent_id": agent.agent_id,
                 "run_id": run.id,
                 "model": self.model(),
+                "interaction_mode": mode,
             }
 
             async for message_event in run.stream():
@@ -223,6 +312,19 @@ class CursorAgentService:
                 if message_type == "assistant" and payload.get("text"):
                     yield {"type": "text_delta", "text": payload["text"]}
                 elif message_type == "tool_call":
+                    if mode == "ask":
+                        blocked, reason = _ask_mode_tool_blocked(payload)
+                        if blocked:
+                            if run.supports("cancel"):
+                                await run.cancel()
+                            yield {
+                                "type": "error",
+                                "phase": "guardrail",
+                                "agent_id": agent.agent_id,
+                                "run_id": run.id,
+                                "message": reason,
+                            }
+                            return
                     yield {"type": "tool_call", **payload}
                 elif message_type == "status":
                     yield {"type": "status", **payload}
@@ -283,14 +385,22 @@ class CursorAgentService:
             raise RuntimeError(f"{CURSOR_API_KEY_ENV} is not configured")
         return self._client
 
-    async def _get_or_create_agent(self, client: AsyncClient, agent_id: Optional[str]):
+    async def _get_or_create_agent(
+        self,
+        client: AsyncClient,
+        agent_id: Optional[str],
+        *,
+        interaction_mode: str = "ask",
+    ):
         from cursor_sdk import AgentOptions
 
         api_key = os.environ[CURSOR_API_KEY_ENV].strip()
+        sdk_mode = "agent" if interaction_mode == "execute" else "ask"
         options = AgentOptions(
             api_key=api_key,
             model=self.model(),
             local=LocalAgentOptions(cwd=self.workspace()),
+            mode=sdk_mode,
         )
 
         if agent_id:
@@ -346,12 +456,13 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
     active_run: dict[str, Any] = {"run": None}
     chat_task: asyncio.Task | None = None
 
-    async def run_chat(prompt: str, agent_id: Optional[str]) -> None:
+    async def run_chat(prompt: str, agent_id: Optional[str], interaction_mode: str) -> None:
         cancel_event.clear()
         try:
             async for event in cursor_agent_service.stream_chat(
                 prompt=prompt,
                 agent_id=agent_id,
+                interaction_mode=interaction_mode,
                 ws=ws,
                 cancel_event=cancel_event,
                 active_run=active_run,
@@ -418,6 +529,10 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
                 await ws.send_json({"type": "error", "phase": "request", "message": "prompt is required"})
                 continue
 
+            interaction_mode = str(msg.get("interaction_mode") or msg.get("mode") or "ask").strip().lower()
+            if interaction_mode not in VALID_INTERACTION_MODES:
+                interaction_mode = "ask"
+
             if chat_task is not None and not chat_task.done():
                 cancel_event.set()
                 run = active_run.get("run")
@@ -430,8 +545,13 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
                 cancel_event.clear()
                 chat_task = None
 
-            log.info("[CURSOR_AGENT_WS] chat agent_id=%s prompt_len=%d", agent_id or "-", len(prompt))
-            chat_task = asyncio.create_task(run_chat(prompt, agent_id))
+            log.info(
+                "[CURSOR_AGENT_WS] chat agent_id=%s mode=%s prompt_len=%d",
+                agent_id or "-",
+                interaction_mode,
+                len(prompt),
+            )
+            chat_task = asyncio.create_task(run_chat(prompt, agent_id, interaction_mode))
     except WebSocketDisconnect:
         log.info("[CURSOR_AGENT_WS] Client disconnected")
         if chat_task is not None and not chat_task.done():
@@ -445,10 +565,19 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
             await ws.send_json({"type": "error", "phase": "session", "message": str(exc)})
 
 
-def _wrap_prompt(user_prompt: str, *, new_agent: bool) -> str:
-    if not new_agent:
-        return user_prompt
-    return f"{STRATEGY_AGENT_HINT}\n\nUser question:\n{user_prompt}"
+def _wrap_prompt(user_prompt: str, *, new_agent: bool, interaction_mode: str = "ask") -> str:
+    parts: list[str] = []
+    if new_agent:
+        parts.append(STRATEGY_AGENT_HINT)
+    if interaction_mode == "execute":
+        parts.append(EXECUTE_MODE_HINT)
+    else:
+        parts.append(ASK_MODE_HINT)
+    if new_agent:
+        parts.append(f"User question:\n{user_prompt}")
+    else:
+        parts.append(user_prompt)
+    return "\n\n".join(parts)
 
 
 def _sdk_message_payload(message: Any) -> dict[str, Any] | None:
@@ -463,7 +592,58 @@ def _sdk_message_payload(message: Any) -> dict[str, Any] | None:
     elif message_type == "tool_call":
         payload["tool_name"] = getattr(message, "name", None)
         payload["tool_status"] = getattr(message, "status", None)
+        _enrich_tool_payload(message, payload)
     elif message_type == "status":
         payload["status"] = getattr(message, "status", None)
         payload["message"] = getattr(message, "message", None)
     return payload
+
+
+def _enrich_tool_payload(message: Any, payload: dict[str, Any]) -> None:
+    for attr in ("args", "input", "arguments", "command", "parameters", "path", "content"):
+        if not hasattr(message, attr):
+            continue
+        value = getattr(message, attr)
+        if value is None:
+            continue
+        if isinstance(value, str):
+            payload[attr] = value
+        else:
+            with contextlib.suppress(TypeError, ValueError):
+                payload[attr] = json.dumps(value)
+            if attr not in payload:
+                payload[attr] = str(value)
+
+
+def _tool_call_text(payload: dict[str, Any]) -> str:
+    parts = [str(payload.get("tool_name") or "")]
+    for key in ("args", "input", "arguments", "command", "parameters", "path", "content"):
+        if payload.get(key):
+            parts.append(str(payload[key]))
+    return " ".join(parts)
+
+
+def _ask_mode_tool_blocked(payload: dict[str, Any]) -> tuple[bool, str]:
+    tool_name = str(payload.get("tool_name") or "").strip()
+    normalized = tool_name.lower().replace("-", "_").split(".")[-1]
+    blob = _tool_call_text(payload)
+
+    if CONTROL_PLANE_MUTATION_RE.search(blob):
+        return (
+            True,
+            "Ask mode cannot create, start, stop, or deploy strategies via the control plane. Switch to Execute.",
+        )
+
+    if normalized in ASK_BLOCKED_TOOL_NAMES:
+        return (
+            True,
+            "Ask mode is read-only. Switch to Execute to run shell commands or modify files.",
+        )
+
+    if normalized in ASK_READ_ONLY_TOOL_NAMES:
+        return False, ""
+
+    return (
+        True,
+        "Ask mode allows read-only repo tools only. Switch to Execute for this action.",
+    )

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+export type AgentInteractionMode = 'ask' | 'execute'
+
 export type ChatRole = 'user' | 'assistant' | 'system'
 
 export type ChatMessage = {
@@ -40,7 +42,7 @@ function nextId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-export function useCursorAgentChat(enabled: boolean) {
+export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInteractionMode = 'ask') {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [health, setHealth] = useState<AgentHealth | null>(null)
   const [connected, setConnected] = useState(false)
@@ -272,11 +274,12 @@ export function useCursorAgentChat(enabled: boolean) {
           type: 'chat',
           prompt: trimmed,
           agent_id: agentIdRef.current,
+          interaction_mode: interactionMode,
         }),
       )
       return true
     },
-    [health, sending],
+    [health, interactionMode, sending],
   )
 
   const stopMessage = useCallback(() => {

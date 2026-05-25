@@ -1,11 +1,15 @@
 import { useMemo, useState } from 'react'
 
 import { MorphPanel } from '@/components/ui/ai-input'
-import { useCursorAgentChat } from '@/lib/useCursorAgentChat'
+import { useCursorAgentChat, type AgentInteractionMode } from '@/lib/useCursorAgentChat'
 
 export function FloatingAiAssistant() {
   const [open, setOpen] = useState(false)
-  const { messages, health, connected, sending, error, sendMessage, stopMessage } = useCursorAgentChat(open)
+  const [interactionMode, setInteractionMode] = useState<AgentInteractionMode>('ask')
+  const { messages, health, connected, sending, error, sendMessage, stopMessage } = useCursorAgentChat(
+    open,
+    interactionMode,
+  )
 
   const statusText = useMemo(() => {
     if (error && !connected) return error
@@ -21,6 +25,8 @@ export function FloatingAiAssistant() {
       connected={connected}
       statusText={statusText}
       error={error}
+      interactionMode={interactionMode}
+      onInteractionModeChange={setInteractionMode}
       onSubmit={sendMessage}
       onStop={stopMessage}
       onOpenChange={setOpen}

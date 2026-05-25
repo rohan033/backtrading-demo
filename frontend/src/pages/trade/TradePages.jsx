@@ -67,6 +67,8 @@ export function StrategiesListPage() {
   const [filter, setFilter] = useState('all')
   const [page, setPage] = useState(1)
   const [logTarget, setLogTarget] = useState(null)
+  const [stoppingAll, setStoppingAll] = useState(false)
+  const [stopAllError, setStopAllError] = useState('')
   const {
     panelExecutions,
     controlledExecutionsLoading,
@@ -87,6 +89,7 @@ export function StrategiesListPage() {
   const rows = useMemo(() => {
     return panelExecutions.map(execution => {
       const engineStatus = String(execution.data_plane_status || execution.status || 'unknown').toLowerCase()
+      const isStoppable = ['running', 'starting', 'stale'].includes(engineStatus)
       return {
         id: execution.executor_id,
         name: execution.label || execution.symbol || execution.strategy_name || 'Strategy',
@@ -95,7 +98,7 @@ export function StrategiesListPage() {
         createdAt: execution.created_at,
         pnl: 0,
         inPosition: Boolean(execution.is_in_position),
-        isLive: ['running', 'starting'].includes(engineStatus),
+        isLive: isStoppable,
         logFile: execution.log_file || null,
       }
     })
@@ -120,6 +123,29 @@ export function StrategiesListPage() {
     running: rows.filter(row => row.isLive).length,
     stopped: rows.filter(row => !row.isLive).length,
   }), [rows])
+
+  const stopAllRunning = async () => {
+    if (!counts.running || stoppingAll) return
+    const confirmed = window.confirm(
+      `Stop all ${counts.running} running strateg${counts.running === 1 ? 'y' : 'ies'}?`,
+    )
+    if (!confirmed) return
+
+    setStoppingAll(true)
+    setStopAllError('')
+    try {
+      const res = await fetch('/api/control/executions/stop-all', { method: 'POST' })
+      const payload = await res.json()
+      if (!res.ok || !payload.status) {
+        throw new Error(payload.detail || payload.message || 'Failed to stop running strategies')
+      }
+      await refreshControlledExecutions()
+    } catch (err) {
+      setStopAllError(err instanceof Error ? err.message : 'Failed to stop running strategies')
+    } finally {
+      setStoppingAll(false)
+    }
+  }
 
   return (
     <div className="h-full overflow-auto p-6">
@@ -181,6 +207,16 @@ export function StrategiesListPage() {
             {tab.label}
           </button>
         ))}
+        {counts.running > 0 ? (
+          <button
+            type="button"
+            onClick={() => void stopAllRunning()}
+            disabled={stoppingAll || controlledExecutionsLoading}
+            className="rounded border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-[11px] font-semibold text-red-300 hover:bg-red-500/20 disabled:opacity-50"
+          >
+            {stoppingAll ? 'Stopping all…' : `Stop all running (${counts.running})`}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={() => refreshControlledExecutions()}
@@ -194,6 +230,12 @@ export function StrategiesListPage() {
       {controlledExecutionsError ? (
         <div className="mb-4 rounded border border-red/40 bg-red/10 px-4 py-3 text-sm text-red">
           {controlledExecutionsError}
+        </div>
+      ) : null}
+
+      {stopAllError ? (
+        <div className="mb-4 rounded border border-red/40 bg-red/10 px-4 py-3 text-sm text-red">
+          {stopAllError}
         </div>
       ) : null}
 
