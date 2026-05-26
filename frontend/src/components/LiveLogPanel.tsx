@@ -24,7 +24,7 @@ type StreamPhase = 'idle' | 'waiting' | 'loading' | 'live' | 'error'
 function LogLineRow({ line }: { line: ParsedLogLine }) {
   return (
     <div
-      className="group flex gap-2 border-b border-border/30 px-3 py-1.5 hover:bg-white/[0.02]"
+      className={`group flex gap-2 border-b border-border/30 px-3 py-1.5 ${line.rowClassName}`}
       style={{ paddingLeft: `${12 + line.indent * 12}px` }}
     >
       <span

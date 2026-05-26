@@ -337,6 +337,8 @@ class OrderManager:
             return self._activities_from_snapshot(status)
         if status_type == "portfolio_status_update":
             return [self._activity_from_websocket_update(status)]
+        if status_type == "angel_order_status_update":
+            return [self._activity_from_angel_order_update(status)]
         if status_type == "websocket_error":
             return [
                 OrderActivity(
@@ -399,6 +401,17 @@ class OrderManager:
             )
 
         return activities
+
+    def _activity_from_angel_order_update(self, update: dict[str, Any]) -> OrderActivity:
+        content = update.get("content") if isinstance(update.get("content"), dict) else {}
+        return OrderActivity(
+            activity_type=str(update.get("event_type") or "angel_order_status_update"),
+            order_id=update.get("order_id") or content.get("orderid") or content.get("orderId"),
+            status=update.get("status") or content.get("orderstatus") or content.get("status"),
+            instrument_id=content.get("symboltoken") or content.get("symbolToken"),
+            source="websocket",
+            raw=update,
+        )
 
     def _activity_from_websocket_update(self, update: dict[str, Any]) -> OrderActivity:
         content = update.get("content") or {}

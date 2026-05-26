@@ -30,6 +30,10 @@ const BROKER_OPTIONS = [
   { value: 'angel', label: 'Angel One' },
   { value: 'etoro', label: 'eToro' },
 ]
+const ANGEL_FEED_OPTIONS = [
+  { value: 'websocket', label: 'WebSocket (SmartAPI stream)' },
+  { value: 'rest', label: 'REST poll (1s)' },
+]
 const DEFAULT_DATA_PLANE = {
   id: 'local-live-engine',
   label: 'angel-local-live-strategy-default',
@@ -1701,6 +1705,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     allow_partial_stocks: false,
     use_fake_client: false,
     client_mode: 'standard',
+    feed_mode: 'websocket',
   })
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -1713,6 +1718,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     exchange: selectedStock?.exchange || 'NSE',
     account_env: form.account_env,
     use_fake_client: form.use_fake_client,
+    feed_mode: form.feed_mode,
     enabled: Boolean(selectedStock?.symboltoken),
   })
 
@@ -1738,6 +1744,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       allow_partial_stocks: Boolean(template.allow_partial_stocks ?? executor.allow_partial_stocks),
       use_fake_client: Boolean(template.use_fake_client),
       client_mode: template.client_mode || 'standard',
+      feed_mode: template.feed_mode || 'websocket',
     })
     setSelectedStock({
       tradingsymbol: template.symbol || executor.symbol,
@@ -1827,6 +1834,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     allow_partial_stocks: Boolean(form.allow_partial_stocks),
     use_fake_client: form.use_fake_client,
     client_mode: form.broker === 'etoro' ? form.client_mode : 'standard',
+    feed_mode: form.broker === 'angel' ? form.feed_mode : 'websocket',
   })
 
   const validateForm = () => {
@@ -1961,6 +1969,20 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
               <option value="bracket">Bracket Order</option>
             </select>
           </div>
+          {form.broker === 'angel' && !form.use_fake_client ? (
+            <div>
+              <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Price Feed</label>
+              <select
+                value={form.feed_mode}
+                onChange={e => setForm(prev => ({ ...prev, feed_mode: e.target.value }))}
+                className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent"
+              >
+                {ANGEL_FEED_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
           <div className="col-span-2">
             <FormField label="Execution ID" value={form.executor_id} onChange={value => setForm(prev => ({ ...prev, executor_id: value }))} />
           </div>
@@ -2338,7 +2360,7 @@ function CountdownConfirmOverlay({
   )
 }
 
-function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fake_client, enabled }) {
+function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fake_client, feed_mode, enabled }) {
   const [ltp, setLtp] = useState(null)
   const [connected, setConnected] = useState(false)
   const [connectedAt, setConnectedAt] = useState(null)
@@ -2418,6 +2440,7 @@ function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fa
         exchange: exchange || 'NSE',
         account_env,
         use_fake_client,
+        feed_mode: broker === 'angel' ? feed_mode || 'websocket' : 'websocket',
       }))
     }
 
@@ -2450,7 +2473,7 @@ function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fa
       ws.close()
       if (socketRef.current === ws) socketRef.current = null
     }
-  }, [broker, token, symbol, exchange, account_env, use_fake_client, enabled])
+  }, [broker, token, symbol, exchange, account_env, use_fake_client, feed_mode, enabled])
 
   return { ltp, connected, marketError, streamStatus }
 }
@@ -2579,15 +2602,25 @@ function instrumentLabel(broker) {
   return String(broker || '').toLowerCase() === 'etoro' ? 'Instrument ID' : 'Token'
 }
 
-async function startControlledExecution(executionId) {
-  const res = await fetch(`${CONTROL_API}/executions/${executionId}/start`, { method: 'POST' })
-  const data = await res.json()
-  if (!res.ok) {
-    throw new Error(data.detail || 'Failed to start live server')
+async function ensureExecutorRegistered(runningEngine, executor) {
+  if (!runningEngine?.api_base_url) {
+    throw new Error('Live engine API URL is missing')
+  }
+  if (!executor?.executor_id) {
+    throw new Error('Executor payload is missing')
   }
 
-  const { engine, executor, port, log_file: logFile, api_base_url: apiBaseUrl } = data.data
-  const runningEngine = await waitForEngine(engine.id)
+  const listRes = await fetch(`${runningEngine.api_base_url}/executors`)
+  if (listRes.ok) {
+    const listData = await listRes.json()
+    const alreadyRegistered = (listData.data || []).some(
+      row => row.executor_id === executor.executor_id,
+    )
+    if (alreadyRegistered) {
+      return listData.data.find(row => row.executor_id === executor.executor_id)
+    }
+  }
+
   const executorRes = await fetch(`${runningEngine.api_base_url}/executors`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2597,6 +2630,19 @@ async function startControlledExecution(executionId) {
   if (!executorRes.ok) {
     throw new Error(executorData.detail || 'Live server started, but executor registration failed')
   }
+  return executorData.data
+}
+
+export async function startControlledExecution(executionId) {
+  const res = await fetch(`${CONTROL_API}/executions/${executionId}/start`, { method: 'POST' })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to start live server')
+  }
+
+  const { engine, executor, port, log_file: logFile, api_base_url: apiBaseUrl } = data.data
+  const runningEngine = await waitForEngine(engine.id)
+  await ensureExecutorRegistered(runningEngine, executor)
 
   return {
     engine: runningEngine,
@@ -2607,7 +2653,33 @@ async function startControlledExecution(executionId) {
   }
 }
 
-async function waitForEngine(engineId, timeoutMs = 15000) {
+export async function repairControlledExecution(executionId) {
+  const res = await fetch(`${CONTROL_API}/executions/${encodeURIComponent(executionId)}`)
+  const data = await res.json()
+  if (!res.ok) return false
+
+  const engine = data.data?.engine
+  const executor = data.data?.executor
+  if (!engine || !['running', 'starting'].includes(String(engine.status || '').toLowerCase())) {
+    return false
+  }
+  if (!executor?.executor_id || !engine.api_base_url) {
+    return false
+  }
+
+  const listRes = await fetch(`${engine.api_base_url}/executors`)
+  if (listRes.ok) {
+    const listData = await listRes.json()
+    if ((listData.data || []).some(row => row.executor_id === executor.executor_id)) {
+      return false
+    }
+  }
+
+  await ensureExecutorRegistered(engine, executor)
+  return true
+}
+
+async function waitForEngine(engineId, timeoutMs = 45000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const res = await fetch(`${CONTROL_API}/engines/${engineId}`)

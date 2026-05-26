@@ -6,8 +6,14 @@ from brokers.interfaces import TickClient, TickListener, Subscription, TickData
 
 
 class TickProvider:
-    def __init__(self, client: TickClient, interval_seconds: float = 1.0,
-                 on_tick: Optional[Callable[[TickData], None]] = None):
+    def __init__(
+        self,
+        client: TickClient,
+        interval_seconds: float = 1.0,
+        on_tick: Optional[Callable[[TickData], None]] = None,
+        *,
+        polling_enabled: bool = True,
+    ):
         self._client = client
         self._interval = interval_seconds
         self._subscriptions: list[Subscription] = []
@@ -15,6 +21,14 @@ class TickProvider:
         self._running = False
         self._task: asyncio.Task | None = None
         self._on_tick = on_tick
+        self._polling_enabled = polling_enabled
+        self._subscription_listener: Callable[[list[Subscription]], None] | None = None
+
+    def set_subscription_listener(self, callback: Callable[[list[Subscription]], None]) -> None:
+        self._subscription_listener = callback
+
+    def ingest_tick(self, tick: TickData) -> None:
+        self._dispatch(tick)
 
     def subscribe(self, exchange: str, symbol: str, token: str):
         self._subscriptions.append(Subscription(exchange=exchange, symbol=symbol, token=token))
@@ -42,14 +56,20 @@ class TickProvider:
         ]
         logger.info("Updated subscriptions: %d active, %d listeners",
                     len(self._subscriptions), len(self._listeners))
+        if self._subscription_listener:
+            self._subscription_listener(list(self._subscriptions))
 
     async def start(self):
         if self._running:
             return
         self._running = True
-        self._task = asyncio.create_task(self._poll_loop())
-        logger.info("TickProvider started with interval=%.2fs, %d subscriptions",
-                    self._interval, len(self._subscriptions))
+        if self._polling_enabled:
+            self._task = asyncio.create_task(self._poll_loop())
+            logger.info("TickProvider started with interval=%.2fs, %d subscriptions",
+                        self._interval, len(self._subscriptions))
+        else:
+            logger.info("TickProvider started in external-feed mode with %d subscriptions",
+                        len(self._subscriptions))
 
     async def stop(self):
         self._running = False

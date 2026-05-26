@@ -11,6 +11,8 @@ import {
   ExecutionProvider,
   OrderManagementTab,
   TradingEventsTab,
+  repairControlledExecution,
+  startControlledExecution,
   useExecution,
 } from '../../ExecutionWorkspace'
 
@@ -407,12 +409,9 @@ export function StrategyDetailPage() {
     setActionError('')
     setDeploying(true)
     try {
-      const res = await fetch(`/api/control/executions/${encodeURIComponent(id)}/start`, { method: 'POST' })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Failed to deploy strategy')
-      const payload = data.data || {}
+      const { engine, executor } = await startControlledExecution(id)
       await refreshControlledExecutions()
-      await onExecutionStarted(payload.engine, payload.executor)
+      await onExecutionStarted(engine, executor)
       await refreshExecutions()
     } catch (error) {
       setActionError(error?.message || 'Failed to deploy strategy')
@@ -420,6 +419,25 @@ export function StrategyDetailPage() {
       setDeploying(false)
     }
   }
+
+  useEffect(() => {
+    if (!id || !isLive) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const repaired = await repairControlledExecution(id)
+        if (repaired && !cancelled) {
+          await refreshControlledExecutions()
+          await refreshExecutions()
+        }
+      } catch {
+        // Ignore repair failures; deploy can be retried manually.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [id, isLive, refreshControlledExecutions, refreshExecutions])
 
   const handleDuplicate = async () => {
     setActionError('')

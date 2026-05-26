@@ -85,6 +85,7 @@ class LiveEngine:
         token: str | None = None,
         strategy_name: str = "default",
         client_mode: str = "standard",
+        feed_mode: str = "websocket",
     ):
         self.use_fake_client = use_fake_client or broker == "fake"
         self.account_env = "demo" if account_env == "demo" else "live"
@@ -96,12 +97,16 @@ class LiveEngine:
         self.token = token
         self.strategy_name = strategy_name
         self.client_mode = "bracket" if client_mode == "bracket" else "standard"
+        from brokers.angel.feed_config import normalize_angel_feed_mode
+
+        self.feed_mode = normalize_angel_feed_mode(feed_mode)
         self.client = None
         self.db_writer: Optional[DbEventWriter] = None
         self.event_manager: Optional[EventManager] = None
         self.trading_manager: Optional[TradingManager] = None
         self.order_manager: Optional[OrderManager] = None
         self.tick_provider: Optional[TickProvider] = None
+        self.angel_feed = None
         self.executors: dict[str, StrategyExecutor] = {}
         self.ws_manager = ConnectionManager()
         self.ws_manager.engine_id = self.engine_id
@@ -145,10 +150,28 @@ class LiveEngine:
         self.order_manager.register_listener("trading_manager", self.trading_manager)
         if status_client is not None:
             logger.info("[ENGINE] Portfolio status client wired (%s)", type(status_client).__name__)
-        self.tick_provider = TickProvider(
-            self.client, interval_seconds=1.0,
-            on_tick=self._on_tick
+
+        from brokers.angel.feed_config import angel_uses_websocket_feed
+
+        use_angel_ws_feed = (
+            self.broker == "angel"
+            and not self.use_fake_client
+            and angel_uses_websocket_feed(self.feed_mode)
         )
+        self.tick_provider = TickProvider(
+            self.client,
+            interval_seconds=1.0,
+            on_tick=self._on_tick,
+            polling_enabled=not use_angel_ws_feed,
+        )
+        if use_angel_ws_feed:
+            from brokers.angel.feed_client import AngelWebsocketFeedClient
+
+            self.angel_feed = AngelWebsocketFeedClient.from_trading_client(self.client)
+            self.angel_feed.add_tick_callback(self._forward_angel_tick)
+            self.tick_provider.set_subscription_listener(self._schedule_angel_feed_sync)
+            await self.angel_feed.start()
+
         await self.trading_manager.start()
         await self.order_manager.start()
         await self.tick_provider.start()
@@ -157,15 +180,21 @@ class LiveEngine:
         if self.engine_id and self.control_url:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         logger.info(
-            "[ENGINE] Live engine started engine_id=%s broker=%s env=%s client_mode=%s fake=%s",
+            "[ENGINE] Live engine started engine_id=%s broker=%s env=%s client_mode=%s feed_mode=%s fake=%s",
             self.engine_id or "-",
             self.broker,
             self.account_env,
             self.client_mode,
+            self.feed_mode,
             self.use_fake_client,
         )
 
     def _create_status_client(self):
+        if self.broker == "angel" and not self.use_fake_client:
+            from brokers.angel.status_client import AngelWebsocketOrderStatusClient
+
+            return AngelWebsocketOrderStatusClient.from_trading_client(self.client)
+
         if self.broker != "etoro":
             return None
 
@@ -186,6 +215,16 @@ class LiveEngine:
             )
             return EtoroPortfolioStatusClient(interval_seconds=3.0, account_env=self.account_env)
 
+    def _schedule_angel_feed_sync(self, subscriptions) -> None:
+        if self.angel_feed is None:
+            return
+        asyncio.create_task(self.angel_feed.sync_subscriptions(subscriptions))
+
+    async def _forward_angel_tick(self, tick) -> None:
+        self._on_tick(tick)
+        if self.tick_provider is not None:
+            self.tick_provider.ingest_tick(tick)
+
     async def shutdown(self):
         await self._send_heartbeat("stopped")
         if self._heartbeat_task:
@@ -196,6 +235,9 @@ class LiveEngine:
                 pass
         if self.tick_provider:
             await self.tick_provider.stop()
+        if self.angel_feed is not None:
+            await self.angel_feed.stop()
+            self.angel_feed = None
         if self.order_manager:
             await self.order_manager.stop()
         if self.trading_manager:
@@ -351,6 +393,7 @@ class LiveEngine:
                 "strategy_name": self.strategy_name,
                 "use_fake_client": self.use_fake_client,
                 "client_mode": self.client_mode,
+                "feed_mode": self.feed_mode,
                 "is_bracket_order_client": self.is_bo_client(),
                 "ws_connections": len(self.ws_manager.active_connections),
             },
@@ -413,6 +456,7 @@ class LiveEngine:
             "account_env": self.account_env,
             "use_fake_client": self.use_fake_client,
             "client_mode": self.client_mode,
+            "feed_mode": self.feed_mode,
             "is_bracket_order_client": self.is_bo_client(),
             "executor_count": len(self.executors),
             "symbol": self.symbol,
@@ -429,6 +473,7 @@ class LiveEngine:
         state["broker"] = self.broker
         state["account_env"] = self.account_env
         state["client_mode"] = self.client_mode
+        state["feed_mode"] = self.feed_mode
         state["is_bracket_order_client"] = self.is_bo_client()
         return state
 
@@ -474,6 +519,7 @@ async def lifespan(app: FastAPI):
         token=_arg_value("--token", ""),
         strategy_name=_arg_value("--strategy-name", "default"),
         client_mode=_arg_value("--client-mode", "standard"),
+        feed_mode=_arg_value("--feed-mode", "websocket"),
     )
     await engine.start()
     yield
@@ -747,6 +793,12 @@ if __name__ == "__main__":
     parser.add_argument("--token", default="", help="Execution token metadata")
     parser.add_argument("--strategy-name", default="default", help="Strategy metadata")
     parser.add_argument("--client-mode", choices=["standard", "bracket"], default="standard", help="Broker client mode")
+    parser.add_argument(
+        "--feed-mode",
+        choices=["websocket", "rest"],
+        default="websocket",
+        help="Angel price feed: SmartAPI websocket stream or REST polling",
+    )
     parser.add_argument("--heartbeat-interval", type=float, default=5.0, help="Seconds between control-plane heartbeats")
     args = parser.parse_args()
 

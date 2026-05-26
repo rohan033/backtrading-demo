@@ -204,6 +204,7 @@ class ControlPlaneExecutionRequest(BaseModel):
     allow_partial_stocks: bool = False
     use_fake_client: bool = False
     client_mode: str = "standard"
+    feed_mode: str = "websocket"
 
 
 # ── Endpoints ──
@@ -555,6 +556,7 @@ def start_controlled_execution(execution_id: str):
                 "account_env": engine.get("account_env") or config.get("account_env") or "live",
                 "strategy_name": engine.get("strategy_name") or config.get("strategy_name") or "default",
                 "client_mode": metadata.get("client_mode") or config.get("client_mode") or "standard",
+                "feed_mode": config.get("feed_mode") or metadata.get("feed_mode") or "websocket",
                 "symbol": engine.get("symbol") or config.get("symbol"),
                 "token": engine.get("token") or config.get("token"),
                 "label": engine.get("label"),
@@ -631,6 +633,7 @@ def duplicate_execution_template(execution_id: str):
             "account_env": engine.get("account_env"),
             "exchange": metadata.get("exchange") or executor_payload.get("exchange"),
             "client_mode": metadata.get("client_mode") or "standard",
+            "feed_mode": metadata.get("feed_mode") or config.get("feed_mode") or "websocket",
             "use_fake_client": metadata.get("use_fake_client") or False,
             "executor_id": executor_payload.get("executor_id") or execution_id,
             "close_price": executor_payload.get("close_price"),
@@ -1264,6 +1267,7 @@ async def ws_proxy_engine_live(ws: WebSocket, engine_id: str):
 
 async def _run_market_preview(ws: WebSocket, cfg: dict) -> None:
     from brokers.interfaces import Subscription, TickData
+    from brokers.angel.feed_config import angel_uses_websocket_feed
 
     broker = "fake" if cfg.get("use_fake_client") else (cfg.get("broker") or "angel").lower()
     token = str(cfg["token"])
@@ -1306,19 +1310,31 @@ async def _run_market_preview(ws: WebSocket, cfg: dict) -> None:
 
             subtasks.append(asyncio.create_task(fake_loop()))
         else:
-            from brokers.angel.trading_client import AngelOneTradingClient
-
-            angel_client = AngelOneTradingClient()
             subscription = Subscription(exchange=exchange, symbol=symbol, token=token)
+            if angel_uses_websocket_feed(cfg.get("feed_mode")):
+                from brokers.angel.feed_client import AngelWebsocketFeedClient
+                from brokers.angel.trading_client import AngelOneTradingClient
 
-            async def angel_loop() -> None:
-                while True:
-                    ltps = await angel_client.aget_ltp_bulk([subscription])
-                    if ltps:
-                        await tick_queue.put(ltps[0])
-                    await asyncio.sleep(1.0)
+                angel_client = AngelOneTradingClient()
+                angel_client.generate_session()
+                feed_client = AngelWebsocketFeedClient.from_trading_client(angel_client)
+                feed_client.add_tick_callback(on_tick)
+                await feed_client.start()
+                await feed_client.sync_subscriptions([subscription])
+            else:
+                from brokers.angel.trading_client import AngelOneTradingClient
 
-            subtasks.append(asyncio.create_task(angel_loop()))
+                angel_client = AngelOneTradingClient()
+                angel_client.generate_session()
+
+                async def angel_loop() -> None:
+                    while True:
+                        ltps = await angel_client.aget_ltp_bulk([subscription])
+                        if ltps:
+                            await tick_queue.put(ltps[0])
+                        await asyncio.sleep(1.0)
+
+                subtasks.append(asyncio.create_task(angel_loop()))
 
         while True:
             tick = await tick_queue.get()
