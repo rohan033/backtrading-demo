@@ -13,6 +13,12 @@ import {
   formatBrokerSignedMoney,
 } from '../../lib/currency'
 import { formatDbTimestamp } from '../../lib/datetime'
+import {
+  executionSourceHref,
+  executionSourceLabel,
+  resolveExecutionSourceId,
+  resolveExecutionSourceMetaId,
+} from '../../lib/executionSources'
 import { formatScheduledStart, scheduleSummary } from '../../lib/tradingSchedule'
 
 import './strategy-detail.css'
@@ -251,6 +257,10 @@ export default function StrategyDetailView({
   const runtimePending = !execution?.log_file && !execution?.data_plane_port && !port
   const env = String(execution?.account_env || 'live').toLowerCase()
   const badgeTone = statusBadgeTone(isLive, engineStatus)
+  const sourceId = resolveExecutionSourceId(execution, queuedItem)
+  const sourceMetaId = resolveExecutionSourceMetaId(execution, queuedItem)
+  const sourceLabel = executionSourceLabel(sourceId)
+  const sourceHref = executionSourceHref(sourceId, sourceMetaId)
 
   if (!execution && !queuedItem) {
     return (
@@ -306,9 +316,29 @@ export default function StrategyDetailView({
             <p className="mt-1 font-mono text-[11px] text-[var(--sd-accent)]">{executionId}</p>
             {execution?.created_at ? (
               <p className="mt-1 text-[11px] text-[var(--sd-text-muted)]">
-                Created {formatDbTimestamp(execution.created_at)}
+                Created {formatDbTimestamp(execution.created_at)} · Source {sourceLabel}
+                {sourceHref ? (
+                  <>
+                    {' · '}
+                    <Link to={sourceHref} className="font-semibold text-[var(--sd-accent)] hover:underline">
+                      Go to source
+                    </Link>
+                  </>
+                ) : null}
               </p>
-            ) : null}
+            ) : (
+              <p className="mt-1 text-[11px] text-[var(--sd-text-muted)]">
+                Source {sourceLabel}
+                {sourceHref ? (
+                  <>
+                    {' · '}
+                    <Link to={sourceHref} className="font-semibold text-[var(--sd-accent)] hover:underline">
+                      Go to source
+                    </Link>
+                  </>
+                ) : null}
+              </p>
+            )}
             {isScheduled && (scheduledStartAt || tradingDay) ? (
               <div className="sd-schedule-banner mt-3 max-w-xl">
                 <div className="title">Scheduled deployment</div>
@@ -323,6 +353,12 @@ export default function StrategyDetailView({
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <StatusBadge tone={env === 'demo' ? 'demo' : 'live'}>{envLabel(execution?.account_env)}</StatusBadge>
               <StatusBadge tone={badgeTone}>{statusBadgeLabel(isLive, engineStatus)}</StatusBadge>
+              <DetailChip>Source · {sourceLabel}</DetailChip>
+              {sourceHref ? (
+                <Link to={sourceHref} className="sd-chip text-[var(--sd-accent)] hover:underline">
+                  Go to source
+                </Link>
+              ) : null}
               {execution?.is_in_position ? <StatusBadge tone="position">In position</StatusBadge> : null}
               {execution?.symbol ? <DetailChip>{execution.symbol}</DetailChip> : null}
               {port ? <DetailChip>Runtime :{port}</DetailChip> : null}
@@ -439,6 +475,15 @@ export default function StrategyDetailView({
             <dl className="grid grid-cols-1 gap-x-8 gap-y-2 font-mono text-[11px] leading-relaxed text-[var(--sd-text-muted)] md:grid-cols-2">
               {[
                 ['Execution ID', executionId],
+                ['Source', sourceLabel],
+                ...(sourceHref
+                  ? [[
+                      'Research session',
+                      <Link key="research-source" to={sourceHref} className="text-[var(--sd-accent)] hover:underline">
+                        Go to source
+                      </Link>,
+                    ]]
+                  : []),
                 ['Strategy template', execution?.strategy_name || '—'],
                 ['Broker', execution?.broker || '—'],
                 ['Instrument ID', execution?.token || '—'],
@@ -456,7 +501,9 @@ export default function StrategyDetailView({
               ].map(([label, value]) => (
                 <div key={label} className="flex justify-between gap-4 border-b border-[var(--sd-border)]/40 pb-1.5">
                   <dt>{label}</dt>
-                  <dd className="max-w-[60%] text-right text-[var(--sd-text)]">{String(value)}</dd>
+                  <dd className="max-w-[60%] text-right text-[var(--sd-text)]">
+                    {typeof value === 'string' || typeof value === 'number' ? String(value) : value}
+                  </dd>
                 </div>
               ))}
             </dl>

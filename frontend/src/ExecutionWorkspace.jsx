@@ -12,6 +12,7 @@ import {
 import { formatDbTimestamp } from './lib/datetime'
 import StrategyScheduleSection from './components/StrategyScheduleSection'
 import { buildLocalTradingDayOptions, loadTradingDayOptions } from './lib/tradingSchedule'
+import { EXECUTION_SOURCE_USER } from './lib/executionSources'
 
 const CONTROL_API = '/api/control'
 const CONTROL_MARKET_WS = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/control/market`
@@ -1867,6 +1868,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
   }
 
   const buildExecutionPayload = ({ startImmediately = false } = {}) => ({
+    source_id: EXECUTION_SOURCE_USER,
     executor_id: form.executor_id,
     broker: form.broker,
     account_env: form.account_env,
@@ -3099,6 +3101,8 @@ function buildTradeMarkers(realtimeEvents, executorId, chartData) {
 function mergeLiveExecution(registryExecution, liveExecution) {
   const merged = { ...registryExecution, ...liveExecution }
   merged.created_at = registryExecution.created_at || liveExecution.created_at
+  merged.source_id = registryExecution.source_id || liveExecution.source_id || 'user'
+  merged.source_meta_id = registryExecution.source_meta_id || liveExecution.source_meta_id || null
   if (['running', 'starting'].includes(liveExecution.data_plane_status)) {
     merged.data_plane_id = liveExecution.data_plane_id || registryExecution.data_plane_id
     merged.data_plane_label = liveExecution.data_plane_label || registryExecution.data_plane_label
@@ -3132,6 +3136,8 @@ function normalizeControlledExecution(item) {
   return normalizeExecution({
     ...executor,
     executor_id: executorId,
+    source_id: metadata.source_id || metadata.execution_config?.source_id || 'user',
+    source_meta_id: metadata.source_meta_id || metadata.execution_config?.source_meta_id || null,
     created_at: engine.created_at || null,
     started_at: engine.started_at || null,
     broker: engine.broker || executor.broker,

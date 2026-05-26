@@ -5,6 +5,7 @@ import { StopAllStrategiesButton } from '../../components/StopAllStrategiesButto
 import { StrategiesTable } from '../../components/StrategiesTable'
 import LiveLogPanel from '../../components/LiveLogPanel'
 import StrategyDetailView from './StrategyDetailView'
+import { resolveExecutionSourceId, resolveExecutionSourceMetaId } from '../../lib/executionSources'
 import {
   CreateExecutionPanel,
   ChartTab,
@@ -338,18 +339,33 @@ export function StrategyDetailPage() {
   const overviewExecution = useMemo(() => {
     const fromPanel = panelExecutions.find(ex => ex.executor_id === id)
     const base = fromPanel || execution || null
-    if (!base || !queuedItem?.engine) return base
+    const engine = queuedItem?.engine
+    const sourceId = resolveExecutionSourceId(base, queuedItem)
+    const sourceMetaId = resolveExecutionSourceMetaId(base, queuedItem)
 
-    const engine = queuedItem.engine
+    if (!base && !engine) return null
+
+    if (!engine) {
+      return base ? { ...base, source_id: sourceId, source_meta_id: sourceMetaId } : null
+    }
+
     return {
-      ...base,
-      created_at: base.created_at || engine.created_at,
-      data_plane_id: base.data_plane_id || engine.id,
-      data_plane_port: base.data_plane_port || engine.port,
-      data_plane_status: base.data_plane_status || engine.status,
-      api_base_url: base.api_base_url || engine.api_base_url,
-      ws_url: base.ws_url || engine.ws_url,
-      log_file: base.log_file || engine.metadata?.log_file,
+      ...(base || {}),
+      source_id: sourceId,
+      source_meta_id: sourceMetaId,
+      created_at: base?.created_at || engine.created_at,
+      data_plane_id: base?.data_plane_id || engine.id,
+      data_plane_port: base?.data_plane_port || engine.port,
+      data_plane_status: base?.data_plane_status || engine.status,
+      api_base_url: base?.api_base_url || engine.api_base_url,
+      ws_url: base?.ws_url || engine.ws_url,
+      log_file: base?.log_file || engine.metadata?.log_file,
+      broker: base?.broker || engine.broker,
+      symbol: base?.symbol || engine.symbol,
+      token: base?.token || engine.token,
+      account_env: base?.account_env || engine.account_env,
+      strategy_name: base?.strategy_name || engine.strategy_name,
+      executor_id: base?.executor_id || id,
     }
   }, [panelExecutions, id, execution, queuedItem])
   const strategyActivityEvents = useMemo(() => {

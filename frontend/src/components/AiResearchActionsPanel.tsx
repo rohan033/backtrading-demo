@@ -8,6 +8,7 @@ import {
   type AiResearchSession,
   upsertResearchAction,
 } from '../lib/aiResearch'
+import { EXECUTION_SOURCE_AI_RESEARCH } from '../lib/executionSources'
 
 const CONTROL_API = '/api/control'
 
@@ -124,6 +125,8 @@ function ActionCard({
   const buildExecutionBody = (options: { schedule?: boolean; startImmediately?: boolean }) => {
     const payload = editing ? draftPayload : (action.payload || {})
     return {
+      source_id: EXECUTION_SOURCE_AI_RESEARCH,
+      source_meta_id: sessionId,
       broker: String(payload.broker || 'angel'),
       account_env: String(payload.account_env || 'live'),
       strategy_name: String(payload.strategy_name || 'one-percent'),

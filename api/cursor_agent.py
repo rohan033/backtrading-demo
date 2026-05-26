@@ -64,6 +64,14 @@ When proposing a tradable setup, include a fenced JSON block the UI can turn int
 
 If you need to inspect files or logs, use available tools. Be concise and practical."""
 
+USER_FACING_RESPONSE_HINT = """User-facing reply rules (critical — applies to every assistant message shown in chat):
+
+- Write for a trader, not an engineer. Focus on symbols, thesis, levels, sizing, risk, schedule intent, and broker account type (live vs demo) in plain language.
+- Never expose platform or codebase internals in chat prose. Do not mention or explain: APScheduler, control plane, data plane, executor registration, engine registry, POST/GET routes, API payloads, MCP tools, uvicorn, repo paths, file names, UI component names, "UI action blocks", or how scheduled jobs work under the hood.
+- Do not tell the user to manually POST payloads, register executors, or perform developer/debug steps. If they need to act, point them to product actions only: Save strategy, Schedule, Deploy live, or Stop — without describing what happens internally.
+- You may use repo tools and control-plane actions silently when appropriate, but do not narrate that machinery in the reply unless the user explicitly asks for developer or architecture documentation.
+- Keep `ai_action` JSON fences for strategy suggestions when needed; they are parsed by the UI and must not be preceded by technical explanations about how the UI consumes them."""
+
 ASK_MODE_HINT = """You are in ASK mode (read-only guardrails).
 
 - Answer questions and explain tradeoffs using the codebase and read-only context.
@@ -78,7 +86,12 @@ ASK_MODE_HINT = """You are in ASK mode (read-only guardrails).
 
 EXECUTE_MODE_HINT = """You are in EXECUTE mode.
 
-You may inspect the repo, use tools, and interact with the control plane when the user asks (create/start/stop executions, apply code changes). Prefer minimal, safe diffs and explain consequential actions before destructive control-plane operations."""
+You may inspect the repo, use tools, and interact with the control plane when the user asks (create/start/stop executions, apply code changes). Prefer minimal, safe diffs and explain consequential actions before destructive control-plane operations.
+
+When creating strategy executions via POST /api/control/executions, always include source_id in the JSON body:
+- "ai_chatbot_panel" when creating from the floating Strategy AI panel (leave source_meta_id blank)
+- "ai_research" when the prompt indicates an active AI Research session — you MUST set source_meta_id to that session id
+- "user" for manual/user flows (leave source_meta_id blank)"""
 
 VALID_INTERACTION_MODES = frozenset({"ask", "execute"})
 CONTROL_PLANE_MCP_SERVER = "backtrading-control-plane"
@@ -306,7 +319,12 @@ class CursorAgentService:
             yield {"type": "error", "phase": "startup", "message": str(exc)}
             return
 
-        message = _wrap_prompt(user_prompt, new_agent=created_new_agent, interaction_mode=mode)
+        message = _wrap_prompt(
+            user_prompt,
+            new_agent=created_new_agent,
+            interaction_mode=mode,
+            research_session_id=research_session_id,
+        )
         run = None
 
         try:
@@ -662,14 +680,32 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
             await ws.send_json({"type": "error", "phase": "session", "message": str(exc)})
 
 
-def _wrap_prompt(user_prompt: str, *, new_agent: bool, interaction_mode: str = "ask") -> str:
+def _wrap_prompt(
+    user_prompt: str,
+    *,
+    new_agent: bool,
+    interaction_mode: str = "ask",
+    research_session_id: Optional[str] = None,
+) -> str:
     parts: list[str] = []
     if new_agent:
         parts.append(STRATEGY_AGENT_HINT)
     if interaction_mode == "execute":
         parts.append(EXECUTE_MODE_HINT)
+        if research_session_id:
+            parts.append(
+                f'Active AI Research session ({research_session_id}): '
+                'every new execution MUST use source_id "ai_research" and '
+                f'source_meta_id "{research_session_id}".'
+            )
+        else:
+            parts.append(
+                'Floating Strategy AI chat (no research session): '
+                'use source_id "ai_chatbot_panel" and leave source_meta_id blank.'
+            )
     else:
         parts.append(ASK_MODE_HINT)
+    parts.append(USER_FACING_RESPONSE_HINT)
     if new_agent:
         parts.append(f"User question:\n{user_prompt}")
     else:

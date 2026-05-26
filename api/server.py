@@ -7,8 +7,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
-from typing import Optional
+from pydantic import BaseModel, Field, model_validator
+from typing import Literal, Optional
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import asyncio
@@ -33,6 +33,7 @@ from control_plane.log_stream import (
     stream_engine_log_events,
 )
 from control_plane.execution_scheduler import ExecutionScheduler, parse_utc_datetime
+from control_plane.execution_sources import DEFAULT_EXECUTION_SOURCE, EXECUTION_SOURCE_AI_RESEARCH
 from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
 from event.db_event_consumer import DbEventWriter
 
@@ -193,8 +194,13 @@ class DataPlaneEngineUpdate(BaseModel):
     metadata: Optional[dict] = None
 
 
+ExecutionSourceId = Literal["user", "ai_research", "ai_chatbot_panel"]
+
+
 class ControlPlaneExecutionRequest(BaseModel):
     executor_id: Optional[str] = None
+    source_id: ExecutionSourceId = DEFAULT_EXECUTION_SOURCE
+    source_meta_id: Optional[str] = None
     broker: str = "angel"
     account_env: str = "live"
     strategy_name: str = "default"
@@ -214,6 +220,17 @@ class ControlPlaneExecutionRequest(BaseModel):
     schedule_enabled: bool = False
     scheduled_date: Optional[str] = None
     start_immediately: bool = False
+
+    @model_validator(mode="after")
+    def normalize_source_meta_id(self):
+        meta = (self.source_meta_id or "").strip() or None
+        if self.source_id == EXECUTION_SOURCE_AI_RESEARCH:
+            if not meta:
+                raise ValueError('source_meta_id is required when source_id is "ai_research"')
+            self.source_meta_id = meta
+        else:
+            self.source_meta_id = None
+        return self
 
 
 # ── Endpoints ──
@@ -522,6 +539,8 @@ def _controlled_execution_payload(req: ControlPlaneExecutionRequest) -> tuple[st
     )
     metadata = {
         "source": "controlled_execution",
+        "source_id": req.source_id,
+        "source_meta_id": req.source_meta_id,
         "executor_payload": executor_payload,
         "execution_config": req.model_dump(),
         "exchange": req.exchange,
@@ -579,10 +598,11 @@ def create_controlled_execution(req: ControlPlaneExecutionRequest):
         log.error("[CONTROL] Failed to create execution: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     log.info(
-        "[CONTROL] Created %s execution %s for %s",
+        "[CONTROL] Created %s execution %s for %s source_id=%s",
         engine.get("status") or "pending",
         execution_id,
         req.symbol,
+        req.source_id,
     )
     _register_execution_schedule(engine)
     return {
