@@ -23,6 +23,11 @@ from api.ai_research_routes import (
     strip_ai_action_blocks,
 )
 from control_plane.engine_process_manager import REPO_ROOT
+from control_plane.execution_source_links import (
+    apply_research_source_to_engine,
+    extract_execution_id_from_tool_payload,
+    tool_call_created_execution,
+)
 
 log = logging.getLogger("backtrading.cursor_agent")
 
@@ -391,6 +396,7 @@ class CursorAgentService:
                             tool_status=payload.get("tool_status"),
                             tool_detail=_tool_call_text(payload),
                         )
+                        _maybe_tag_research_execution_from_tool(research_session_id, payload)
                     if mode == "ask":
                         blocked, reason = _ask_mode_tool_blocked(payload)
                         if blocked:
@@ -711,6 +717,33 @@ def _wrap_prompt(
     else:
         parts.append(user_prompt)
     return "\n\n".join(parts)
+
+
+def _maybe_tag_research_execution_from_tool(
+    research_session_id: str,
+    payload: dict[str, Any],
+) -> None:
+    tool_status = str(payload.get("tool_status") or "").lower()
+    if tool_status not in {"completed", "complete", "success", "succeeded", "done"}:
+        return
+    if not tool_call_created_execution(payload):
+        return
+
+    execution_id = extract_execution_id_from_tool_payload(payload)
+    if not execution_id:
+        return
+
+    try:
+        from control_plane.engine_registry import EngineRegistry
+
+        registry = EngineRegistry()
+        apply_research_source_to_engine(registry, execution_id, research_session_id)
+    except Exception as exc:
+        log.warning(
+            "[CURSOR_AGENT] Failed to tag research source on %s: %s",
+            execution_id,
+            exc,
+        )
 
 
 def _control_plane_mcp_servers(interaction_mode: str) -> dict[str, Any] | None:

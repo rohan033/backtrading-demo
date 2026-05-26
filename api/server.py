@@ -22,7 +22,7 @@ from client import TotpClient
 from strategy import Strategy
 from backtesting import Backtesting
 from api.manual_robo_routes import router as manual_robo_router
-from api.ai_research_routes import router as ai_research_router
+from api.ai_research_routes import get_ai_research_store, router as ai_research_router
 from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket, router as cursor_agent_router
 from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
@@ -34,6 +34,7 @@ from control_plane.log_stream import (
 )
 from control_plane.execution_scheduler import ExecutionScheduler, parse_utc_datetime
 from control_plane.execution_sources import DEFAULT_EXECUTION_SOURCE, EXECUTION_SOURCE_AI_RESEARCH
+from control_plane.execution_source_links import ensure_research_source_on_engine
 from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
 from event.db_event_consumer import DbEventWriter
 
@@ -499,10 +500,12 @@ def _is_controlled_execution(engine: dict) -> bool:
 
 @app.get("/api/control/executions")
 def list_controlled_executions():
+    store = get_ai_research_store()
     executions = []
     for engine in engine_registry.list_engines():
         if not _is_controlled_execution(engine):
             continue
+        engine = ensure_research_source_on_engine(engine_registry, store, engine)
         metadata = engine.get("metadata") or {}
         executions.append(
             {
@@ -710,6 +713,9 @@ def get_controlled_execution(execution_id: str):
     metadata = engine.get("metadata") or {}
     if metadata.get("source") != "controlled_execution":
         raise HTTPException(status_code=400, detail="Not a controlled execution")
+
+    engine = ensure_research_source_on_engine(engine_registry, get_ai_research_store(), engine)
+    metadata = engine.get("metadata") or {}
 
     return {
         "status": True,

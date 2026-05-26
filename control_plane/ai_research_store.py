@@ -361,6 +361,64 @@ class AiResearchStore:
         actions = [item for item in (session.get("actions") or []) if item.get("id") != action_id]
         return self.update_session(session_id, {"actions": actions})
 
+    def find_research_session_for_execution(
+        self,
+        execution_id: str,
+        engine: dict[str, Any] | None = None,
+        *,
+        limit: int = 200,
+    ) -> str | None:
+        sessions = self.list_sessions(limit=limit)
+        for session in sessions:
+            session_id = str(session.get("session_id") or "")
+            if not session_id:
+                continue
+            for action in session.get("actions") or []:
+                payload = action.get("payload") or {}
+                if str(payload.get("execution_id") or "") == execution_id:
+                    return session_id
+
+        if not engine:
+            return None
+
+        metadata = engine.get("metadata") or {}
+        config = metadata.get("execution_config") or {}
+        executor = metadata.get("executor_payload") or {}
+        symbol = str(engine.get("symbol") or config.get("symbol") or "")
+        token = str(engine.get("token") or config.get("token") or "")
+        broker = str(engine.get("broker") or config.get("broker") or "")
+        try:
+            close_price = float(executor.get("close_price") or config.get("close_price") or 0)
+        except (TypeError, ValueError):
+            close_price = 0.0
+
+        if not symbol or not token or not close_price:
+            return None
+
+        for session in sessions:
+            session_id = str(session.get("session_id") or "")
+            if not session_id:
+                continue
+            for action in session.get("actions") or []:
+                payload = action.get("payload") or {}
+                if payload.get("execution_id"):
+                    continue
+                if str(payload.get("symbol") or "") != symbol:
+                    continue
+                if str(payload.get("token") or "") != token:
+                    continue
+                payload_broker = str(payload.get("broker") or "")
+                if broker and payload_broker and payload_broker != broker:
+                    continue
+                try:
+                    action_close = float(payload.get("close_price") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if abs(action_close - close_price) > 0.01:
+                    continue
+                return session_id
+        return None
+
     @staticmethod
     def _session_row(row) -> dict[str, Any]:
         data = dict(row)
