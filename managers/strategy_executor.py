@@ -1,4 +1,5 @@
 import asyncio
+import time
 from typing import Callable, Optional
 
 from logzero import logger
@@ -6,7 +7,9 @@ from managers.trading_manager import TradingManager
 from brokers.interfaces import TickData, TickListener, Subscription
 from strategies import OnePercentStrategy
 
-QUEUE_MAX_SIZE = 1000
+QUEUE_MAX_SIZE = 10
+MAX_ENTRY_FAILURES = 3
+ENTRY_COOLDOWN_SECONDS = 30.0
 
 GREEN = "\033[32m"
 RED = "\033[31m"
@@ -31,6 +34,10 @@ class StrategyExecutor(TickListener):
         self._queue: asyncio.Queue[TickData] = asyncio.Queue(maxsize=QUEUE_MAX_SIZE)
         self._consumer_task: asyncio.Task | None = None
         self._on_status_change = on_status_change
+        self._pending_entry = False
+        self._entry_failure_count = 0
+        self._entry_halted = False
+        self._entry_cooldown_until = 0.0
         self._ticks_seen = 0
 
     def set_strategy_config(self, strategy_config):
@@ -71,6 +78,9 @@ class StrategyExecutor(TickListener):
             'max_available_capital': getattr(cfg, 'max_available_capital', None) if cfg else None,
             'allow_partial_stocks': getattr(cfg, 'allow_partial_stocks', False) if cfg else False,
             'close_price': close_price,
+            'pending_entry': self._pending_entry,
+            'entry_halted': self._entry_halted,
+            'entry_failure_count': self._entry_failure_count,
             'tick_sample_every': self._tick_sample_every(),
         }
 
@@ -141,6 +151,14 @@ class StrategyExecutor(TickListener):
             return
 
         if not self.is_in_position:
+            if self._entry_halted:
+                return
+            if self._pending_entry:
+                return
+            now = time.monotonic()
+            if now < self._entry_cooldown_until:
+                return
+
             available_capital = getattr(self.strategy_config, 'max_available_capital', None)
             trade_signal = self.strategy.provide_signal(tick, available_capital=available_capital)
             if trade_signal.decision == "BUY":
@@ -154,8 +172,15 @@ class StrategyExecutor(TickListener):
                     tick.symbol, tick.ltp,
                     trade_signal.pct_change, trade_signal.threshold
                 )
-                res = await self.trading_manager.handle_signal(self.executor_id, trade_signal)
+                self._pending_entry = True
+                try:
+                    res = await self.trading_manager.handle_signal(self.executor_id, trade_signal)
+                finally:
+                    self._pending_entry = False
+
                 if res.has_executed:
+                    self._entry_failure_count = 0
+                    self._entry_cooldown_until = 0.0
                     self.is_in_position = True
                     self._set_status("POSITION_OPEN")
                     logger.info(
@@ -167,12 +192,30 @@ class StrategyExecutor(TickListener):
                         trade_signal.stop_loss_price, trade_signal.quantity
                     )
                 else:
-                    logger.warning(
-                        "%s[%s]%s %sORDER   FAILED%s  %s",
-                        CYAN, self.executor_id, RESET,
-                        BOLD + RED, RESET,
-                        res.error_message
-                    )
+                    self._entry_failure_count += 1
+                    halt = res.permanent_failure or self._entry_failure_count >= MAX_ENTRY_FAILURES
+                    if halt:
+                        self._entry_halted = True
+                        self._set_status("ENTRY_HALTED")
+                        logger.error(
+                            "%s[%s]%s %sENTRY   HALTED%s  failures=%d  code=%s  %s",
+                            CYAN, self.executor_id, RESET,
+                            BOLD + RED, RESET,
+                            self._entry_failure_count,
+                            res.error_code,
+                            res.error_message,
+                        )
+                    else:
+                        self._entry_cooldown_until = time.monotonic() + ENTRY_COOLDOWN_SECONDS
+                        logger.warning(
+                            "%s[%s]%s %sORDER   FAILED%s  %s (retry %d/%d after %.0fs)",
+                            CYAN, self.executor_id, RESET,
+                            BOLD + RED, RESET,
+                            res.error_message,
+                            self._entry_failure_count,
+                            MAX_ENTRY_FAILURES,
+                            ENTRY_COOLDOWN_SECONDS,
+                        )
             else:
                 logger.debug(
                     "%s[%s]%s %sTICK%s    %s  ltp=%.2f  chg=%+.3f%%",

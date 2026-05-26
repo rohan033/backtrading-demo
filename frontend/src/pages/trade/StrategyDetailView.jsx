@@ -135,6 +135,7 @@ function mapEventToActivity(event) {
   let type = 'info'
   if (action.includes('BUY') || (action.includes('FILLED') && !action.includes('SELL'))) type = 'buy'
   else if (action.includes('SELL') || action.includes('CLOSE') || action.includes('TAKE_PROFIT') || action.includes('STOP_LOSS')) type = 'sell'
+  else if (action.includes('PENDING')) type = 'pending'
 
   const titleParts = [action.replace(/_/g, ' ').toLowerCase()]
   if (symbol) titleParts.push(`· ${symbol}`)
@@ -189,8 +190,10 @@ function ActivityFeed({ executorId, realtimeEvents }) {
             ? { background: 'var(--sd-green-soft)', color: 'var(--sd-green)' }
             : item.type === 'sell'
               ? { background: 'var(--sd-red-soft)', color: 'var(--sd-red)' }
-              : { background: 'var(--sd-accent-soft)', color: 'var(--sd-accent)' }
-          const icon = item.type === 'buy' ? '▲' : item.type === 'sell' ? '▼' : '●'
+              : item.type === 'pending'
+                ? { background: 'rgba(251, 191, 36, 0.15)', color: '#fbbf24' }
+                : { background: 'var(--sd-accent-soft)', color: 'var(--sd-accent)' }
+          const icon = item.type === 'buy' ? '▲' : item.type === 'sell' ? '▼' : item.type === 'pending' ? '◷' : '●'
 
           return (
             <div key={`${item.title}-${index}`} className="flex gap-3 border-b border-[var(--sd-border)] py-3 last:border-b-0">

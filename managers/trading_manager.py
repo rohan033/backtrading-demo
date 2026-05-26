@@ -24,6 +24,8 @@ class OrderResult:
     order_id: Optional[str] = None
     unique_order_id: Optional[str] = None
     error_message: Optional[str] = None
+    error_code: Optional[str] = None
+    permanent_failure: bool = False
 
 
 class TradingManager:
@@ -188,10 +190,21 @@ class TradingManager:
                 unique_order_id=buy_result.get('unique_order_id')
             )
         else:
-            logger.error("%s[TM]%s %sBuy order REJECTED%s  executor=%s", MAGENTA, RESET, RED, RESET, executor_id)
+            error_message = (
+                (buy_result or {}).get("error_message")
+                or "Buy order placement failed"
+            )
+            error_code = (buy_result or {}).get("error_code")
+            permanent_failure = bool((buy_result or {}).get("permanent_failure"))
+            logger.error(
+                "%s[TM]%s %sBuy order REJECTED%s  executor=%s  code=%s  msg=%s",
+                MAGENTA, RESET, RED, RESET, executor_id, error_code, error_message,
+            )
             return OrderResult(
                 has_executed=False,
-                error_message="Buy order placement failed"
+                error_message=error_message,
+                error_code=error_code,
+                permanent_failure=permanent_failure,
             )
     
     async def _handle_sell_signal(self, executor_id: str, signal):
@@ -298,6 +311,11 @@ class TradingManager:
 
         if activity.activity_type == "tracked_order_status":
             action = map_tracked_order_status(content)
+        elif activity.activity_type in {
+            "ORDER_FILLED", "ORDER_CANCELLED", "ORDER_REJECTED",
+            "ORDER_OPEN", "ORDER_PENDING", "ORDER_MODIFIED",
+        }:
+            action = activity.activity_type
         elif raw.get("type") == "portfolio_status_update" or activity.source == "websocket":
             action = map_websocket_update(event_type, content)
         else:
@@ -316,7 +334,10 @@ class TradingManager:
             )
             return
 
-        dedupe_key = f"{order_id or position_id}:{action}:{activity.status}:{event_type}"
+        if action in {"ORDER_OPEN", "ORDER_PENDING", "ORDER_FILLED", "ORDER_CANCELLED", "ORDER_REJECTED"}:
+            dedupe_key = f"{order_id or position_id}:{action}"
+        else:
+            dedupe_key = f"{order_id or position_id}:{action}:{activity.status}:{event_type}"
         if dedupe_key in self._emitted_activity_keys:
             return
         self._emitted_activity_keys.add(dedupe_key)

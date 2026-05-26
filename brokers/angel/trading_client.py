@@ -1,6 +1,32 @@
+import asyncio
+from typing import Any
+
 from brokers.angel.client import AngelClient
 from brokers.interfaces import TickClient, Subscription, LTPData
 from logzero import logger
+
+# Angel rejects that will not succeed on retry — halt entry instead of spamming orders.
+PERMANENT_ANGEL_ORDER_ERROR_CODES = frozenset({
+    "AB4036",  # cautionary / exchange-restricted listing
+})
+
+
+def parse_angel_order_response(res: dict[str, Any] | None) -> dict[str, Any]:
+    if res and res.get("status"):
+        data = res.get("data") or {}
+        return {
+            "order_id": data.get("orderid"),
+            "unique_order_id": data.get("uniqueorderid"),
+        }
+
+    error_code = str((res or {}).get("errorcode") or "").strip()
+    error_message = str((res or {}).get("message") or "Order placement failed").strip()
+    return {
+        "error_code": error_code or None,
+        "error_message": error_message,
+        "permanent_failure": error_code in PERMANENT_ANGEL_ORDER_ERROR_CODES,
+    }
+
 
 class AngelOneTradingClient(AngelClient, TickClient):
     def __init__(self):
@@ -54,7 +80,7 @@ class AngelOneTradingClient(AngelClient, TickClient):
         quantity = int(available_capital / ltp)
         if quantity < 1:
             logger.warning("Capital %.2f too low for LTP=%.2f", available_capital, ltp)
-            return
+            return {"error_message": "Quantity below 1"}
         logger.info("Calculated qty=%d (capital=%.0f / ltp=%.2f)", quantity, available_capital, ltp)
 
         buy_params = {
@@ -71,21 +97,15 @@ class AngelOneTradingClient(AngelClient, TickClient):
         }
 
         try:
-            res = await self._client.placeOrderFullResponse(buy_params)
-            if res and res.get("status"):
-                data = res.get("data", {})
-                order_id = data.get("orderid")
-                unique_order_id = data.get("uniqueorderid")
-                return {
-                    "order_id": order_id,
-                    "unique_order_id": unique_order_id
-                }
-            else:
-                logger.error("Entry order FAILED: %s", res)
-                return {}
+            res = await asyncio.to_thread(self._client.placeOrderFullResponse, buy_params)
+            parsed = parse_angel_order_response(res)
+            if parsed.get("order_id"):
+                return parsed
+            logger.error("Entry order FAILED: %s", res)
+            return parsed
         except Exception as e:
             logger.error("Exception placing entry order: %s", e)
-            return {}
+            return {"error_message": str(e)}
 
     async def asell(self,
             ltp,
@@ -116,15 +136,12 @@ class AngelOneTradingClient(AngelClient, TickClient):
             sell_params["price"] = str(ltp)
 
         try:
-            res = await self._client.placeOrderFullResponse(sell_params)
-            if res and res.get("status"):
-                data = res.get("data", {})
-                return {
-                    "order_id": data.get("orderid"),
-                    "unique_order_id": data.get("uniqueorderid")
-                }
+            res = await asyncio.to_thread(self._client.placeOrderFullResponse, sell_params)
+            parsed = parse_angel_order_response(res)
+            if parsed.get("order_id"):
+                return parsed
             logger.error("Exit order FAILED: %s", res)
-            return {}
+            return parsed
         except Exception as e:
             logger.error("Exception placing exit order: %s", e)
-            return {}
+            return {"error_message": str(e)}
