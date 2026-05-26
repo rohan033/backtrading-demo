@@ -127,8 +127,9 @@ WEB_SEARCH_ENABLED_HINT = """Web search is ENABLED for this message.
 
 For stock / market analysis, earnings, news, sector context, or any question that depends on current or recent public information:
 - Prefer the websearch and webfetch tools before guessing from memory.
-- Cite sources briefly in trader-facing language (e.g. "NSE / exchange data", "recent news") without naming internal tools.
-- Combine web findings with repo/control-plane data when both are relevant."""
+- Treat an internet check as mandatory: use websearch/webfetch to verify claims, levels, news, and market context before answering.
+- Combine web findings with repo/control-plane data when both are relevant.
+- End every reply that used web search with a short **Sources** section listing the sites or publications consulted (trader-facing labels and URLs when available). Do not name internal tools in the reply."""
 
 WEB_SEARCH_DISABLED_HINT = """Web search is DISABLED for this message.
 

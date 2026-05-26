@@ -7,6 +7,7 @@ import {
   type AiResearchSession,
 } from '../../lib/aiResearch'
 import { formatDbTimestamp } from '../../lib/datetime'
+import './ai-research.css'
 
 export function AiResearchListPage() {
   const navigate = useNavigate()
@@ -46,11 +47,11 @@ export function AiResearchListPage() {
   }
 
   return (
-    <div className="h-full overflow-auto p-6">
+    <div className="ai-research-ui h-full overflow-auto p-6">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-lg font-bold">AI Research</h1>
-          <p className="mt-1 text-sm text-text-secondary">
+          <h1 className="text-xl font-semibold tracking-tight">AI Research</h1>
+          <p className="mt-1 text-sm font-normal leading-relaxed text-text-secondary">
             Persisted research sessions with strategy suggestions and interactive deploy actions.
           </p>
         </div>
@@ -58,7 +59,7 @@ export function AiResearchListPage() {
           type="button"
           onClick={startSession}
           disabled={creating}
-          className="rounded-md bg-accent px-4 py-2 text-[11px] font-bold text-white disabled:opacity-50"
+          className="rounded-md bg-accent px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
         >
           {creating ? 'Starting…' : 'New session'}
         </button>
@@ -73,14 +74,14 @@ export function AiResearchListPage() {
           Loading sessions…
         </div>
       ) : sessions.length ? (
-        <div className="overflow-hidden rounded-lg border border-border bg-card">
-          <table className="w-full border-collapse text-xs">
+        <div className="overflow-hidden rounded-lg border border-border bg-card text-sm">
+          <table className="w-full border-collapse">
             <thead>
               <tr className="bg-black/15 text-left">
-                <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">Session</th>
-                <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">Mode</th>
-                <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">Actions</th>
-                <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">Updated</th>
+                <th className="px-3.5 py-2.5 text-[10px] font-medium uppercase tracking-wider text-text-secondary">Session</th>
+                <th className="px-3.5 py-2.5 text-[10px] font-medium uppercase tracking-wider text-text-secondary">Mode</th>
+                <th className="px-3.5 py-2.5 text-[10px] font-medium uppercase tracking-wider text-text-secondary">Actions</th>
+                <th className="px-3.5 py-2.5 text-[10px] font-medium uppercase tracking-wider text-text-secondary">Updated</th>
               </tr>
             </thead>
             <tbody>
@@ -89,7 +90,7 @@ export function AiResearchListPage() {
                   <td className="px-3.5 py-2.5">
                     <Link
                       to={`/learn/research/${encodeURIComponent(session.session_id)}`}
-                      className="font-semibold text-accent hover:underline"
+                      className="font-medium text-accent hover:underline"
                     >
                       {session.title}
                     </Link>

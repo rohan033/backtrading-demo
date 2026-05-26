@@ -26,7 +26,7 @@ from api.ai_research_routes import get_ai_research_store, router as ai_research_
 from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket, router as cursor_agent_router
 from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
-from control_plane.ops_logging import configure_control_plane_logging
+from control_plane.ops_logging import configure_control_plane_logging, quiet_uvicorn_poll_access_logs
 from control_plane.log_stream import (
     resolve_engine_log_path,
     sse_encode,
@@ -239,6 +239,7 @@ class ControlPlaneExecutionRequest(BaseModel):
 @asynccontextmanager
 async def control_plane_lifespan(_app: FastAPI):
     global _engine_sweeper_task, execution_scheduler
+    quiet_uvicorn_poll_access_logs()
     _engine_sweeper_task = asyncio.create_task(_mark_stale_engines_loop())
     execution_scheduler = ExecutionScheduler(start_controlled_execution)
     execution_scheduler.start()

@@ -1,11 +1,34 @@
 import logging
 import os
+import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONTROL_LOG_DIR = REPO_ROOT / "logs" / "control-plane"
 DEFAULT_LIVE_LOG_DIR = REPO_ROOT / "logs" / "executions"
+
+# Frontend poll endpoints (list refreshes) — noisy at INFO in uvicorn access logs.
+_QUIET_POLL_GET_RE = re.compile(
+    r'"GET /api/control/(?:engines|executions)(?:\?[^ ]*)? HTTP/',
+    re.IGNORECASE,
+)
+
+
+class UvicornAccessPollFilter(logging.Filter):
+    """Drop uvicorn access lines for high-frequency control-plane list GETs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if os.getenv("CONTROL_PLANE_LOG_POLL_GETS", "").strip().lower() in {"1", "true", "yes", "on"}:
+            return True
+        return _QUIET_POLL_GET_RE.search(record.getMessage()) is None
+
+
+def quiet_uvicorn_poll_access_logs() -> None:
+    access_logger = logging.getLogger("uvicorn.access")
+    if any(isinstance(item, UvicornAccessPollFilter) for item in access_logger.filters):
+        return
+    access_logger.addFilter(UvicornAccessPollFilter())
 
 
 def _log_formatter() -> logging.Formatter:
@@ -54,6 +77,8 @@ def configure_control_plane_logging(
         file_handler.setLevel(logging.INFO)
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
+
+    quiet_uvicorn_poll_access_logs()
 
     logging.getLogger("backtrading").info("[CONTROL] File logging enabled path=%s", log_path)
     return log_path

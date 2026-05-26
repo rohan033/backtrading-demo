@@ -9,6 +9,7 @@ import {
   upsertResearchAction,
 } from '../lib/aiResearch'
 import { EXECUTION_SOURCE_AI_RESEARCH } from '../lib/executionSources'
+import '../pages/learn/ai-research.css'
 
 const CONTROL_API = '/api/control'
 
@@ -307,11 +308,11 @@ export default function AiResearchActionsPanel({
   const actions = useMemo(() => session.actions || [], [session.actions])
 
   return (
-    <aside className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-border bg-secondary shadow-2xl">
+    <aside className="ai-research-ui fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-border bg-secondary shadow-2xl">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <div>
-          <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-accent">Research actions</div>
-          <div className="mt-0.5 text-sm font-semibold">{session.title}</div>
+          <div className="text-[10px] font-medium uppercase tracking-wider text-accent">Research actions</div>
+          <div className="mt-0.5 text-sm font-medium tracking-tight">{session.title}</div>
         </div>
         {onClose ? (
           <button type="button" onClick={onClose} className="rounded p-1 text-text-secondary hover:text-text-primary">

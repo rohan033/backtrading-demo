@@ -18,10 +18,11 @@ import {
   type AgentInteractionMode,
   type ChatMessage,
 } from '../../lib/useCursorAgentChat'
+import './ai-research.css'
 
 function AiTextMark() {
   return (
-    <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-violet-500/30 to-sky-400/30 text-[10px] font-black tracking-tight text-white ring-1 ring-white/10">
+    <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-violet-500/30 to-sky-400/30 text-[10px] font-semibold tracking-tight text-white ring-1 ring-white/10">
       AI
     </span>
   )
@@ -35,6 +36,7 @@ export function AiResearchSessionPage() {
   const [draft, setDraft] = useState('')
   const [interactionMode, setInteractionMode] = useState<AgentInteractionMode>('ask')
   const [webSearchEnabled, setWebSearchEnabled] = useState(true)
+  const [editingTitle, setEditingTitle] = useState(false)
   const [actionsOpen, setActionsOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
   const [hasMoreOlder, setHasMoreOlder] = useState(false)
@@ -42,6 +44,13 @@ export function AiResearchSessionPage() {
   const [oldestMessageId, setOldestMessageId] = useState<string | null>(null)
   const chatListRef = useRef<ChatMessageListHandle>(null)
   const statsRef = useRef<HTMLDivElement>(null)
+  const titleRef = useRef<HTMLTextAreaElement>(null)
+
+  const resizeTitleField = useCallback((el: HTMLTextAreaElement | null) => {
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [])
 
   const toChatRows = useCallback(
     (rows: Awaited<ReturnType<typeof listResearchMessages>>['messages']) =>
@@ -146,6 +155,14 @@ export function AiResearchSessionPage() {
   }, [sessionId, hydrateMessages, resetAgent, toChatRows])
 
   useEffect(() => {
+    if (editingTitle) {
+      resizeTitleField(titleRef.current)
+      titleRef.current?.focus()
+      titleRef.current?.select()
+    }
+  }, [editingTitle, session?.title, resizeTitleField])
+
+  useEffect(() => {
     if (!statsOpen) return
     const onPointerDown = (event: MouseEvent) => {
       if (!statsRef.current?.contains(event.target as Node)) {
@@ -172,6 +189,7 @@ export function AiResearchSessionPage() {
     if (!sessionId) return
     const next = await updateResearchSession(sessionId, { title })
     setSession(next)
+    setEditingTitle(false)
   }
 
   const toggleWebSearch = async (enabled: boolean) => {
@@ -206,62 +224,92 @@ export function AiResearchSessionPage() {
   const actionCount = session.actions?.length ?? 0
 
   return (
-    <div className="relative flex h-full min-h-0">
+    <div className="ai-research-ui relative flex h-full min-h-0">
       <div className={`flex min-w-0 flex-1 flex-col ${actionsOpen ? 'mr-[28rem]' : ''}`}>
         <div className="border-b border-border px-5 py-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <div className="flex items-start gap-3">
+            <div className="flex min-w-0 flex-1 items-start gap-3">
               <AiTextMark />
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <Link to="/learn/research" className="text-[11px] text-accent hover:underline">← AI Research</Link>
-                <div className="mt-1 flex items-center gap-2">
-                  <input
+                {editingTitle ? (
+                  <textarea
+                    ref={titleRef}
                     key={session.title}
                     defaultValue={session.title}
+                    rows={1}
+                    aria-label="Session title"
+                    onInput={e => resizeTitleField(e.currentTarget)}
                     onBlur={e => {
                       const value = e.target.value.trim()
-                      if (value && value !== session.title) saveTitle(value)
+                      if (value && value !== session.title) {
+                        void saveTitle(value)
+                      } else {
+                        setEditingTitle(false)
+                        resizeTitleField(e.currentTarget)
+                      }
                     }}
-                    className="block min-w-0 flex-1 bg-transparent text-lg font-bold text-text-primary outline-none"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        e.currentTarget.blur()
+                      }
+                      if (e.key === 'Escape') {
+                        e.preventDefault()
+                        setEditingTitle(false)
+                      }
+                    }}
+                    className="mt-1 block w-full resize-none overflow-hidden bg-transparent text-lg font-semibold leading-snug tracking-tight text-text-primary outline-none"
                   />
-                  <div className="relative" ref={statsRef}>
-                    <button
-                      type="button"
-                      title="Session info"
-                      aria-label="Session info"
-                      onClick={() => setStatsOpen(open => !open)}
-                      className="rounded-lg border border-border/70 bg-card/70 p-1.5 text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
-                    >
-                      <Info className="h-4 w-4" />
-                    </button>
-                    {statsOpen ? (
-                      <div className="absolute left-0 top-full z-30 mt-2 w-72 rounded-lg border border-border bg-card p-3 text-xs shadow-xl">
-                        <div className="mb-2 text-[10px] font-bold uppercase tracking-wide text-accent">Session info</div>
-                        <dl className="space-y-2 text-text-secondary">
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setEditingTitle(true)}
+                    title="Click to edit title"
+                    className="mt-1 block w-full text-left text-lg font-semibold leading-snug tracking-tight text-text-primary ai-research-session-title"
+                  >
+                    <span className="whitespace-pre-wrap">{session.title}</span>
+                  </button>
+                )}
+                <div className="relative mt-2" ref={statsRef}>
+                  <button
+                    type="button"
+                    title="Session info"
+                    aria-label="Session info"
+                    aria-expanded={statsOpen}
+                    onClick={() => setStatsOpen(open => !open)}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border/70 bg-card/70 px-2 py-1.5 text-xs text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
+                  >
+                    <Info className="h-4 w-4" />
+                    Session info
+                  </button>
+                  {statsOpen ? (
+                    <div className="absolute left-0 top-full z-30 mt-2 w-72 rounded-lg border border-border bg-card p-3 text-xs shadow-xl">
+                      <div className="mb-2 text-[10px] font-medium uppercase tracking-wider text-accent">Session info</div>
+                      <dl className="space-y-2 text-text-secondary">
+                        <div>
+                          <dt className="text-[10px] uppercase tracking-wide">Session ID</dt>
+                          <dd className="mt-0.5 break-all font-mono text-[11px] text-text-primary">{session.session_id}</dd>
+                        </div>
+                        <div>
+                          <dt className="text-[10px] uppercase tracking-wide">Updated</dt>
+                          <dd className="mt-0.5 text-text-primary">
+                            {formatDbTimestamp(session.last_message_at || session.updated_at)}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="text-[10px] uppercase tracking-wide">Actions</dt>
+                          <dd className="mt-0.5 text-text-primary">{actionCount}</dd>
+                        </div>
+                        {session.summary ? (
                           <div>
-                            <dt className="text-[10px] uppercase tracking-wide">Session ID</dt>
-                            <dd className="mt-0.5 break-all font-mono text-[11px] text-text-primary">{session.session_id}</dd>
+                            <dt className="text-[10px] uppercase tracking-wide">Summary</dt>
+                            <dd className="mt-0.5 whitespace-pre-wrap text-text-primary">{session.summary}</dd>
                           </div>
-                          <div>
-                            <dt className="text-[10px] uppercase tracking-wide">Updated</dt>
-                            <dd className="mt-0.5 text-text-primary">
-                              {formatDbTimestamp(session.last_message_at || session.updated_at)}
-                            </dd>
-                          </div>
-                          <div>
-                            <dt className="text-[10px] uppercase tracking-wide">Actions</dt>
-                            <dd className="mt-0.5 text-text-primary">{actionCount}</dd>
-                          </div>
-                          {session.summary ? (
-                            <div>
-                              <dt className="text-[10px] uppercase tracking-wide">Summary</dt>
-                              <dd className="mt-0.5 whitespace-pre-wrap text-text-primary">{session.summary}</dd>
-                            </div>
-                          ) : null}
-                        </dl>
-                      </div>
-                    ) : null}
-                  </div>
+                        ) : null}
+                      </dl>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -284,7 +332,7 @@ export function AiResearchSessionPage() {
           }
         />
 
-        <div className="border-t border-border/80 bg-primary/30 px-5 py-4 font-sans">
+        <div className="border-t border-border/80 bg-primary/30 px-5 py-4">
           <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-2">
               <div

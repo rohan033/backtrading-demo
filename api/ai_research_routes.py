@@ -59,7 +59,15 @@ class AppendMessageRequest(BaseModel):
 
 @router.get("/sessions")
 def list_research_sessions(status: Optional[str] = None, limit: int = 100):
-    sessions = get_ai_research_store().list_sessions(status=status, limit=limit)
+    store = get_ai_research_store()
+    sessions = store.list_sessions(status=status, limit=limit)
+    for index, session in enumerate(sessions):
+        title = str(session.get("title") or "")
+        if title.endswith("…") or title in ("", "New research"):
+            enrich_session_metadata(store, session["session_id"])
+            updated = store.get_session(session["session_id"])
+            if updated:
+                sessions[index] = updated
     return {"status": True, "data": sessions}
 
 
@@ -143,13 +151,30 @@ def delete_research_action(session_id: str, action_id: str):
 _AI_ACTION_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", re.IGNORECASE)
 
 
-def derive_session_title(text: str, *, max_len: int = 72) -> str:
+def derive_session_title(text: str, *, max_len: int = 240) -> str:
     cleaned = " ".join(text.strip().split())
     if not cleaned:
         return "New research"
     if len(cleaned) <= max_len:
         return cleaned
     return cleaned[: max_len - 1].rstrip() + "…"
+
+
+def _first_user_message_content(store: AiResearchStore, session_id: str) -> str | None:
+    conn = store._connect()
+    row = conn.execute(
+        """
+        SELECT content FROM ai_research_messages
+        WHERE session_id = ? AND role = 'user'
+        ORDER BY created_at ASC
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    conn.close()
+    if not row or not row["content"]:
+        return None
+    return str(row["content"])
 
 
 def derive_research_summary(text: str, *, max_len: int = 320) -> str:
@@ -170,20 +195,15 @@ def enrich_session_metadata(store: AiResearchStore, session_id: str) -> None:
         return
 
     patch: dict[str, Any] = {}
-    if session.get("title") in (None, "", "New research"):
-        conn = store._connect()
-        row = conn.execute(
-            """
-            SELECT content FROM ai_research_messages
-            WHERE session_id = ? AND role = 'user'
-            ORDER BY created_at ASC
-            LIMIT 1
-            """,
-            (session_id,),
-        ).fetchone()
-        conn.close()
-        if row and row["content"]:
-            patch["title"] = derive_session_title(row["content"])
+    first_message = _first_user_message_content(store, session_id)
+    current_title = str(session.get("title") or "").strip()
+    if first_message:
+        needs_title = current_title in ("", "New research")
+        looks_truncated = current_title.endswith("…")
+        if needs_title or looks_truncated:
+            next_title = derive_session_title(first_message)
+            if next_title and next_title != current_title:
+                patch["title"] = next_title
 
     if not session.get("summary"):
         conn = store._connect()

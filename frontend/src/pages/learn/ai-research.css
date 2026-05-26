@@ -1,0 +1,17 @@
+.ai-research-ui {
+  font-family: Inter, 'Segoe UI', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.011em;
+}
+
+.ai-research-ui input,
+.ai-research-ui textarea,
+.ai-research-ui button {
+  font-family: inherit;
+}
+
+.ai-research-session-title {
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
