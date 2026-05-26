@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Info } from 'lucide-react'
+import { Info, Globe } from 'lucide-react'
 
 import AiResearchActionsPanel, { ActionsToggleButton } from '../../components/AiResearchActionsPanel'
 import { ChatMessageList, type ChatMessageListHandle } from '../../components/ui/chat-message-list'
@@ -34,6 +34,7 @@ export function AiResearchSessionPage() {
   const [error, setError] = useState('')
   const [draft, setDraft] = useState('')
   const [interactionMode, setInteractionMode] = useState<AgentInteractionMode>('ask')
+  const [webSearchEnabled, setWebSearchEnabled] = useState(true)
   const [actionsOpen, setActionsOpen] = useState(false)
   const [statsOpen, setStatsOpen] = useState(false)
   const [hasMoreOlder, setHasMoreOlder] = useState(false)
@@ -66,7 +67,7 @@ export function AiResearchSessionPage() {
     resetAgent,
   } = useCursorAgentChat(true, interactionMode, sessionId, () => {
     void onSessionUpdatedRef.current()
-  })
+  }, webSearchEnabled)
 
   const reloadMessages = useCallback(async () => {
     if (!sessionId) return
@@ -82,6 +83,7 @@ export function AiResearchSessionPage() {
     const next = await getResearchSession(sessionId)
     setSession(next)
     setInteractionMode(next.interaction_mode || 'ask')
+    setWebSearchEnabled(next.metadata?.web_search_enabled !== false)
     await reloadMessages()
   }, [reloadMessages, sessionId])
 
@@ -124,6 +126,7 @@ export function AiResearchSessionPage() {
         if (cancelled) return
         setSession(nextSession)
         setInteractionMode(nextSession.interaction_mode || 'ask')
+        setWebSearchEnabled(nextSession.metadata?.web_search_enabled !== false)
         setHasMoreOlder(page.has_more)
         setOldestMessageId(page.oldest_id)
         resetAgent(nextSession.cursor_agent_id || null)
@@ -169,6 +172,18 @@ export function AiResearchSessionPage() {
     if (!sessionId) return
     const next = await updateResearchSession(sessionId, { title })
     setSession(next)
+  }
+
+  const toggleWebSearch = async (enabled: boolean) => {
+    setWebSearchEnabled(enabled)
+    if (!sessionId) return
+    const metadata = { ...(session?.metadata || {}), web_search_enabled: enabled }
+    try {
+      const next = await updateResearchSession(sessionId, { metadata })
+      setSession(next)
+    } catch {
+      // keep local toggle; backend will persist on next chat send
+    }
   }
 
   if (loading) {
@@ -270,29 +285,51 @@ export function AiResearchSessionPage() {
         />
 
         <div className="border-t border-border/80 bg-primary/30 px-5 py-4 font-sans">
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <div
-              className="inline-flex rounded-lg border border-border/60 bg-primary/50 p-0.5"
-              role="group"
-              aria-label="Agent interaction mode"
-            >
-              {(['ask', 'execute'] as const).map(mode => (
-                <button
-                  key={mode}
-                  type="button"
-                  aria-pressed={interactionMode === mode}
-                  onClick={() => setInteractionMode(mode)}
-                  className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
-                    interactionMode === mode
-                      ? mode === 'execute'
-                        ? 'bg-amber-500/20 text-amber-200'
-                        : 'bg-card text-text-primary shadow-sm'
-                      : 'text-text-secondary hover:text-text-primary'
-                  }`}
-                >
-                  {mode}
-                </button>
-              ))}
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <div
+                className="inline-flex rounded-lg border border-border/60 bg-primary/50 p-0.5"
+                role="group"
+                aria-label="Agent interaction mode"
+              >
+                {(['ask', 'execute'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={interactionMode === mode}
+                    onClick={() => setInteractionMode(mode)}
+                    className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
+                      interactionMode === mode
+                        ? mode === 'execute'
+                          ? 'bg-amber-500/20 text-amber-200'
+                          : 'bg-card text-text-primary shadow-sm'
+                        : 'text-text-secondary hover:text-text-primary'
+                    }`}
+                  >
+                    {mode}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                disabled={sending}
+                aria-pressed={webSearchEnabled}
+                aria-label="Toggle web search for stock analysis"
+                title={
+                  webSearchEnabled
+                    ? 'Web search on — agent can look up live market data'
+                    : 'Web search off — answers use repo and saved data only'
+                }
+                onClick={() => void toggleWebSearch(!webSearchEnabled)}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                  webSearchEnabled
+                    ? 'border-sky-400/40 bg-sky-500/15 text-sky-200'
+                    : 'border-border/60 bg-primary/50 text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                <Globe className="h-3.5 w-3.5" />
+                Web search
+              </button>
             </div>
             <span className="text-[11px] text-text-secondary">{statusText}</span>
           </div>

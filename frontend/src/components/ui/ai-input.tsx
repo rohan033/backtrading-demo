@@ -1,6 +1,6 @@
 import React from 'react'
 import { AnimatePresence, motion } from 'motion/react'
-import { GripHorizontal, Maximize2, Minimize2, Send, Sparkles, Square, X } from 'lucide-react'
+import { GripHorizontal, Globe, Maximize2, Minimize2, Send, Sparkles, Square, X } from 'lucide-react'
 
 import { AI_WORKFLOWS } from '@/lib/ai-workflows'
 import { ChatMessageList, type ChatMessageListHandle } from '@/components/ui/chat-message-list'
@@ -55,6 +55,8 @@ export type MorphPanelProps = {
   onStop?: () => void
   interactionMode?: AgentInteractionMode
   onInteractionModeChange?: (mode: AgentInteractionMode) => void
+  webSearchEnabled?: boolean
+  onWebSearchEnabledChange?: (enabled: boolean) => void
   sending?: boolean
   connected?: boolean
   statusText?: string
@@ -69,6 +71,8 @@ export function MorphPanel({
   onStop,
   interactionMode = 'ask',
   onInteractionModeChange,
+  webSearchEnabled = true,
+  onWebSearchEnabledChange,
   sending = false,
   connected = false,
   statusText = 'Connecting…',
@@ -371,36 +375,63 @@ export function MorphPanel({
                   ))}
                 </div>
               </div>
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <div
-                  className="inline-flex rounded-lg border border-border/60 bg-primary/50 p-0.5"
-                  role="group"
-                  aria-label="Agent interaction mode"
-                >
-                  {(['ask', 'execute'] as const).map(mode => (
-                    <button
-                      key={mode}
-                      type="button"
-                      disabled={sending}
-                      aria-pressed={interactionMode === mode}
-                      onClick={() => onInteractionModeChange?.(mode)}
-                      className={cn(
-                        'rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                        interactionMode === mode
-                          ? mode === 'execute'
-                            ? 'bg-amber-500/20 text-amber-200'
-                            : 'bg-card text-text-primary shadow-sm'
-                          : 'text-text-secondary hover:text-text-primary',
-                      )}
-                    >
-                      {mode}
-                    </button>
-                  ))}
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div
+                    className="inline-flex rounded-lg border border-border/60 bg-primary/50 p-0.5"
+                    role="group"
+                    aria-label="Agent interaction mode"
+                  >
+                    {(['ask', 'execute'] as const).map(mode => (
+                      <button
+                        key={mode}
+                        type="button"
+                        disabled={sending}
+                        aria-pressed={interactionMode === mode}
+                        onClick={() => onInteractionModeChange?.(mode)}
+                        className={cn(
+                          'rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                          interactionMode === mode
+                            ? mode === 'execute'
+                              ? 'bg-amber-500/20 text-amber-200'
+                              : 'bg-card text-text-primary shadow-sm'
+                            : 'text-text-secondary hover:text-text-primary',
+                        )}
+                      >
+                        {mode}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    disabled={sending}
+                    aria-pressed={webSearchEnabled}
+                    aria-label="Toggle web search for stock analysis"
+                    title={
+                      webSearchEnabled
+                        ? 'Web search on — agent can look up live market data'
+                        : 'Web search off — answers use repo and saved data only'
+                    }
+                    onClick={() => onWebSearchEnabledChange?.(!webSearchEnabled)}
+                    className={cn(
+                      'inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+                      webSearchEnabled
+                        ? 'border-sky-400/40 bg-sky-500/15 text-sky-200'
+                        : 'border-border/60 bg-primary/50 text-text-secondary hover:text-text-primary',
+                    )}
+                  >
+                    <Globe className="h-3.5 w-3.5" />
+                    Web search
+                  </button>
                 </div>
                 <span className="text-[11px] text-text-secondary">
                   {interactionMode === 'ask'
-                    ? 'Read-only · no control plane changes'
-                    : 'Can edit, run tools & control plane'}
+                    ? webSearchEnabled
+                      ? 'Read-only · web search for market data'
+                      : 'Read-only · no control plane changes'
+                    : webSearchEnabled
+                      ? 'Can edit, run tools & control plane · web search on'
+                      : 'Can edit, run tools & control plane'}
                 </span>
               </div>
               <div className="flex items-end gap-2">

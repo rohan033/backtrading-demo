@@ -101,6 +101,13 @@ When creating strategy executions via POST /api/control/executions, always inclu
 VALID_INTERACTION_MODES = frozenset({"ask", "execute"})
 CONTROL_PLANE_MCP_SERVER = "backtrading-control-plane"
 
+WEB_SEARCH_TOOL_NAMES = frozenset({
+    "websearch",
+    "webfetch",
+    "web_search",
+    "web_fetch",
+})
+
 ASK_READ_ONLY_TOOL_NAMES = frozenset({
     "read",
     "grep",
@@ -109,13 +116,23 @@ ASK_READ_ONLY_TOOL_NAMES = frozenset({
     "codebase_search",
     "semanticsearch",
     "list_dir",
-    "websearch",
-    "webfetch",
+    *WEB_SEARCH_TOOL_NAMES,
     "read_file",
     "readfile",
     "list_mcp_resources",
     "fetch_mcp_resource",
 })
+
+WEB_SEARCH_ENABLED_HINT = """Web search is ENABLED for this message.
+
+For stock / market analysis, earnings, news, sector context, or any question that depends on current or recent public information:
+- Prefer the websearch and webfetch tools before guessing from memory.
+- Cite sources briefly in trader-facing language (e.g. "NSE / exchange data", "recent news") without naming internal tools.
+- Combine web findings with repo/control-plane data when both are relevant."""
+
+WEB_SEARCH_DISABLED_HINT = """Web search is DISABLED for this message.
+
+Do not use websearch or webfetch. Answer from repo context, control-plane data, and general knowledge only. If live market data is required, tell the user to enable the Web search toggle."""
 
 ASK_BLOCKED_TOOL_NAMES = frozenset({
     "shell",
@@ -139,6 +156,8 @@ CONTROL_PLANE_MUTATION_RE = re.compile(
             r"/api/control/engines",
             r"engine_process_manager",
             r"stop_all_controlled_executions",
+            r"unschedule_all_controlled_executions",
+            r"unschedule_controlled_execution",
             r"stop_controlled_execution",
             r"stop_engine",
             r"start_controlled_execution",
@@ -148,8 +167,8 @@ CONTROL_PLANE_MUTATION_RE = re.compile(
             r"engine_registry\.(upsert|update|delete)",
             r"make\s+(dev|cp)\b",
             r"uvicorn.*api\.(server|live_server)",
-            r"executions/[^\s/]+/(start|stop)",
-            r"executions/stop-all",
+            r"executions/[^\s/]+/(start|stop|unschedule)",
+            r"executions/(stop-all|bulk/unschedule)",
             r"deploy\s+live",
             r"stop\s+all\s+running",
         ]
@@ -261,6 +280,7 @@ class CursorAgentService:
         prompt: str,
         agent_id: Optional[str],
         interaction_mode: str = "ask",
+        web_search_enabled: bool = True,
         research_session_id: Optional[str] = None,
         ws: WebSocket | None = None,
         cancel_event: asyncio.Event | None = None,
@@ -304,6 +324,10 @@ class CursorAgentService:
                 )
             if mode != session.get("interaction_mode"):
                 store.update_session(research_session_id, {"interaction_mode": mode})
+            session_metadata = dict(session.get("metadata") or {})
+            if session_metadata.get("web_search_enabled") != web_search_enabled:
+                session_metadata["web_search_enabled"] = web_search_enabled
+                store.update_session(research_session_id, {"metadata": session_metadata})
 
         client = await self._require_client()
         created_new_agent = not agent_id
@@ -328,6 +352,7 @@ class CursorAgentService:
             user_prompt,
             new_agent=created_new_agent,
             interaction_mode=mode,
+            web_search_enabled=web_search_enabled,
             research_session_id=research_session_id,
         )
         run = None
@@ -354,6 +379,7 @@ class CursorAgentService:
                 "run_id": run.id,
                 "model": self.model(),
                 "interaction_mode": mode,
+                "web_search_enabled": web_search_enabled,
                 "research_session_id": research_session_id,
             }
             if store and research_session_id:
@@ -397,19 +423,22 @@ class CursorAgentService:
                             tool_detail=_tool_call_text(payload),
                         )
                         _maybe_tag_research_execution_from_tool(research_session_id, payload)
-                    if mode == "ask":
-                        blocked, reason = _ask_mode_tool_blocked(payload)
-                        if blocked:
-                            if run.supports("cancel"):
-                                await run.cancel()
-                            yield {
-                                "type": "error",
-                                "phase": "guardrail",
-                                "agent_id": agent.agent_id,
-                                "run_id": run.id,
-                                "message": reason,
-                            }
-                            return
+                    blocked, reason = _tool_call_blocked(
+                        payload,
+                        interaction_mode=mode,
+                        web_search_enabled=web_search_enabled,
+                    )
+                    if blocked:
+                        if run.supports("cancel"):
+                            await run.cancel()
+                        yield {
+                            "type": "error",
+                            "phase": "guardrail",
+                            "agent_id": agent.agent_id,
+                            "run_id": run.id,
+                            "message": reason,
+                        }
+                        return
                     yield {"type": "tool_call", **payload}
                 elif message_type == "status":
                     yield {"type": "status", **payload}
@@ -568,6 +597,7 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
         prompt: str,
         agent_id: Optional[str],
         interaction_mode: str,
+        web_search_enabled: bool,
         research_session_id: Optional[str] = None,
     ) -> None:
         cancel_event.clear()
@@ -576,6 +606,7 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
                 prompt=prompt,
                 agent_id=agent_id,
                 interaction_mode=interaction_mode,
+                web_search_enabled=web_search_enabled,
                 research_session_id=research_session_id,
                 ws=ws,
                 cancel_event=cancel_event,
@@ -651,6 +682,12 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
             if research_session_id is not None:
                 research_session_id = str(research_session_id).strip() or None
 
+            web_search_enabled = msg.get("web_search_enabled", True)
+            if isinstance(web_search_enabled, str):
+                web_search_enabled = web_search_enabled.strip().lower() not in {"0", "false", "no", "off"}
+            else:
+                web_search_enabled = bool(web_search_enabled)
+
             if chat_task is not None and not chat_task.done():
                 cancel_event.set()
                 run = active_run.get("run")
@@ -664,14 +701,15 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
                 chat_task = None
 
             log.info(
-                "[CURSOR_AGENT_WS] chat agent_id=%s session=%s mode=%s prompt_len=%d",
+                "[CURSOR_AGENT_WS] chat agent_id=%s session=%s mode=%s web_search=%s prompt_len=%d",
                 agent_id or "-",
                 research_session_id or "-",
                 interaction_mode,
+                web_search_enabled,
                 len(prompt),
             )
             chat_task = asyncio.create_task(
-                run_chat(prompt, agent_id, interaction_mode, research_session_id),
+                run_chat(prompt, agent_id, interaction_mode, web_search_enabled, research_session_id),
             )
     except WebSocketDisconnect:
         log.info("[CURSOR_AGENT_WS] Client disconnected")
@@ -691,11 +729,13 @@ def _wrap_prompt(
     *,
     new_agent: bool,
     interaction_mode: str = "ask",
+    web_search_enabled: bool = True,
     research_session_id: Optional[str] = None,
 ) -> str:
     parts: list[str] = []
     if new_agent:
         parts.append(STRATEGY_AGENT_HINT)
+    parts.append(WEB_SEARCH_ENABLED_HINT if web_search_enabled else WEB_SEARCH_DISABLED_HINT)
     if interaction_mode == "execute":
         parts.append(EXECUTE_MODE_HINT)
         if research_session_id:
@@ -806,10 +846,28 @@ def _tool_call_text(payload: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def _ask_mode_tool_blocked(payload: dict[str, Any]) -> tuple[bool, str]:
+def _normalize_tool_name(payload: dict[str, Any]) -> str:
     tool_name = str(payload.get("tool_name") or "").strip()
-    normalized = tool_name.lower().replace("-", "_").split(".")[-1]
+    return tool_name.lower().replace("-", "_").split(".")[-1]
+
+
+def _tool_call_blocked(
+    payload: dict[str, Any],
+    *,
+    interaction_mode: str,
+    web_search_enabled: bool,
+) -> tuple[bool, str]:
+    normalized = _normalize_tool_name(payload)
     blob = _tool_call_text(payload)
+
+    if not web_search_enabled and normalized in WEB_SEARCH_TOOL_NAMES:
+        return (
+            True,
+            "Web search is turned off. Enable the Web search toggle to look up live market data.",
+        )
+
+    if interaction_mode != "ask":
+        return False, ""
 
     if CONTROL_PLANE_MUTATION_RE.search(blob):
         return (

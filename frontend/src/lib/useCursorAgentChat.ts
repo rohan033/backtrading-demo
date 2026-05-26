@@ -58,6 +58,7 @@ export function useCursorAgentChat(
   interactionMode: AgentInteractionMode = 'ask',
   researchSessionId: string | null = null,
   onResearchSessionUpdated?: () => void,
+  webSearchEnabled = true,
 ) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [health, setHealth] = useState<AgentHealth | null>(null)
@@ -68,6 +69,7 @@ export function useCursorAgentChat(
   const socketRef = useRef<WebSocket | null>(null)
   const agentIdRef = useRef<string | null>(null)
   const researchSessionIdRef = useRef<string | null>(researchSessionId)
+  const webSearchEnabledRef = useRef(webSearchEnabled)
   const onResearchSessionUpdatedRef = useRef(onResearchSessionUpdated)
   const assistantDraftIdRef = useRef<string | null>(null)
   const reconnectTimerRef = useRef<number | null>(null)
@@ -87,6 +89,10 @@ export function useCursorAgentChat(
   useEffect(() => {
     researchSessionIdRef.current = researchSessionId
   }, [researchSessionId])
+
+  useEffect(() => {
+    webSearchEnabledRef.current = webSearchEnabled
+  }, [webSearchEnabled])
 
   useEffect(() => {
     onResearchSessionUpdatedRef.current = onResearchSessionUpdated
@@ -374,6 +380,7 @@ export function useCursorAgentChat(
           agent_id: agentIdRef.current,
           interaction_mode: interactionMode,
           research_session_id: researchSessionIdRef.current,
+          web_search_enabled: webSearchEnabledRef.current,
         }),
       )
       return true

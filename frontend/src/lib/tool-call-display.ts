@@ -25,6 +25,9 @@ export function normalizeToolStatus(raw?: string): ToolCallStatus {
 
 export function formatToolLabel(rawName: string): string {
   const base = rawName.split('/').pop()?.trim() || rawName.trim() || 'Tool'
+  const normalized = base.toLowerCase().replace(/-/g, '_')
+  if (normalized === 'websearch' || normalized === 'web_search') return 'Web search'
+  if (normalized === 'webfetch' || normalized === 'web_fetch') return 'Web fetch'
   const stripped = base
     .replace(/_api_control.*$/i, '')
     .replace(/_?(get|post|put|patch|delete)$/i, '')
