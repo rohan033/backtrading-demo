@@ -13,6 +13,7 @@ import {
   formatBrokerSignedMoney,
 } from '../../lib/currency'
 import { formatDbTimestamp } from '../../lib/datetime'
+import { formatScheduledStart, scheduleSummary } from '../../lib/tradingSchedule'
 
 import './strategy-detail.css'
 
@@ -34,6 +35,7 @@ function envLabel(env) {
 
 function statusBadgeTone(isLive, engineStatus) {
   if (isLive && ['running', 'starting', 'stale'].includes(engineStatus)) return 'running'
+  if (engineStatus === 'scheduled') return 'scheduled'
   return 'draft'
 }
 
@@ -43,12 +45,15 @@ function statusBadgeLabel(isLive, engineStatus) {
     if (engineStatus === 'stale') return 'Stale'
     return 'Running'
   }
+  if (engineStatus === 'scheduled') return 'Scheduled'
   return 'Draft'
 }
 
 function StatusBadge({ tone, children }) {
   const toneClass = tone === 'running'
     ? 'sd-badge-running'
+    : tone === 'scheduled'
+      ? 'sd-badge-scheduled'
     : tone === 'demo'
       ? 'sd-badge-demo'
       : tone === 'live'
@@ -257,6 +262,16 @@ export default function StrategyDetailView({
 
   const canStop = isLive && ['running', 'starting', 'stale'].includes(engineStatus)
   const canDeploy = !isLive
+  const isScheduled = engineStatus === 'scheduled'
+  const scheduledStartAt = execution?.scheduled_start_at
+    || queuedItem?.engine?.metadata?.scheduled_start_at
+    || null
+  const scheduleLabel = execution?.market_open_label
+    || queuedItem?.engine?.metadata?.market_open_label
+    || null
+  const tradingDay = execution?.trading_day
+    || queuedItem?.engine?.metadata?.trading_day
+    || null
   const logFile = execution?.log_file || queuedItem?.engine?.metadata?.log_file || null
   const logEngineId = execution?.data_plane_id || queuedItem?.engine?.id || executionId
 
@@ -292,6 +307,17 @@ export default function StrategyDetailView({
                 Created {formatDbTimestamp(execution.created_at)}
               </p>
             ) : null}
+            {isScheduled && (scheduledStartAt || tradingDay) ? (
+              <div className="sd-schedule-banner mt-3 max-w-xl">
+                <div className="title">Scheduled deployment</div>
+                <div className="detail">
+                  {formatScheduledStart(scheduledStartAt)} · {scheduleSummary(tradingDay, scheduleLabel)}
+                </div>
+                <p className="mt-1 text-[11px] text-[var(--sd-text-muted)]">
+                  Auto-starts at market open, or use Deploy now to start immediately.
+                </p>
+              </div>
+            ) : null}
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <StatusBadge tone={env === 'demo' ? 'demo' : 'live'}>{envLabel(execution?.account_env)}</StatusBadge>
               <StatusBadge tone={badgeTone}>{statusBadgeLabel(isLive, engineStatus)}</StatusBadge>
@@ -311,7 +337,7 @@ export default function StrategyDetailView({
                 disabled={deploying || stopping}
                 className="sd-btn sd-btn-primary"
               >
-                {deploying ? 'Deploying…' : 'Deploy live'}
+                {deploying ? 'Deploying…' : isScheduled ? 'Deploy now' : 'Deploy live'}
               </button>
             ) : null}
             {canStop ? (
@@ -411,6 +437,10 @@ export default function StrategyDetailView({
                 ['Client mode', execution?.is_bracket_order_client ? 'Bracket orders' : 'Feed TP/SL'],
                 ['Partial stocks', execution?.allow_partial_stocks ? 'Yes (2 dp)' : 'No (whole shares)'],
                 ['Tick sampling', execution?.tick_sample_every != null ? `Every ${execution.tick_sample_every} tick(s)` : 'Every tick'],
+                ['Scheduled start', isScheduled
+                  ? formatScheduledStart(scheduledStartAt)
+                  : '—'],
+                ['Trading day', isScheduled ? scheduleSummary(tradingDay, scheduleLabel) : '—'],
               ].map(([label, value]) => (
                 <div key={label} className="flex justify-between gap-4 border-b border-[var(--sd-border)]/40 pb-1.5">
                   <dt>{label}</dt>

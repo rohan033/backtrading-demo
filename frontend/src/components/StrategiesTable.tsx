@@ -11,6 +11,7 @@ export type StrategyTableRow = {
   symbol: string
   status: string
   createdAt?: string | null
+  scheduledFor?: string | null
   pnl?: number
   inPosition?: boolean
   logFile?: string | null
@@ -22,6 +23,13 @@ function StatusBadge({ status }: { status: string }) {
     return (
       <span className="rounded-full bg-green/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-green">
         Running
+      </span>
+    )
+  }
+  if (normalized === 'scheduled') {
+    return (
+      <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-accent">
+        Scheduled
       </span>
     )
   }
@@ -97,6 +105,9 @@ export function StrategiesTable({
               Status
             </th>
             <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
+              Scheduled for
+            </th>
+            <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
               Created
             </th>
             <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
@@ -128,6 +139,11 @@ export function StrategiesTable({
                     In position
                   </span>
                 ) : null}
+              </td>
+              <td className="px-3.5 py-2.5 whitespace-nowrap text-text-secondary">
+                {row.status.toLowerCase() === 'scheduled'
+                  ? formatDbTimestamp(row.scheduledFor)
+                  : '—'}
               </td>
               <td className="px-3.5 py-2.5 whitespace-nowrap text-text-secondary">
                 {formatDbTimestamp(row.createdAt)}

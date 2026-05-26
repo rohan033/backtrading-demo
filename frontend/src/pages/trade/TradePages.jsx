@@ -97,9 +97,11 @@ export function StrategiesListPage() {
         symbol: execution.symbol || '—',
         status: engineStatus,
         createdAt: execution.created_at,
+        scheduledFor: execution.scheduled_start_at || null,
         pnl: 0,
         inPosition: Boolean(execution.is_in_position),
         isLive: isStoppable,
+        isScheduled: engineStatus === 'scheduled',
         logFile: execution.log_file || null,
       }
     })
@@ -107,7 +109,8 @@ export function StrategiesListPage() {
 
   const filteredRows = useMemo(() => {
     if (filter === 'running') return rows.filter(row => row.isLive)
-    if (filter === 'stopped') return rows.filter(row => !row.isLive)
+    if (filter === 'scheduled') return rows.filter(row => row.isScheduled)
+    if (filter === 'stopped') return rows.filter(row => !row.isLive && !row.isScheduled)
     return rows
   }, [filter, rows])
 
@@ -122,7 +125,8 @@ export function StrategiesListPage() {
   const counts = useMemo(() => ({
     all: rows.length,
     running: rows.filter(row => row.isLive).length,
-    stopped: rows.filter(row => !row.isLive).length,
+    scheduled: rows.filter(row => row.isScheduled).length,
+    stopped: rows.filter(row => !row.isLive && !row.isScheduled).length,
   }), [rows])
 
   return (
@@ -154,7 +158,7 @@ export function StrategiesListPage() {
           </p>
           {!controlledExecutionsLoading && !controlledExecutionsError ? (
             <p className="mt-1 text-[10px] text-text-secondary">
-              {counts.all} saved · {counts.running} running · {counts.stopped} stopped
+              {counts.all} saved · {counts.running} running · {counts.scheduled} scheduled · {counts.stopped} stopped
             </p>
           ) : null}
         </div>
@@ -176,6 +180,7 @@ export function StrategiesListPage() {
         {[
           { id: 'all', label: `All (${counts.all})` },
           { id: 'running', label: `Running (${counts.running})` },
+          { id: 'scheduled', label: `Scheduled (${counts.scheduled})` },
           { id: 'stopped', label: `Stopped (${counts.stopped})` },
         ].map(tab => (
           <button

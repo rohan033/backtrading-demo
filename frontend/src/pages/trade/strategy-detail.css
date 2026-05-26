@@ -57,6 +57,34 @@
   color: var(--sd-text-muted);
 }
 
+.strategy-detail .sd-badge-scheduled {
+  background: var(--sd-accent-soft);
+  color: var(--sd-accent);
+}
+
+.strategy-detail .sd-schedule-banner {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: var(--sd-radius);
+  border: 1px solid rgba(29, 161, 242, 0.35);
+  background: var(--sd-accent-soft);
+  color: var(--sd-text);
+}
+
+.strategy-detail .sd-schedule-banner .title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--sd-accent);
+}
+
+.strategy-detail .sd-schedule-banner .detail {
+  margin-top: 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .strategy-detail .sd-badge-position {
   background: rgba(255, 179, 0, 0.15);
   color: var(--sd-amber);

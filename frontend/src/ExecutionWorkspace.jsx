@@ -10,6 +10,8 @@ import {
   isIndianBroker,
 } from './lib/currency'
 import { formatDbTimestamp } from './lib/datetime'
+import StrategyScheduleSection from './components/StrategyScheduleSection'
+import { buildLocalTradingDayOptions, loadTradingDayOptions } from './lib/tradingSchedule'
 
 const CONTROL_API = '/api/control'
 const CONTROL_MARKET_WS = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/control/market`
@@ -1712,6 +1714,11 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
   const [submitting, setSubmitting] = useState(false)
   const [startingLive, setStartingLive] = useState(false)
   const [showStartConfirm, setShowStartConfirm] = useState(false)
+  const [scheduleEnabled, setScheduleEnabled] = useState(false)
+  const [scheduledDate, setScheduledDate] = useState('')
+  const [scheduleHint, setScheduleHint] = useState('')
+  const [tradingDayOptions, setTradingDayOptions] = useState([])
+  const [scheduleOptionsLoading, setScheduleOptionsLoading] = useState(false)
   const { ltp, marketError, streamStatus: marketStreamStatus } = useMarketPreview({
     broker: form.broker,
     token: selectedStock?.symboltoken,
@@ -1727,6 +1734,38 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     () => computeExecutionLevels(form),
     [form.close_price, form.initial_threshold, form.long_percent, form.short_percent, form.max_available_capital, form.allow_partial_stocks],
   )
+
+  const fallbackTradingDayOptions = useMemo(
+    () => buildLocalTradingDayOptions(form.broker).options,
+    [form.broker],
+  )
+
+  const visibleTradingDayOptions = tradingDayOptions.length
+    ? tradingDayOptions
+    : fallbackTradingDayOptions
+
+  useEffect(() => {
+    let cancelled = false
+    setScheduleOptionsLoading(true)
+    ;(async () => {
+      const options = await loadTradingDayOptions(form.broker, form.use_fake_client)
+      if (cancelled) return
+      setTradingDayOptions(options.options)
+      setScheduleHint(options.market_open_label)
+      setScheduleOptionsLoading(false)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [form.broker, form.use_fake_client])
+
+  useEffect(() => {
+    if (!scheduleEnabled || !visibleTradingDayOptions.length) return
+    setScheduledDate(prev => {
+      if (prev && visibleTradingDayOptions.some(option => option.trading_day === prev)) return prev
+      return visibleTradingDayOptions[0].trading_day
+    })
+  }, [scheduleEnabled, visibleTradingDayOptions])
 
   useEffect(() => {
     if (!duplicateDraft?.template) return
@@ -1748,6 +1787,13 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       feed_mode: template.feed_mode || 'websocket',
       tick_sample_every: String(template.tick_sample_every ?? executor.tick_sample_every ?? '1'),
     })
+    setScheduledDate(template.scheduled_date || template.trading_day || '')
+    setScheduleHint(template.market_open_label || '')
+    setScheduleEnabled(Boolean(
+      template.schedule_enabled
+      || template.scheduled_date
+      || template.trading_day,
+    ))
     setSelectedStock({
       tradingsymbol: template.symbol || executor.symbol,
       symboltoken: template.token || executor.token,
@@ -1820,7 +1866,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     setQuery('')
   }
 
-  const buildExecutionPayload = () => ({
+  const buildExecutionPayload = ({ startImmediately = false } = {}) => ({
     executor_id: form.executor_id,
     broker: form.broker,
     account_env: form.account_env,
@@ -1838,6 +1884,9 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     client_mode: form.broker === 'etoro' ? form.client_mode : 'standard',
     feed_mode: form.broker === 'angel' ? form.feed_mode : 'websocket',
     tick_sample_every: Math.max(1, Math.min(300, parseInt(form.tick_sample_every, 10) || 1)),
+    schedule_enabled: !startImmediately && scheduleEnabled,
+    scheduled_date: !startImmediately && scheduleEnabled ? (scheduledDate || null) : null,
+    start_immediately: startImmediately,
   })
 
   const validateForm = () => {
@@ -1849,14 +1898,18 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       setError('Close price is required')
       return false
     }
+    if (scheduleEnabled && !scheduledDate) {
+      setError('Select a trading day for the scheduled start')
+      return false
+    }
     return true
   }
 
-  const saveExecution = async () => {
+  const saveExecution = async ({ startImmediately = false } = {}) => {
     const res = await fetch(`${CONTROL_API}/executions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildExecutionPayload()),
+      body: JSON.stringify(buildExecutionPayload({ startImmediately })),
     })
     const data = await res.json()
     if (!res.ok) {
@@ -1886,7 +1939,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     setStartingLive(true)
     setError('')
     try {
-      const executionId = await saveExecution()
+      const executionId = await saveExecution({ startImmediately: true })
       const { engine, executor } = await startControlledExecution(executionId)
       onCreated(executionId)
       await onStarted(engine, executor)
@@ -1918,11 +1971,27 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
           <h2 className="text-sm font-bold">{duplicateDraft ? 'Duplicate Execution' : 'Create Execution'}</h2>
           <p className="text-[10px] text-text-secondary mt-1">
             {duplicateDraft
-              ? 'Edit the copied config, then save as a new pending execution.'
+              ? 'Edit the copied config, then save as a new draft or scheduled execution.'
               : 'Search a stock, confirm live close price and levels, then save the strategy.'}
           </p>
         </div>
         <button onClick={onCancel} className="text-xs text-text-secondary hover:text-text-primary">Cancel</button>
+      </div>
+
+      <div className="mb-5">
+        <StrategyScheduleSection
+          scheduleEnabled={scheduleEnabled}
+          onScheduleEnabledChange={checked => {
+            setScheduleEnabled(checked)
+            if (!checked) setError('')
+          }}
+          scheduledDate={scheduledDate}
+          onScheduledDateChange={setScheduledDate}
+          tradingDayOptions={visibleTradingDayOptions}
+          scheduleHint={scheduleHint}
+          loading={scheduleOptionsLoading}
+          broker={form.broker}
+        />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-5">
@@ -1959,6 +2028,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
               <option value="demo">DEMO</option>
             </select>
           </div>
+
           <FormField label="Strategy Name" value={form.strategy_name} onChange={value => setForm(prev => ({ ...prev, strategy_name: value }))} />
           <div>
             <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Client Mode</label>
@@ -3047,6 +3117,7 @@ function normalizeControlledExecution(item) {
     strategy_name: engine.strategy_name,
   }
   const engineStatus = String(engine.status || 'pending').toLowerCase()
+  const metadata = engine.metadata || {}
   return normalizeExecution({
     ...executor,
     executor_id: executorId,
@@ -3055,9 +3126,12 @@ function normalizeControlledExecution(item) {
     broker: engine.broker || executor.broker,
     symbol: engine.symbol || executor.symbol,
     token: engine.token || executor.token,
-    exchange: executor.exchange || engine.metadata?.exchange,
+    exchange: executor.exchange || metadata.exchange,
     account_env: engine.account_env,
     strategy_name: engine.strategy_name,
+    scheduled_start_at: metadata.scheduled_start_at || null,
+    trading_day: metadata.trading_day || null,
+    market_open_label: metadata.market_open_label || null,
     status: ['running', 'starting'].includes(engineStatus)
       ? (executor.status || 'RUNNING')
       : engineStatus.toUpperCase(),

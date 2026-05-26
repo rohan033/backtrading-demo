@@ -31,6 +31,8 @@ from control_plane.log_stream import (
     sse_encode,
     stream_engine_log_events,
 )
+from control_plane.execution_scheduler import ExecutionScheduler, parse_utc_datetime
+from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
 from event.db_event_consumer import DbEventWriter
 
 load_dotenv()
@@ -68,6 +70,7 @@ engine_registry = EngineRegistry()
 engine_registry.ensure_default_engine()
 engine_process_manager = EngineProcessManager(engine_registry)
 _engine_sweeper_task: Optional[asyncio.Task] = None
+execution_scheduler: ExecutionScheduler | None = None
 _live_events_db: Optional[DbEventWriter] = None
 
 
@@ -206,19 +209,28 @@ class ControlPlaneExecutionRequest(BaseModel):
     client_mode: str = "standard"
     feed_mode: str = "websocket"
     tick_sample_every: int = Field(default=1, ge=1, le=300)
+    schedule_enabled: bool = False
+    scheduled_date: Optional[str] = None
+    start_immediately: bool = False
 
 
 # ── Endpoints ──
 
 @asynccontextmanager
 async def control_plane_lifespan(_app: FastAPI):
-    global _engine_sweeper_task
+    global _engine_sweeper_task, execution_scheduler
     _engine_sweeper_task = asyncio.create_task(_mark_stale_engines_loop())
+    execution_scheduler = ExecutionScheduler(start_controlled_execution)
+    execution_scheduler.start()
+    execution_scheduler.sync_registry(engine_registry.list_engines())
     await cursor_agent_service.startup()
     try:
         yield
     finally:
         await cursor_agent_service.shutdown()
+        if execution_scheduler:
+            execution_scheduler.shutdown()
+            execution_scheduler = None
         if _engine_sweeper_task:
             _engine_sweeper_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -239,6 +251,23 @@ async def _mark_stale_engines_loop():
                 log.warning("[CONTROL] Marked %d data-plane engines stale", len(stale))
         except Exception as e:
             log.error("[CONTROL] Engine stale sweeper failed: %s", e)
+
+
+def _register_execution_schedule(engine: dict) -> None:
+    if execution_scheduler is None:
+        return
+    if str(engine.get("status") or "").lower() != "scheduled":
+        return
+    metadata = engine.get("metadata") or {}
+    scheduled_at = parse_utc_datetime(metadata.get("scheduled_start_at"))
+    execution_id = engine.get("id")
+    if execution_id and scheduled_at:
+        execution_scheduler.register(execution_id, scheduled_at)
+
+
+def _unregister_execution_schedule(execution_id: str) -> None:
+    if execution_scheduler is not None:
+        execution_scheduler.unregister(execution_id)
 
 @app.get("/api/control/engines")
 def list_data_plane_engines(status: Optional[str] = None):
@@ -465,6 +494,24 @@ def _controlled_execution_payload(req: ControlPlaneExecutionRequest) -> tuple[st
     }
     broker = "fake" if req.use_fake_client else req.broker
     label = f"{req.broker}-{req.symbol}-strategy-{req.strategy_name}"
+    schedule = resolve_schedule(
+        broker,
+        schedule_enabled=req.schedule_enabled,
+        scheduled_date=req.scheduled_date,
+        start_immediately=req.start_immediately,
+    )
+    metadata = {
+        "source": "controlled_execution",
+        "executor_payload": executor_payload,
+        "execution_config": req.model_dump(),
+        "exchange": req.exchange,
+        "client_mode": req.client_mode,
+        "use_fake_client": req.use_fake_client,
+    }
+    status = "pending"
+    if schedule:
+        metadata.update(schedule)
+        status = "scheduled"
     engine_config = {
         "id": executor_id,
         "label": label,
@@ -477,28 +524,47 @@ def _controlled_execution_payload(req: ControlPlaneExecutionRequest) -> tuple[st
         "port": 0,
         "api_base_url": "",
         "ws_url": "",
-        "status": "pending",
-        "metadata": {
-            "source": "controlled_execution",
-            "executor_payload": executor_payload,
-            "execution_config": req.model_dump(),
-            "exchange": req.exchange,
-            "client_mode": req.client_mode,
-            "use_fake_client": req.use_fake_client,
-        },
+        "status": status,
+        "metadata": metadata,
     }
     return executor_id, executor_payload, engine_config
 
 
+@app.get("/api/control/executions/default-schedule")
+def get_default_execution_schedule(broker: str = "angel", use_fake_client: bool = False):
+    broker_name = "fake" if use_fake_client else broker
+    return {"status": True, "data": default_schedule(broker_name)}
+
+
+@app.get("/api/control/executions/trading-day-options")
+def get_trading_day_options(
+    broker: str = "angel",
+    use_fake_client: bool = False,
+    count: int = 4,
+):
+    broker_name = "fake" if use_fake_client else broker
+    safe_count = max(1, min(int(count or 4), 10))
+    return {"status": True, "data": trading_day_options(broker_name, count=safe_count)}
+
+
 @app.post("/api/control/executions")
 def create_controlled_execution(req: ControlPlaneExecutionRequest):
-    execution_id, executor_payload, engine_config = _controlled_execution_payload(req)
+    try:
+        execution_id, executor_payload, engine_config = _controlled_execution_payload(req)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     try:
         engine = engine_registry.upsert_engine(engine_config)
     except Exception as e:
         log.error("[CONTROL] Failed to create execution: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-    log.info("[CONTROL] Created pending execution %s for %s", execution_id, req.symbol)
+    log.info(
+        "[CONTROL] Created %s execution %s for %s",
+        engine.get("status") or "pending",
+        execution_id,
+        req.symbol,
+    )
+    _register_execution_schedule(engine)
     return {
         "status": True,
         "data": {
@@ -550,6 +616,7 @@ def start_controlled_execution(execution_id: str):
 
     config = metadata.get("execution_config") or {}
     executor_payload = metadata.get("executor_payload") or {}
+    _unregister_execution_schedule(execution_id)
     try:
         started = engine_process_manager.start_engine(
             {
