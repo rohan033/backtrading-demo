@@ -47,6 +47,6 @@ export function summarizeToolDetail(event: ToolCallFields): string | undefined {
 
   const text = raw.replace(/\s+/g, ' ').trim()
   if (!text) return undefined
-  if (text.length <= 96) return text
-  return `${text.slice(0, 93)}…`
+  if (text.length <= 72) return text
+  return `${text.slice(0, 69)}…`
 }

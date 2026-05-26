@@ -108,7 +108,13 @@ export default function Sidebar() {
                     <span
                       className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${item.iconBg}`}
                     >
-                      <Icon className={`h-3.5 w-3.5 ${item.iconFg}`} aria-hidden="true" />
+                      {item.iconText ? (
+                        <span className={`text-[10px] font-black tracking-tight ${item.iconFg}`}>
+                          {item.iconText}
+                        </span>
+                      ) : Icon ? (
+                        <Icon className={`h-3.5 w-3.5 ${item.iconFg}`} aria-hidden="true" />
+                      ) : null}
                     </span>
                     {!collapsed ? <span>{item.label}</span> : null}
                   </CollapsedNavItem>

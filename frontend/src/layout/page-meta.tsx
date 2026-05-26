@@ -22,6 +22,7 @@ const ROUTE_META: Record<string, PageMeta> = {
   '/trade/strategies/new': { title: 'New strategy', scope: 'Trade' },
   '/trade/activity': { title: 'Activity', scope: 'Trade' },
   '/trade/charts': { title: 'Charts', scope: 'Trade' },
+  '/learn/research': { title: 'AI Research', scope: 'Learn' },
   '/learn/backtest': {
     title: 'Backtest Lab',
     scope: 'Learn',
@@ -37,6 +38,10 @@ const ROUTE_META: Record<string, PageMeta> = {
 
 export function getPageMeta(pathname: string): PageMeta {
   if (ROUTE_META[pathname]) return ROUTE_META[pathname]
+
+  if (pathname.startsWith('/learn/research/') && pathname !== '/learn/research') {
+    return { title: 'AI Research Session', scope: 'Learn' }
+  }
 
   if (pathname.startsWith('/trade/strategies/') && pathname !== '/trade/strategies/new') {
     return { title: 'Strategy', scope: 'Trade' }

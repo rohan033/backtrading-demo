@@ -6,6 +6,7 @@ import {
   summarizeToolDetail,
   type ToolCallStatus,
 } from '@/lib/tool-call-display'
+import { stripAiActionBlocks } from '@/lib/aiActionBlocks'
 
 export type AgentInteractionMode = 'ask' | 'execute'
 
@@ -52,7 +53,12 @@ function nextId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInteractionMode = 'ask') {
+export function useCursorAgentChat(
+  enabled: boolean,
+  interactionMode: AgentInteractionMode = 'ask',
+  researchSessionId: string | null = null,
+  onResearchSessionUpdated?: () => void,
+) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [health, setHealth] = useState<AgentHealth | null>(null)
   const [connected, setConnected] = useState(false)
@@ -61,6 +67,8 @@ export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInter
 
   const socketRef = useRef<WebSocket | null>(null)
   const agentIdRef = useRef<string | null>(null)
+  const researchSessionIdRef = useRef<string | null>(researchSessionId)
+  const onResearchSessionUpdatedRef = useRef(onResearchSessionUpdated)
   const assistantDraftIdRef = useRef<string | null>(null)
   const reconnectTimerRef = useRef<number | null>(null)
   const connectTimerRef = useRef<number | null>(null)
@@ -74,6 +82,28 @@ export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInter
       window.clearTimeout(connectTimerRef.current)
       connectTimerRef.current = null
     }
+  }, [])
+
+  useEffect(() => {
+    researchSessionIdRef.current = researchSessionId
+  }, [researchSessionId])
+
+  useEffect(() => {
+    onResearchSessionUpdatedRef.current = onResearchSessionUpdated
+  }, [onResearchSessionUpdated])
+
+  const hydrateMessages = useCallback((rows: ChatMessage[]) => {
+    setMessages(
+      rows.map(row =>
+        row.role === 'assistant'
+          ? { ...row, content: stripAiActionBlocks(row.content) }
+          : row,
+      ),
+    )
+  }, [])
+
+  const resetAgent = useCallback((agentId: string | null) => {
+    agentIdRef.current = agentId
   }, [])
 
   const appendAssistantDelta = useCallback((delta: string) => {
@@ -98,10 +128,10 @@ export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInter
           ? {
               ...msg,
               content: finalText?.trim()
-                ? finalText
+                ? stripAiActionBlocks(finalText)
                 : stopped
                   ? msg.content || 'Response stopped.'
-                  : msg.content,
+                  : stripAiActionBlocks(msg.content),
               streaming: false,
             }
           : msg,
@@ -152,6 +182,15 @@ export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInter
     })
   }, [])
 
+  const prependMessages = useCallback((rows: ChatMessage[]) => {
+    setMessages(prev => {
+      const existing = new Set(prev.map(msg => msg.id))
+      const toAdd = rows.filter(row => !existing.has(row.id))
+      if (!toAdd.length) return prev
+      return [...toAdd, ...prev]
+    })
+  }, [])
+
   const handleEvent = useCallback(
     (event: CursorAgentEvent) => {
       if (event.type === 'health' && event.data) {
@@ -187,6 +226,7 @@ export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInter
         if (event.agent_id) agentIdRef.current = event.agent_id
         finalizeAssistant(event.text)
         setSending(false)
+        onResearchSessionUpdatedRef.current?.()
         return
       }
 
@@ -333,6 +373,7 @@ export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInter
           prompt: trimmed,
           agent_id: agentIdRef.current,
           interaction_mode: interactionMode,
+          research_session_id: researchSessionIdRef.current,
         }),
       )
       return true
@@ -364,5 +405,8 @@ export function useCursorAgentChat(enabled: boolean, interactionMode: AgentInter
     error,
     sendMessage,
     stopMessage,
+    hydrateMessages,
+    prependMessages,
+    resetAgent,
   }
 }

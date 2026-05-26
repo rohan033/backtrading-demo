@@ -2737,6 +2737,17 @@ export async function startControlledExecution(executionId) {
   }
 }
 
+export async function unscheduleControlledExecution(executionId) {
+  const res = await fetch(`${CONTROL_API}/executions/${encodeURIComponent(executionId)}/unschedule`, {
+    method: 'POST',
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || 'Failed to unschedule execution')
+  }
+  return data.data
+}
+
 export async function repairControlledExecution(executionId) {
   const res = await fetch(`${CONTROL_API}/executions/${encodeURIComponent(executionId)}`)
   const data = await res.json()

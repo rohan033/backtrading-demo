@@ -14,6 +14,7 @@ import {
   TradingEventsTab,
   repairControlledExecution,
   startControlledExecution,
+  unscheduleControlledExecution,
   useExecution,
 } from '../../ExecutionWorkspace'
 
@@ -296,6 +297,7 @@ export function StrategyDetailPage() {
   const navigate = useNavigate()
   const [stopping, setStopping] = useState(false)
   const [deploying, setDeploying] = useState(false)
+  const [unscheduling, setUnscheduling] = useState(false)
   const [actionError, setActionError] = useState('')
   const {
     panelExecutions,
@@ -391,6 +393,21 @@ export function StrategyDetailPage() {
     }
   }
 
+  const unscheduleStrategy = async () => {
+    if (!id) return
+    setActionError('')
+    setUnscheduling(true)
+    try {
+      await unscheduleControlledExecution(id)
+      await refreshControlledExecutions()
+      await refreshExecutions()
+    } catch (error) {
+      setActionError(error?.message || 'Failed to unschedule strategy')
+    } finally {
+      setUnscheduling(false)
+    }
+  }
+
   useEffect(() => {
     if (!id || !isLive) return
     let cancelled = false
@@ -440,6 +457,8 @@ export function StrategyDetailPage() {
       stopping={stopping}
       onDeploy={deployStrategy}
       deploying={deploying}
+      onUnschedule={unscheduleStrategy}
+      unscheduling={unscheduling}
       onDuplicate={handleDuplicate}
       actionError={actionError}
     />

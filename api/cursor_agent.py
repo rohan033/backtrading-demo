@@ -15,6 +15,13 @@ from cursor_sdk import AsyncClient, CursorAgentError, LocalAgentOptions
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
+from api.ai_research_routes import (
+    derive_research_summary,
+    derive_session_title,
+    get_ai_research_store,
+    merge_extracted_actions,
+    strip_ai_action_blocks,
+)
 from control_plane.engine_process_manager import REPO_ROOT
 
 log = logging.getLogger("backtrading.cursor_agent")
@@ -49,6 +56,12 @@ Help the user with:
 - Stock / instrument context when it appears in this repository or control-plane data
 
 Prefer answers grounded in this repo (`api/`, `frontend/`, `strategies/`, `control_plane/`, `brokers/`).
+When proposing a tradable setup, include a fenced JSON block the UI can turn into actions:
+
+```json
+{"ai_action":{"type":"strategy_suggestion","title":"INFY breakout","payload":{"broker":"angel","symbol":"INFY-EQ","token":"1594","exchange":"NSE","close_price":1500,"long_percent":1,"short_percent":10,"initial_threshold":0.2,"max_available_capital":100000},"sources":["NSE prior close"]}}
+```
+
 If you need to inspect files or logs, use available tools. Be concise and practical."""
 
 ASK_MODE_HINT = """You are in ASK mode (read-only guardrails).
@@ -230,6 +243,7 @@ class CursorAgentService:
         prompt: str,
         agent_id: Optional[str],
         interaction_mode: str = "ask",
+        research_session_id: Optional[str] = None,
         ws: WebSocket | None = None,
         cancel_event: asyncio.Event | None = None,
         active_run: dict[str, Any] | None = None,
@@ -245,6 +259,33 @@ class CursorAgentService:
 
         mode = interaction_mode if interaction_mode in VALID_INTERACTION_MODES else "ask"
         sdk_mode = "agent" if mode == "execute" else "ask"
+        store = get_ai_research_store() if research_session_id else None
+        user_message_id: str | None = None
+
+        if store and research_session_id:
+            session = store.get_session(research_session_id)
+            if not session:
+                yield {
+                    "type": "error",
+                    "phase": "request",
+                    "message": f"Research session not found: {research_session_id}",
+                }
+                return
+            if agent_id is None and session.get("cursor_agent_id"):
+                agent_id = session.get("cursor_agent_id")
+            saved = store.append_message(
+                research_session_id,
+                role="user",
+                content=user_prompt,
+            )
+            user_message_id = saved.get("id") if saved else None
+            if session.get("title") in (None, "", "New research"):
+                store.update_session(
+                    research_session_id,
+                    {"title": derive_session_title(user_prompt)},
+                )
+            if mode != session.get("interaction_mode"):
+                store.update_session(research_session_id, {"interaction_mode": mode})
 
         client = await self._require_client()
         created_new_agent = not agent_id
@@ -290,7 +331,12 @@ class CursorAgentService:
                 "run_id": run.id,
                 "model": self.model(),
                 "interaction_mode": mode,
+                "research_session_id": research_session_id,
             }
+            if store and research_session_id:
+                store.set_cursor_agent_id(research_session_id, agent.agent_id)
+
+            assistant_chunks: list[str] = []
 
             async for message_event in run.stream():
                 if cancel_event is not None and cancel_event.is_set():
@@ -314,8 +360,19 @@ class CursorAgentService:
 
                 message_type = payload.get("message_type")
                 if message_type == "assistant" and payload.get("text"):
+                    assistant_chunks.append(payload["text"])
                     yield {"type": "text_delta", "text": payload["text"]}
                 elif message_type == "tool_call":
+                    if store and research_session_id:
+                        store.append_message(
+                            research_session_id,
+                            role="tool",
+                            content=str(payload.get("tool_name") or "tool"),
+                            run_id=run.id,
+                            tool_name=payload.get("tool_name"),
+                            tool_status=payload.get("tool_status"),
+                            tool_detail=_tool_call_text(payload),
+                        )
                     if mode == "ask":
                         blocked, reason = _ask_mode_tool_blocked(payload)
                         if blocked:
@@ -347,12 +404,33 @@ class CursorAgentService:
                 }
                 return
 
+            final_text = result.result or await run.text() or "".join(assistant_chunks)
+            display_text = strip_ai_action_blocks(final_text)
+            assistant_message_id: str | None = None
+            if store and research_session_id and final_text.strip():
+                saved = store.append_message(
+                    research_session_id,
+                    role="assistant",
+                    content=display_text,
+                    run_id=run.id,
+                )
+                assistant_message_id = saved.get("id") if saved else None
+                merge_extracted_actions(
+                    research_session_id,
+                    final_text,
+                    message_id=assistant_message_id,
+                )
+                summary = derive_research_summary(final_text)
+                if summary:
+                    store.update_session(research_session_id, {"summary": summary})
+
             yield {
                 "type": "done",
                 "agent_id": agent.agent_id,
                 "run_id": run.id,
                 "status": result.status,
-                "text": result.result or await run.text(),
+                "text": display_text,
+                "research_session_id": research_session_id,
             }
         except CursorAgentError as exc:
             log.error("[CURSOR_AGENT] Run startup failed agent=%s: %s", agent.agent_id, exc)
@@ -462,13 +540,19 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
     active_run: dict[str, Any] = {"run": None}
     chat_task: asyncio.Task | None = None
 
-    async def run_chat(prompt: str, agent_id: Optional[str], interaction_mode: str) -> None:
+    async def run_chat(
+        prompt: str,
+        agent_id: Optional[str],
+        interaction_mode: str,
+        research_session_id: Optional[str] = None,
+    ) -> None:
         cancel_event.clear()
         try:
             async for event in cursor_agent_service.stream_chat(
                 prompt=prompt,
                 agent_id=agent_id,
                 interaction_mode=interaction_mode,
+                research_session_id=research_session_id,
                 ws=ws,
                 cancel_event=cancel_event,
                 active_run=active_run,
@@ -539,6 +623,10 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
             if interaction_mode not in VALID_INTERACTION_MODES:
                 interaction_mode = "ask"
 
+            research_session_id = msg.get("research_session_id")
+            if research_session_id is not None:
+                research_session_id = str(research_session_id).strip() or None
+
             if chat_task is not None and not chat_task.done():
                 cancel_event.set()
                 run = active_run.get("run")
@@ -552,12 +640,15 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
                 chat_task = None
 
             log.info(
-                "[CURSOR_AGENT_WS] chat agent_id=%s mode=%s prompt_len=%d",
+                "[CURSOR_AGENT_WS] chat agent_id=%s session=%s mode=%s prompt_len=%d",
                 agent_id or "-",
+                research_session_id or "-",
                 interaction_mode,
                 len(prompt),
             )
-            chat_task = asyncio.create_task(run_chat(prompt, agent_id, interaction_mode))
+            chat_task = asyncio.create_task(
+                run_chat(prompt, agent_id, interaction_mode, research_session_id),
+            )
     except WebSocketDisconnect:
         log.info("[CURSOR_AGENT_WS] Client disconnected")
         if chat_task is not None and not chat_task.done():

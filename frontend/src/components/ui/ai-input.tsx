@@ -3,9 +3,7 @@ import { AnimatePresence, motion } from 'motion/react'
 import { GripHorizontal, Maximize2, Minimize2, Send, Sparkles, Square, X } from 'lucide-react'
 
 import { AI_WORKFLOWS } from '@/lib/ai-workflows'
-import { ToolCallHint } from '@/components/ui/tool-call-hint'
-import { ChatMarkdown } from '@/components/ui/chat-markdown'
-import { ChatTypingDots } from '@/components/ui/chat-typing-dots'
+import { ChatMessageList, type ChatMessageListHandle } from '@/components/ui/chat-message-list'
 import { cn } from '@/lib/utils'
 import type { AgentInteractionMode, ChatMessage } from '@/lib/useCursorAgentChat'
 
@@ -43,9 +41,9 @@ function clampSize(size: PanelSize): PanelSize {
   }
 }
 
-function clampAnchor(anchor: PanelAnchor, size: PanelSize): PanelAnchor {
-  const maxRight = Math.max(0, window.innerWidth - size.width - 48)
-  const maxBottom = Math.max(0, window.innerHeight - size.height - 48)
+function clampAnchor(anchor: PanelAnchor, size: { width: number; height: number }, margin = 48): PanelAnchor {
+  const maxRight = Math.max(0, window.innerWidth - size.width - margin)
+  const maxBottom = Math.max(0, window.innerHeight - size.height - margin)
   return {
     right: Math.min(maxRight, Math.max(0, anchor.right)),
     bottom: Math.min(maxBottom, Math.max(0, anchor.bottom)),
@@ -80,8 +78,9 @@ export function MorphPanel({
   onOpenChange,
 }: MorphPanelProps) {
   const panelRef = React.useRef<HTMLDivElement>(null)
+  const launcherRef = React.useRef<HTMLButtonElement>(null)
   const textareaRef = React.useRef<HTMLTextAreaElement>(null)
-  const messagesRef = React.useRef<HTMLDivElement>(null)
+  const messagesRef = React.useRef<ChatMessageListHandle>(null)
 
   const [open, setOpen] = React.useState(false)
   const [draft, setDraft] = React.useState('')
@@ -93,6 +92,12 @@ export function MorphPanel({
   const [anchor, setAnchor] = React.useState<PanelAnchor>({ right: 0, bottom: 0 })
 
   const dragSession = React.useRef<{ startX: number; startY: number; startAnchor: PanelAnchor } | null>(null)
+  const launcherDragRef = React.useRef<{
+    startX: number
+    startY: number
+    startAnchor: PanelAnchor
+    moved: boolean
+  } | null>(null)
   const resizeSession = React.useRef<{
     axis: 'corner' | 'left' | 'top'
     startX: number
@@ -114,12 +119,40 @@ export function MorphPanel({
   )
 
   React.useEffect(() => {
-    if (!messagesRef.current) return
-    messagesRef.current.scrollTop = messagesRef.current.scrollHeight
+    messagesRef.current?.scrollToBottom()
   }, [messages, sending, open])
 
   React.useEffect(() => {
+    if (!open) return
+    setAnchor(prev => clampAnchor(prev, panelSize))
+  }, [open, panelSize])
+
+  React.useEffect(() => {
+    function launcherSize() {
+      const el = launcherRef.current
+      return {
+        width: el?.offsetWidth ?? 140,
+        height: el?.offsetHeight ?? 44,
+      }
+    }
+
     function onMove(event: MouseEvent) {
+      if (launcherDragRef.current) {
+        const dx = event.clientX - launcherDragRef.current.startX
+        const dy = event.clientY - launcherDragRef.current.startY
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+          launcherDragRef.current.moved = true
+        }
+        setAnchor(
+          clampAnchor(
+            {
+              right: launcherDragRef.current.startAnchor.right - dx,
+              bottom: launcherDragRef.current.startAnchor.bottom - dy,
+            },
+            launcherSize(),
+          ),
+        )
+      }
       if (dragSession.current) {
         const dx = event.clientX - dragSession.current.startX
         const dy = event.clientY - dragSession.current.startY
@@ -148,6 +181,12 @@ export function MorphPanel({
     }
 
     function onUp() {
+      if (launcherDragRef.current) {
+        if (!launcherDragRef.current.moved) {
+          setOpenState(true)
+        }
+        launcherDragRef.current = null
+      }
       dragSession.current = null
       resizeSession.current = null
     }
@@ -158,7 +197,7 @@ export function MorphPanel({
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
-  }, [panelSize])
+  }, [panelSize, setOpenState])
 
   const applyPreset = (preset: 'default' | 'maximized') => {
     setSizePreset(preset)
@@ -200,13 +239,27 @@ export function MorphPanel({
         {!open ? (
           <motion.button
             key="launcher"
+            ref={launcherRef}
             type="button"
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.18, ease: 'easeOut' }}
-            onClick={() => setOpenState(true)}
-            className="fixed right-6 bottom-6 z-50 flex items-center gap-2.5 rounded-full border border-border bg-card px-4 py-2.5 text-sm font-medium text-text-primary shadow-lg backdrop-blur-md transition-colors hover:bg-secondary"
+            title="Drag to move · Click to open"
+            style={{
+              right: 24 + anchor.right,
+              bottom: 24 + anchor.bottom,
+            }}
+            onMouseDown={event => {
+              event.preventDefault()
+              launcherDragRef.current = {
+                startX: event.clientX,
+                startY: event.clientY,
+                startAnchor: anchor,
+                moved: false,
+              }
+            }}
+            className="fixed z-50 flex cursor-grab select-none items-center gap-2.5 rounded-full border border-border bg-card px-4 py-2.5 text-sm font-medium text-text-primary shadow-lg backdrop-blur-md transition-colors hover:bg-secondary active:cursor-grabbing"
           >
             <AiMark />
             <span>Ask AI</span>
@@ -258,11 +311,11 @@ export function MorphPanel({
             </div>
 
             {/* Messages */}
-            <div
+            <ChatMessageList
               ref={messagesRef}
-              className="min-h-0 flex-1 space-y-2 overflow-y-auto px-3 py-3 text-sm leading-relaxed"
-            >
-              {messages.length === 0 ? (
+              messages={messages}
+              pinToBottom
+              emptyState={
                 <div className="space-y-3">
                   <p className="text-text-secondary">
                     Ask about strategies, live executions, brokers, or this codebase.
@@ -286,42 +339,8 @@ export function MorphPanel({
                     </div>
                   </div>
                 </div>
-              ) : null}
-              {messages.map(msg => (
-                <div
-                  key={msg.id}
-                  className={cn(
-                    msg.role === 'tool'
-                      ? undefined
-                      : 'rounded-lg px-3 py-2',
-                    msg.role === 'user' && 'ml-8 whitespace-pre-wrap bg-accent/15 text-text-primary',
-                    msg.role === 'assistant' && 'mr-6 border border-border/60 bg-primary/60 text-text-primary',
-                    msg.role === 'system' && 'whitespace-pre-wrap border border-red-500/30 bg-red-500/10 text-red-300',
-                  )}
-                >
-                  {msg.role === 'tool' ? (
-                    <ToolCallHint
-                      label={msg.content}
-                      status={msg.toolStatus ?? 'running'}
-                      detail={msg.toolDetail}
-                    />
-                  ) : msg.role === 'assistant' ? (
-                    <>
-                      {msg.content ? <ChatMarkdown content={msg.content} /> : null}
-                      {msg.streaming ? (
-                        msg.content ? (
-                          <ChatTypingDots className="mt-2" />
-                        ) : (
-                          <span className="text-text-secondary">Thinking…</span>
-                        )
-                      ) : null}
-                    </>
-                  ) : (
-                    msg.content
-                  )}
-                </div>
-              ))}
-            </div>
+              }
+            />
 
             {error ? (
               <div className="shrink-0 border-b border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">

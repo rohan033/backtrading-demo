@@ -22,6 +22,7 @@ from client import TotpClient
 from strategy import Strategy
 from backtesting import Backtesting
 from api.manual_robo_routes import router as manual_robo_router
+from api.ai_research_routes import router as ai_research_router
 from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket, router as cursor_agent_router
 from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
@@ -63,6 +64,7 @@ app.add_middleware(
 
 app.include_router(manual_robo_router)
 app.include_router(cursor_agent_router)
+app.include_router(ai_research_router)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 TRADE_FEE = 25  # ₹25 per buy-sell round trip
@@ -268,6 +270,24 @@ def _register_execution_schedule(engine: dict) -> None:
 def _unregister_execution_schedule(execution_id: str) -> None:
     if execution_scheduler is not None:
         execution_scheduler.unregister(execution_id)
+
+
+_SCHEDULE_METADATA_KEYS = (
+    "scheduled_start_at",
+    "trading_day",
+    "market_open_label",
+    "schedule_label",
+)
+
+
+def _clear_schedule_from_metadata(metadata: dict) -> dict:
+    cleaned = {key: value for key, value in metadata.items() if key not in _SCHEDULE_METADATA_KEYS}
+    config = dict(cleaned.get("execution_config") or {})
+    config["schedule_enabled"] = False
+    config["scheduled_date"] = None
+    config["start_immediately"] = False
+    cleaned["execution_config"] = config
+    return cleaned
 
 @app.get("/api/control/engines")
 def list_data_plane_engines(status: Optional[str] = None):
@@ -726,6 +746,38 @@ def duplicate_execution_template(execution_id: str):
             "template": config,
             "executor": executor_payload,
             "source_execution_id": execution_id,
+        },
+    }
+
+
+@app.post("/api/control/executions/{execution_id}/unschedule")
+def unschedule_controlled_execution(execution_id: str):
+    engine = engine_registry.get_engine(execution_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    if not _is_controlled_execution(engine):
+        raise HTTPException(status_code=400, detail="Not a controlled execution")
+
+    if str(engine.get("status") or "").lower() != "scheduled":
+        raise HTTPException(status_code=400, detail="Execution is not scheduled")
+
+    _unregister_execution_schedule(execution_id)
+    metadata = _clear_schedule_from_metadata(engine.get("metadata") or {})
+    updated = engine_registry.update_engine(
+        execution_id,
+        {"status": "pending", "metadata": metadata},
+    )
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to unschedule execution")
+
+    log.info("[CONTROL] Unscheduled execution %s", execution_id)
+    return {
+        "status": True,
+        "data": {
+            "execution_id": execution_id,
+            "engine": updated,
+            "executor": metadata.get("executor_payload"),
         },
     }
 

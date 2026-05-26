@@ -20,7 +20,8 @@ export type NavItem = {
   label: string
   to: string
   end?: boolean
-  icon: LucideIcon
+  icon?: LucideIcon
+  iconText?: string
   iconBg: string
   iconFg: string
 }
@@ -94,6 +95,13 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: 'Learn',
     items: [
+      {
+        label: 'AI Research',
+        to: '/learn/research',
+        iconText: 'AI',
+        iconBg: 'bg-gradient-to-br from-violet-500/30 to-sky-400/30',
+        iconFg: 'text-white',
+      },
       {
         label: 'Backtest Lab',
         to: '/learn/backtest',

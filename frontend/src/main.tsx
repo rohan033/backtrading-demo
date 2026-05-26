@@ -1,9 +1,11 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Navigate, Outlet, Route, Routes } from 'react-router-dom'
 
 import AppShell from './layout/AppShell'
 import { PlatformToastHost } from './lib/platform-toast'
+import { AiResearchListPage } from './pages/learn/AiResearchListPage'
+import { AiResearchSessionPage } from './pages/learn/AiResearchSessionPage'
 import BacktestLabPage from './pages/learn/BacktestLabPage'
 import SimulationPage from './pages/learn/SimulationPage'
 import ToolsPage from './pages/learn/ToolsPage'
@@ -24,7 +26,16 @@ import {
   StrategyDetailPage,
   TradeLayout,
 } from './pages/trade/TradePages'
+import { ExecutionProvider } from './ExecutionWorkspace'
 import './index.css'
+
+function ResearchLayout() {
+  return (
+    <ExecutionProvider>
+      <Outlet />
+    </ExecutionProvider>
+  )
+}
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
@@ -48,6 +59,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="charts" element={<ChartsPage />} />
           </Route>
 
+          <Route path="/learn/research" element={<ResearchLayout />}>
+            <Route index element={<AiResearchListPage />} />
+            <Route path=":sessionId" element={<AiResearchSessionPage />} />
+          </Route>
           <Route path="/learn/backtest" element={<BacktestLabPage />} />
           <Route path="/learn/simulation" element={<SimulationPage />} />
           <Route path="/learn/tools" element={<ToolsPage />} />

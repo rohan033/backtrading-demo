@@ -238,6 +238,8 @@ export default function StrategyDetailView({
   stopping,
   onDeploy,
   deploying,
+  onUnschedule,
+  unscheduling,
   onDuplicate,
   actionError,
 }) {
@@ -334,17 +336,27 @@ export default function StrategyDetailView({
               <button
                 type="button"
                 onClick={onDeploy}
-                disabled={deploying || stopping}
+                disabled={deploying || stopping || unscheduling}
                 className="sd-btn sd-btn-primary"
               >
                 {deploying ? 'Deploying…' : isScheduled ? 'Deploy now' : 'Deploy live'}
+              </button>
+            ) : null}
+            {isScheduled && onUnschedule ? (
+              <button
+                type="button"
+                onClick={onUnschedule}
+                disabled={unscheduling || deploying || stopping}
+                className="sd-btn"
+              >
+                {unscheduling ? 'Unscheduling…' : 'Unschedule'}
               </button>
             ) : null}
             {canStop ? (
               <button
                 type="button"
                 onClick={onStop}
-                disabled={stopping || deploying}
+                disabled={stopping || deploying || unscheduling}
                 className="sd-btn sd-btn-danger"
               >
                 {stopping ? 'Stopping…' : 'Stop'}
