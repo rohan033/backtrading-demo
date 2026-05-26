@@ -26,7 +26,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from logzero import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from control_plane.ops_logging import live_engine_log_path
 from brokers.interfaces import TickData
@@ -417,6 +417,7 @@ class LiveEngine:
             exchange=req.exchange,
             max_available_capital=req.max_available_capital,
             allow_partial_stocks=req.allow_partial_stocks,
+            tick_sample_every=req.tick_sample_every,
         )
 
         executor = StrategyExecutor(
@@ -490,6 +491,7 @@ class RegisterExecutorRequest(BaseModel):
     initial_threshold: float = 0.2
     max_available_capital: float = 100000
     allow_partial_stocks: bool = False
+    tick_sample_every: int = Field(default=1, ge=1, le=300)
     close_price: float
 
 

@@ -9,6 +9,7 @@ class StrategyConfig:
         exchange='NSE',
         max_available_capital=None,
         allow_partial_stocks=False,
+        tick_sample_every=1,
     ) -> None:
         self.long_percent = long_percent
         self.short_percent = short_percent
@@ -18,6 +19,7 @@ class StrategyConfig:
         self.exchange = exchange  # Single exchange
         self.max_available_capital = max_available_capital  # Maximum capital limit for trading
         self.allow_partial_stocks = allow_partial_stocks
+        self.tick_sample_every = max(1, int(tick_sample_every or 1))
 
 
 class Config:

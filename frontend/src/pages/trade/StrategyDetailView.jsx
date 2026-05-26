@@ -407,6 +407,7 @@ export default function StrategyDetailView({
                 ['Stop loss %', execution?.short_percent != null ? `${execution.short_percent}%` : '—'],
                 ['Client mode', execution?.is_bracket_order_client ? 'Bracket orders' : 'Feed TP/SL'],
                 ['Partial stocks', execution?.allow_partial_stocks ? 'Yes (2 dp)' : 'No (whole shares)'],
+                ['Tick sampling', execution?.tick_sample_every != null ? `Every ${execution.tick_sample_every} tick(s)` : 'Every tick'],
               ].map(([label, value]) => (
                 <div key={label} className="flex justify-between gap-4 border-b border-[var(--sd-border)]/40 pb-1.5">
                   <dt>{label}</dt>

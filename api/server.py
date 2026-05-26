@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
@@ -205,6 +205,7 @@ class ControlPlaneExecutionRequest(BaseModel):
     use_fake_client: bool = False
     client_mode: str = "standard"
     feed_mode: str = "websocket"
+    tick_sample_every: int = Field(default=1, ge=1, le=300)
 
 
 # ── Endpoints ──
@@ -460,6 +461,7 @@ def _controlled_execution_payload(req: ControlPlaneExecutionRequest) -> tuple[st
         "initial_threshold": req.initial_threshold,
         "max_available_capital": req.max_available_capital,
         "allow_partial_stocks": req.allow_partial_stocks,
+        "tick_sample_every": max(1, int(req.tick_sample_every or 1)),
     }
     broker = "fake" if req.use_fake_client else req.broker
     label = f"{req.broker}-{req.symbol}-strategy-{req.strategy_name}"
@@ -642,6 +644,7 @@ def duplicate_execution_template(execution_id: str):
             "initial_threshold": executor_payload.get("initial_threshold"),
             "max_available_capital": executor_payload.get("max_available_capital"),
             "allow_partial_stocks": executor_payload.get("allow_partial_stocks", False),
+            "tick_sample_every": executor_payload.get("tick_sample_every", 1),
         }
     broker = config.get("broker") or engine.get("broker") or "angel"
     symbol = config.get("symbol") or engine.get("symbol") or "symbol"

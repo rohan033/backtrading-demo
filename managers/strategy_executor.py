@@ -31,11 +31,18 @@ class StrategyExecutor(TickListener):
         self._queue: asyncio.Queue[TickData] = asyncio.Queue(maxsize=QUEUE_MAX_SIZE)
         self._consumer_task: asyncio.Task | None = None
         self._on_status_change = on_status_change
+        self._ticks_seen = 0
 
     def set_strategy_config(self, strategy_config):
         self.strategy_config = strategy_config
         self.strategy = OnePercentStrategy(strategy_config)
+        self._ticks_seen = 0
         self._update_required_subscriptions()
+
+    def _tick_sample_every(self) -> int:
+        if not self.strategy_config:
+            return 1
+        return max(1, int(getattr(self.strategy_config, "tick_sample_every", 1) or 1))
 
     def _set_status(self, new_status: str):
         self.status = new_status
@@ -64,6 +71,7 @@ class StrategyExecutor(TickListener):
             'max_available_capital': getattr(cfg, 'max_available_capital', None) if cfg else None,
             'allow_partial_stocks': getattr(cfg, 'allow_partial_stocks', False) if cfg else False,
             'close_price': close_price,
+            'tick_sample_every': self._tick_sample_every(),
         }
 
     def _update_required_subscriptions(self):
@@ -76,6 +84,10 @@ class StrategyExecutor(TickListener):
             )
 
     def enqueue_tick(self, tick: TickData):
+        self._ticks_seen += 1
+        if self._ticks_seen % self._tick_sample_every() != 0:
+            return
+
         try:
             self._queue.put_nowait(tick)
         except asyncio.QueueFull:

@@ -1706,6 +1706,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     use_fake_client: false,
     client_mode: 'standard',
     feed_mode: 'websocket',
+    tick_sample_every: '1',
   })
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -1745,6 +1746,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       use_fake_client: Boolean(template.use_fake_client),
       client_mode: template.client_mode || 'standard',
       feed_mode: template.feed_mode || 'websocket',
+      tick_sample_every: String(template.tick_sample_every ?? executor.tick_sample_every ?? '1'),
     })
     setSelectedStock({
       tradingsymbol: template.symbol || executor.symbol,
@@ -1835,6 +1837,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     use_fake_client: form.use_fake_client,
     client_mode: form.broker === 'etoro' ? form.client_mode : 'standard',
     feed_mode: form.broker === 'angel' ? form.feed_mode : 'websocket',
+    tick_sample_every: Math.max(1, Math.min(300, parseInt(form.tick_sample_every, 10) || 1)),
   })
 
   const validateForm = () => {
@@ -1983,6 +1986,17 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
               </select>
             </div>
           ) : null}
+          <div>
+            <FormField
+              label="Tick sampling (every N ticks)"
+              type="number"
+              value={form.tick_sample_every}
+              onChange={value => setForm(prev => ({ ...prev, tick_sample_every: value }))}
+            />
+            <p className="mt-1 text-[10px] text-text-secondary">
+              Strategy runs on every Nth price tick (~1 tick/sec on WebSocket). N=5 ≈ one check every 5s.
+            </p>
+          </div>
           <div className="col-span-2">
             <FormField label="Execution ID" value={form.executor_id} onChange={value => setForm(prev => ({ ...prev, executor_id: value }))} />
           </div>

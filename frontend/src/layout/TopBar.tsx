@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom'
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 
+import { StopAllStrategiesButton } from '../components/StopAllStrategiesButton'
 import { getPageMeta } from './page-meta'
 import { useSidebar } from './sidebar-context'
 
@@ -32,24 +33,27 @@ export default function TopBar() {
         ) : null}
       </div>
 
-      {meta.primaryAction ? (
-        meta.primaryAction.to ? (
-          <Link
-            to={meta.primaryAction.to}
-            className="rounded-md bg-accent px-4 py-2 text-[11px] font-bold text-white transition-opacity hover:opacity-90"
-          >
-            {meta.primaryAction.label}
-          </Link>
-        ) : (
-          <button
-            type="button"
-            onClick={meta.primaryAction.onClick}
-            className="rounded-md bg-accent px-4 py-2 text-[11px] font-bold text-white transition-opacity hover:opacity-90"
-          >
-            {meta.primaryAction.label}
-          </button>
-        )
-      ) : null}
+      <div className="flex shrink-0 items-center gap-2">
+        <StopAllStrategiesButton />
+        {meta.primaryAction ? (
+          meta.primaryAction.to ? (
+            <Link
+              to={meta.primaryAction.to}
+              className="rounded-md bg-accent px-4 py-2 text-[11px] font-bold text-white transition-opacity hover:opacity-90"
+            >
+              {meta.primaryAction.label}
+            </Link>
+          ) : (
+            <button
+              type="button"
+              onClick={meta.primaryAction.onClick}
+              className="rounded-md bg-accent px-4 py-2 text-[11px] font-bold text-white transition-opacity hover:opacity-90"
+            >
+              {meta.primaryAction.label}
+            </button>
+          )
+        ) : null}
+      </div>
     </header>
   )
 }
