@@ -19,11 +19,10 @@ import {
   resolveExecutionSourceId,
   resolveExecutionSourceMetaId,
 } from '../../lib/executionSources'
+import { TradingActivityFeed } from '../../components/TradingActivityFeed'
 import { formatScheduledStart, scheduleSummary } from '../../lib/tradingSchedule'
 
 import './strategy-detail.css'
-
-const CONTROL_API = '/api/control'
 
 function strategyTitle(execution) {
   if (!execution) return 'Strategy'
@@ -120,112 +119,14 @@ function RuntimePills({ port, apiBaseUrl, wsUrl, logFile, pending }) {
   )
 }
 
-function formatRelativeTime(event) {
-  const raw = event.created_at || event.received_at || event.timestamp
-  if (!raw) return '—'
-  const date = typeof raw === 'number' ? new Date(raw * 1000) : new Date(raw)
-  if (Number.isNaN(date.getTime())) return '—'
-  const deltaMs = Date.now() - date.getTime()
-  const minutes = Math.floor(deltaMs / 60000)
-  if (minutes < 1) return 'Just now'
-  if (minutes < 60) return `${minutes} min ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours} hr ago`
-  return date.toLocaleDateString()
-}
-
-function getEventAction(event) {
-  return String(event.action || event.activity_type || event.event_type || event.type || 'EVENT').toUpperCase()
-}
-
-function mapEventToActivity(event) {
-  const action = getEventAction(event)
-  const details = event.details || event.content || {}
-  const symbol = String(event.symbol || details.symbol || '').trim()
-
-  let type = 'info'
-  if (action.includes('BUY') || (action.includes('FILLED') && !action.includes('SELL'))) type = 'buy'
-  else if (action.includes('SELL') || action.includes('CLOSE') || action.includes('TAKE_PROFIT') || action.includes('STOP_LOSS')) type = 'sell'
-  else if (action.includes('PENDING')) type = 'pending'
-
-  const titleParts = [action.replace(/_/g, ' ').toLowerCase()]
-  if (symbol) titleParts.push(`· ${symbol}`)
-
-  const detailParts = [
-    details.quantity && details.price ? `${details.quantity} units @ ${details.price}` : '',
-    event.order_id ? `order ${event.order_id}` : '',
-    details.message ? String(details.message) : '',
-    details.reason ? String(details.reason) : '',
-  ].filter(Boolean)
-
-  return { type, title: titleParts.join(' '), detail: detailParts.join(' · ') || 'Strategy event', time: formatRelativeTime(event) }
-}
-
 function ActivityFeed({ executorId, realtimeEvents }) {
-  const [dbEvents, setDbEvents] = useState([])
-
-  useEffect(() => {
-    const params = new URLSearchParams({ limit: '20', executor_id: executorId })
-    fetch(`${CONTROL_API}/events?${params}`)
-      .then(res => res.json())
-      .then(data => { if (data.status) setDbEvents(data.data || []) })
-      .catch(() => setDbEvents([]))
-  }, [executorId, realtimeEvents.length])
-
-  const events = useMemo(() => {
-    const seen = new Set()
-    return [...realtimeEvents, ...dbEvents]
-      .filter(event => {
-        const execId = event.executor_id || event.details?.executor_id
-        if (execId && execId !== executorId) return false
-        const key = `${event.id || ''}-${event.timestamp || event.created_at || ''}-${event.action}`
-        if (seen.has(key)) return false
-        seen.add(key)
-        return true
-      })
-      .slice(0, 6)
-      .map(mapEventToActivity)
-  }, [realtimeEvents, dbEvents, executorId])
-
   return (
-    <div className="sd-card flex h-full min-h-[360px] flex-col overflow-hidden">
-      <div className="flex items-center justify-between border-b border-[var(--sd-border)] px-4 py-3.5">
-        <h3 className="text-[13px] font-semibold">Activity</h3>
-        <Link to="/trade/activity" className="text-xs font-semibold text-[var(--sd-accent)] hover:underline">
-          View all
-        </Link>
-      </div>
-      <div className="flex-1 overflow-auto px-4 py-1">
-        {events.length ? events.map((item, index) => {
-          const iconStyle = item.type === 'buy'
-            ? { background: 'var(--sd-green-soft)', color: 'var(--sd-green)' }
-            : item.type === 'sell'
-              ? { background: 'var(--sd-red-soft)', color: 'var(--sd-red)' }
-              : item.type === 'pending'
-                ? { background: 'rgba(251, 191, 36, 0.15)', color: '#fbbf24' }
-                : { background: 'var(--sd-accent-soft)', color: 'var(--sd-accent)' }
-          const icon = item.type === 'buy' ? '▲' : item.type === 'sell' ? '▼' : item.type === 'pending' ? '◷' : '●'
-
-          return (
-            <div key={`${item.title}-${index}`} className="flex gap-3 border-b border-[var(--sd-border)] py-3 last:border-b-0">
-              <div
-                className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs"
-                style={iconStyle}
-              >
-                {icon}
-              </div>
-              <div className="min-w-0">
-                <div className="text-xs font-semibold capitalize">{item.title}</div>
-                {item.detail ? <div className="text-xs text-[var(--sd-text-muted)]">{item.detail}</div> : null}
-                <div className="mt-0.5 text-[11px] text-[var(--sd-text-muted)]">{item.time}</div>
-              </div>
-            </div>
-          )
-        }) : (
-          <div className="py-10 text-center text-sm text-[var(--sd-text-muted)]">No activity for this strategy yet.</div>
-        )}
-      </div>
-    </div>
+    <TradingActivityFeed
+      executorId={executorId}
+      realtimeEvents={realtimeEvents}
+      viewAllHref="/trade/activity"
+      className="sd-card h-full min-h-[360px] border-[var(--sd-border)] bg-[var(--sd-bg-card)]"
+    />
   )
 }
 

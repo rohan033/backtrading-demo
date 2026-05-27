@@ -57,7 +57,7 @@ class AppendMessageRequest(BaseModel):
     id: Optional[str] = None
 
 
-@router.get("/sessions")
+@router.get("/sessions", operation_id="get_research_sessions", summary="List AI research sessions")
 def list_research_sessions(status: Optional[str] = None, limit: int = 100):
     store = get_ai_research_store()
     sessions = store.list_sessions(status=status, limit=limit)
@@ -71,7 +71,7 @@ def list_research_sessions(status: Optional[str] = None, limit: int = 100):
     return {"status": True, "data": sessions}
 
 
-@router.post("/sessions")
+@router.post("/sessions", operation_id="create_research_session", summary="Create an AI research session")
 def create_research_session(req: CreateSessionRequest):
     session = get_ai_research_store().create_session(
         title=req.title,
@@ -81,7 +81,7 @@ def create_research_session(req: CreateSessionRequest):
     return {"status": True, "data": session}
 
 
-@router.get("/sessions/{session_id}")
+@router.get("/sessions/{session_id}", operation_id="get_research_session", summary="Get one AI research session")
 def get_research_session(session_id: str):
     store = get_ai_research_store()
     enrich_session_metadata(store, session_id)
@@ -91,7 +91,7 @@ def get_research_session(session_id: str):
     return {"status": True, "data": session}
 
 
-@router.patch("/sessions/{session_id}")
+@router.patch("/sessions/{session_id}", operation_id="update_research_session", summary="Update an AI research session")
 def update_research_session(session_id: str, req: UpdateSessionRequest):
     payload = req.model_dump(exclude_none=True)
     session = get_ai_research_store().update_session(session_id, payload)
@@ -100,7 +100,7 @@ def update_research_session(session_id: str, req: UpdateSessionRequest):
     return {"status": True, "data": session}
 
 
-@router.get("/sessions/{session_id}/messages")
+@router.get("/sessions/{session_id}/messages", operation_id="get_research_messages", summary="List AI research chat messages")
 def list_research_messages(session_id: str, limit: int = 50, before: Optional[str] = None):
     if not get_ai_research_store().get_session(session_id):
         raise HTTPException(status_code=404, detail="Research session not found")
@@ -111,7 +111,7 @@ def list_research_messages(session_id: str, limit: int = 50, before: Optional[st
     return {"status": True, "data": page}
 
 
-@router.post("/sessions/{session_id}/messages")
+@router.post("/sessions/{session_id}/messages", operation_id="append_research_message", summary="Append an AI research chat message")
 def append_research_message(session_id: str, req: AppendMessageRequest):
     message = get_ai_research_store().append_message(
         session_id,
@@ -129,7 +129,7 @@ def append_research_message(session_id: str, req: AppendMessageRequest):
     return {"status": True, "data": message}
 
 
-@router.post("/sessions/{session_id}/actions")
+@router.post("/sessions/{session_id}/actions", operation_id="upsert_research_action", summary="Create or update a research action")
 def upsert_research_action(session_id: str, req: UpsertActionRequest):
     session = get_ai_research_store().upsert_action(
         session_id,
@@ -140,7 +140,7 @@ def upsert_research_action(session_id: str, req: UpsertActionRequest):
     return {"status": True, "data": session}
 
 
-@router.delete("/sessions/{session_id}/actions/{action_id}")
+@router.delete("/sessions/{session_id}/actions/{action_id}", operation_id="delete_research_action", summary="Delete a research action")
 def delete_research_action(session_id: str, action_id: str):
     session = get_ai_research_store().delete_action(session_id, action_id)
     if not session:

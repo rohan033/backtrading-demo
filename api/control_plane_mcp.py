@@ -8,11 +8,24 @@ from typing import TYPE_CHECKING
 from fastmcp import FastMCP
 from fastmcp.server.providers.openapi import MCPType, RouteMap
 
+from api.control_plane_mcp_tools import MCP_TOOL_DESCRIPTIONS
+
 if TYPE_CHECKING:
     from fastapi import FastAPI
 
 CONTROL_PLANE_MCP_PATH = "/mcp"
 CONTROL_PLANE_MCP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+CONTROL_PLANE_READ_API_PATTERN = r"^/api/(search|portfolio|historical)"
+
+
+def _customize_mcp_component(route, component) -> None:
+    """Apply friendly descriptions to OpenAPI-derived MCP tools."""
+    operation_id = getattr(route, "operation_id", None)
+    if not operation_id:
+        return
+    description = MCP_TOOL_DESCRIPTIONS.get(operation_id)
+    if description and hasattr(component, "description"):
+        component.description = description
 
 
 def mount_control_plane_mcp(app: FastAPI) -> tuple[FastMCP, object]:
@@ -25,9 +38,12 @@ def mount_control_plane_mcp(app: FastAPI) -> tuple[FastMCP, object]:
         httpx_client_kwargs={"base_url": control_plane_url},
         route_maps=[
             RouteMap(methods="*", pattern=r"^/api/control/.+/stream$", mcp_type=MCPType.EXCLUDE),
+            RouteMap(methods="*", pattern=r"^/api/control/cursor-agent", mcp_type=MCPType.EXCLUDE),
             RouteMap(methods=CONTROL_PLANE_MCP_METHODS, pattern=r"^/api/control", mcp_type=MCPType.TOOL),
+            RouteMap(methods=["GET"], pattern=CONTROL_PLANE_READ_API_PATTERN, mcp_type=MCPType.TOOL),
             RouteMap(methods="*", pattern=r".*", mcp_type=MCPType.EXCLUDE),
         ],
+        mcp_component_fn=_customize_mcp_component,
     )
     mcp_app = mcp.http_app(path="/")
     app.mount(CONTROL_PLANE_MCP_PATH, mcp_app)

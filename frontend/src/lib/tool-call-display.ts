@@ -28,6 +28,36 @@ export function formatToolLabel(rawName: string): string {
   const normalized = base.toLowerCase().replace(/-/g, '_')
   if (normalized === 'websearch' || normalized === 'web_search') return 'Web search'
   if (normalized === 'webfetch' || normalized === 'web_fetch') return 'Web fetch'
+  const mcpLabels: Record<string, string> = {
+    create_strategy: 'Create strategy',
+    get_strategies: 'Get strategies',
+    get_strategy: 'Get strategy',
+    get_strategy_duplicate_template: 'Duplicate template',
+    start_strategy: 'Start strategy',
+    stop_strategy: 'Stop strategy',
+    unschedule_strategy: 'Unschedule strategy',
+    unschedule_all_strategies: 'Unschedule all',
+    stop_all_strategies: 'Stop all strategies',
+    get_engines: 'Get engines',
+    get_engine: 'Get engine',
+    get_engine_logs: 'Get engine logs',
+    search_instruments: 'Search instruments',
+    search_scrip: 'Search scrip',
+    get_portfolio: 'Get portfolio',
+    get_account_portfolio: 'Get account portfolio',
+    get_historical_candles: 'Get historical candles',
+    get_control_events: 'Get events',
+    get_control_trades: 'Get trades',
+    get_control_orders: 'Get orders',
+    get_event_sessions: 'Get event sessions',
+    get_event_session_events: 'Get session events',
+    get_research_sessions: 'Get research sessions',
+    get_research_session: 'Get research session',
+    get_research_messages: 'Get research messages',
+    get_default_strategy_schedule: 'Default schedule',
+    get_trading_day_options: 'Trading day options',
+  }
+  if (mcpLabels[normalized]) return mcpLabels[normalized]
   const stripped = base
     .replace(/_api_control.*$/i, '')
     .replace(/_?(get|post|put|patch|delete)$/i, '')

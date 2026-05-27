@@ -28,6 +28,15 @@ from control_plane.execution_source_links import (
     extract_execution_id_from_tool_payload,
     tool_call_created_execution,
 )
+from api.control_plane_mcp_tools import (
+    ASK_CONTROL_PLANE_READ_MCP_HINT,
+    CONTROL_PLANE_HTTP_SHELL_RE,
+    CONTROL_PLANE_MCP_SERVER,
+    EXECUTE_CONTROL_PLANE_MCP_HINT,
+    MCP_MUTATION_TOOL_NAMES,
+    READ_MCP_TOOL_NAMES,
+    is_read_mcp_tool_name,
+)
 
 log = logging.getLogger("backtrading.cursor_agent")
 
@@ -77,29 +86,41 @@ USER_FACING_RESPONSE_HINT = """User-facing reply rules (critical — applies to 
 - You may use repo tools and control-plane actions silently when appropriate, but do not narrate that machinery in the reply unless the user explicitly asks for developer or architecture documentation.
 - Keep `ai_action` JSON fences for strategy suggestions when needed; they are parsed by the UI and must not be preceded by technical explanations about how the UI consumes them."""
 
-ASK_MODE_HINT = """You are in ASK mode (read-only guardrails).
+ASK_MODE_HINT = f"""You are in ASK mode (read-only guardrails).
 
 - Answer questions and explain tradeoffs using the codebase and read-only context.
 - You may use read-only repo tools (search/read files) when needed to ground answers.
+{ASK_CONTROL_PLANE_READ_MCP_HINT}
 - Do NOT modify files, run shell commands, or use write/edit/terminal tools.
-- Do NOT interact with the control plane or live trading runtime in any way, including:
-  - Creating, deploying, starting, duplicating, or stopping strategy executions
-  - Calling `/api/control/executions`, `/api/control/engines`, or related POST/DELETE routes
-  - Running `make dev`, `make cp`, `uvicorn`, or scripts that spawn/stop data-plane engines
-  - Writing to `control_plane.db` or mutating engine registry state
+- Do NOT create, deploy, start, duplicate, stop, or unschedule strategies or engines.
+- Do NOT run `make dev`, `make cp`, `uvicorn`, or scripts that spawn/stop data-plane engines.
 - If the user wants strategies created/stopped or code changed, explain the steps and tell them to switch to Execute mode."""
 
-EXECUTE_MODE_HINT = """You are in EXECUTE mode.
+ASK_MODE_WEB_SEARCH_HINT = f"""You are in ASK mode (read-only guardrails).
 
-You may inspect the repo, use tools, and interact with the control plane when the user asks (create/start/stop executions, apply code changes). Prefer minimal, safe diffs and explain consequential actions before destructive control-plane operations.
+- Do not search or read the codebase for this message; use websearch/webfetch only.
+{ASK_CONTROL_PLANE_READ_MCP_HINT}
+- Do NOT modify files, run shell commands, or use write/edit/terminal tools.
+- Do NOT create, deploy, start, duplicate, stop, or unschedule strategies or engines.
+- If the user wants strategies created/stopped or code changed, explain the steps and tell them to switch to Execute mode."""
 
-When creating strategy executions via POST /api/control/executions, always include source_id in the JSON body:
-- "ai_chatbot_panel" when creating from the floating Strategy AI panel (leave source_meta_id blank)
-- "ai_research" when the prompt indicates an active AI Research session — you MUST set source_meta_id to that session id
-- "user" for manual/user flows (leave source_meta_id blank)"""
+EXECUTE_MODE_WEB_SEARCH_HINT = f"""You are in EXECUTE mode.
+
+Do not search or read the codebase for this message; use websearch/webfetch only.
+
+{EXECUTE_CONTROL_PLANE_MCP_HINT}
+
+Prefer minimal, safe diffs and explain consequential actions before destructive control-plane operations."""
+
+EXECUTE_MODE_HINT = f"""You are in EXECUTE mode.
+
+You may inspect the repo, use tools, and interact with the control plane when the user asks (create/start/stop executions, apply code changes).
+
+{EXECUTE_CONTROL_PLANE_MCP_HINT}
+
+Prefer minimal, safe diffs and explain consequential actions before destructive control-plane operations."""
 
 VALID_INTERACTION_MODES = frozenset({"ask", "execute"})
-CONTROL_PLANE_MCP_SERVER = "backtrading-control-plane"
 
 WEB_SEARCH_TOOL_NAMES = frozenset({
     "websearch",
@@ -121,14 +142,22 @@ ASK_READ_ONLY_TOOL_NAMES = frozenset({
     "readfile",
     "list_mcp_resources",
     "fetch_mcp_resource",
+    *READ_MCP_TOOL_NAMES,
 })
 
+REPO_READ_TOOL_NAMES = frozenset(
+    name
+    for name in ASK_READ_ONLY_TOOL_NAMES
+    if name not in WEB_SEARCH_TOOL_NAMES and name not in READ_MCP_TOOL_NAMES
+)
+
 WEB_SEARCH_ENABLED_HINT = """Web search is ENABLED for this message.
+
+Do not check the codebase.
 
 For stock / market analysis, earnings, news, sector context, or any question that depends on current or recent public information:
 - Prefer the websearch and webfetch tools before guessing from memory.
 - Treat an internet check as mandatory: use websearch/webfetch to verify claims, levels, news, and market context before answering.
-- Combine web findings with repo/control-plane data when both are relevant.
 - End every reply that used web search with a short **Sources** section listing the sites or publications consulted (trader-facing labels and URLs when available). Do not name internal tools in the reply."""
 
 WEB_SEARCH_DISABLED_HINT = """Web search is DISABLED for this message.
@@ -149,6 +178,8 @@ ASK_BLOCKED_TOOL_NAMES = frozenset({
     "execute",
     "task",
 })
+
+SHELL_TOOL_NAMES = frozenset({"shell", "run_terminal_cmd", "terminal"})
 
 CONTROL_PLANE_MUTATION_RE = re.compile(
     r"|".join(
@@ -738,7 +769,7 @@ def _wrap_prompt(
         parts.append(STRATEGY_AGENT_HINT)
     parts.append(WEB_SEARCH_ENABLED_HINT if web_search_enabled else WEB_SEARCH_DISABLED_HINT)
     if interaction_mode == "execute":
-        parts.append(EXECUTE_MODE_HINT)
+        parts.append(EXECUTE_MODE_WEB_SEARCH_HINT if web_search_enabled else EXECUTE_MODE_HINT)
         if research_session_id:
             parts.append(
                 f'Active AI Research session ({research_session_id}): '
@@ -751,7 +782,7 @@ def _wrap_prompt(
                 'use source_id "ai_chatbot_panel" and leave source_meta_id blank.'
             )
     else:
-        parts.append(ASK_MODE_HINT)
+        parts.append(ASK_MODE_WEB_SEARCH_HINT if web_search_enabled else ASK_MODE_HINT)
     parts.append(USER_FACING_RESPONSE_HINT)
     if new_agent:
         parts.append(f"User question:\n{user_prompt}")
@@ -788,10 +819,8 @@ def _maybe_tag_research_execution_from_tool(
 
 
 def _control_plane_mcp_servers(interaction_mode: str) -> dict[str, Any] | None:
-    """Attach control-plane MCP tools only in Execute mode."""
-    if interaction_mode != "execute":
-        return None
-
+    """Attach control-plane MCP tools in Ask and Execute modes."""
+    _ = interaction_mode
     from cursor_sdk import HttpMcpServerConfig
 
     from api.control_plane_mcp import CONTROL_PLANE_MCP_PATH
@@ -867,7 +896,34 @@ def _tool_call_blocked(
             "Web search is turned off. Enable the Web search toggle to look up live market data.",
         )
 
+    if web_search_enabled and normalized in REPO_READ_TOOL_NAMES and not is_read_mcp_tool_name(normalized):
+        return (
+            True,
+            "Web search is on — do not check the codebase. Turn off Web search to use repo tools.",
+        )
+
+    if (
+        normalized in SHELL_TOOL_NAMES
+        and CONTROL_PLANE_HTTP_SHELL_RE.search(blob)
+    ):
+        return (
+            True,
+            f"Use {CONTROL_PLANE_MCP_SERVER} MCP tools (e.g. create_strategy) instead of shell/curl for control-plane APIs.",
+        )
+
     if interaction_mode != "ask":
+        return False, ""
+
+    if normalized in MCP_MUTATION_TOOL_NAMES:
+        return (
+            True,
+            "Ask mode is read-only. Switch to Execute to create, start, stop, or deploy strategies.",
+        )
+
+    if is_read_mcp_tool_name(normalized):
+        return False, ""
+
+    if normalized in ASK_READ_ONLY_TOOL_NAMES:
         return False, ""
 
     if CONTROL_PLANE_MUTATION_RE.search(blob):

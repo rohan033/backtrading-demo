@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Callable
-
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.date import DateTrigger
 
 log = logging.getLogger("backtrading")
 
 StartExecutionFn = Callable[[str], None]
+ListEnginesFn = Callable[..., list[dict]]
 
 
 def parse_utc_datetime(value: str | None) -> datetime | None:
@@ -23,86 +21,51 @@ def parse_utc_datetime(value: str | None) -> datetime | None:
 
 
 class ExecutionScheduler:
-    """APScheduler-backed one-shot jobs for controlled execution starts."""
+    """Polls the engine registry for due scheduled executions and starts them."""
 
-    def __init__(self, start_execution_fn: StartExecutionFn):
+    def __init__(self, list_engines_fn: ListEnginesFn, start_execution_fn: StartExecutionFn):
+        self._list_engines = list_engines_fn
         self._start_execution = start_execution_fn
-        self._scheduler = BackgroundScheduler(timezone="UTC")
 
-    @staticmethod
-    def job_id(execution_id: str) -> str:
-        return f"controlled-execution:{execution_id}"
+    def due_execution_ids(self, *, now: datetime | None = None) -> list[str]:
+        current = now or datetime.now(timezone.utc)
+        due: list[str] = []
 
-    @property
-    def running(self) -> bool:
-        return bool(self._scheduler.running)
-
-    def start(self) -> None:
-        if self._scheduler.running:
-            return
-        self._scheduler.start()
-        log.info("[SCHEDULER] APScheduler started")
-
-    def shutdown(self) -> None:
-        if not self._scheduler.running:
-            return
-        self._scheduler.shutdown(wait=False)
-        log.info("[SCHEDULER] APScheduler stopped")
-
-    def register(self, execution_id: str, scheduled_start_at: datetime) -> None:
-        self.unregister(execution_id)
-        now = datetime.now(timezone.utc)
-        run_date = scheduled_start_at if scheduled_start_at > now else now + timedelta(seconds=2)
-        self._scheduler.add_job(
-            self._run_start,
-            trigger=DateTrigger(run_date=run_date),
-            id=self.job_id(execution_id),
-            args=[execution_id],
-            replace_existing=True,
-            misfire_grace_time=3600,
-        )
-        log.info(
-            "[SCHEDULER] Registered execution %s for %s",
-            execution_id,
-            run_date.isoformat(),
-        )
-
-    def unregister(self, execution_id: str) -> None:
-        job_id = self.job_id(execution_id)
-        if self._scheduler.get_job(job_id):
-            self._scheduler.remove_job(job_id)
-            log.info("[SCHEDULER] Removed job for execution %s", execution_id)
-
-    def sync_registry(self, engines: list[dict]) -> None:
-        active_ids: set[str] = set()
-        for engine in engines:
-            if str(engine.get("status") or "").lower() != "scheduled":
-                continue
+        for engine in self._list_engines(status="scheduled"):
             execution_id = engine.get("id")
             metadata = engine.get("metadata") or {}
             scheduled_at = parse_utc_datetime(metadata.get("scheduled_start_at"))
-            if not execution_id or not scheduled_at:
+            if not execution_id:
                 continue
-            self.register(execution_id, scheduled_at)
-            active_ids.add(execution_id)
-
-        for job in self._scheduler.get_jobs():
-            if not str(job.id).startswith("controlled-execution:"):
+            if not scheduled_at:
+                log.warning(
+                    "[SCHEDULER] Scheduled execution %s has no scheduled_start_at; skipping",
+                    execution_id,
+                )
                 continue
-            execution_id = str(job.id).split(":", 1)[1]
-            if execution_id not in active_ids:
-                self.unregister(execution_id)
+            if scheduled_at <= current:
+                due.append(execution_id)
 
-        log.info("[SCHEDULER] Synced %d scheduled execution job(s)", len(active_ids))
+        return due
 
-    def _run_start(self, execution_id: str) -> None:
-        log.info("[SCHEDULER] Firing scheduled start for %s", execution_id)
-        try:
-            self._start_execution(execution_id)
-        except Exception as exc:
-            log.error(
-                "[SCHEDULER] Failed to start scheduled execution %s: %s",
-                execution_id,
-                exc,
-                exc_info=True,
-            )
+    def poll_once(self) -> list[str]:
+        """Check DB for due scheduled strategies and fire starts. Returns started ids."""
+        due_ids = self.due_execution_ids()
+        if not due_ids:
+            log.debug("[SCHEDULER] Poll complete — no due scheduled executions")
+            return []
+
+        started: list[str] = []
+        for execution_id in due_ids:
+            log.info("[SCHEDULER] Due scheduled execution %s — starting", execution_id)
+            try:
+                self._start_execution(execution_id)
+                started.append(execution_id)
+            except Exception as exc:
+                log.error(
+                    "[SCHEDULER] Failed to start scheduled execution %s: %s",
+                    execution_id,
+                    exc,
+                    exc_info=True,
+                )
+        return started

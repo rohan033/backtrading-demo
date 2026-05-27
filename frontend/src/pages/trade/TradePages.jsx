@@ -2,9 +2,13 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, Outlet, useNavigate, useParams } from 'react-router-dom'
 
 import { StopAllStrategiesButton } from '../../components/StopAllStrategiesButton'
+import { UnscheduleAllStrategiesButton } from '../../components/UnscheduleAllStrategiesButton'
 import { StrategiesTable } from '../../components/StrategiesTable'
+import { StocksTable } from '../../components/StocksTable'
 import LiveLogPanel from '../../components/LiveLogPanel'
 import StrategyDetailView from './StrategyDetailView'
+import { groupExecutionsBySymbol } from '../../lib/groupExecutionsBySymbol'
+import { executionsToStrategyRows } from '../../lib/strategyRows'
 import { resolveExecutionSourceId, resolveExecutionSourceMetaId } from '../../lib/executionSources'
 import {
   CreateExecutionPanel,
@@ -69,6 +73,7 @@ export function TradeLayout() {
 
 export function StrategiesListPage() {
   const navigate = useNavigate()
+  const [viewMode, setViewMode] = useState('stock')
   const [filter, setFilter] = useState('all')
   const [page, setPage] = useState(1)
   const [logTarget, setLogTarget] = useState(null)
@@ -87,49 +92,53 @@ export function StrategiesListPage() {
 
   useEffect(() => {
     setPage(1)
-  }, [filter])
+  }, [filter, viewMode])
 
-  const rows = useMemo(() => {
-    return panelExecutions.map(execution => {
+  const filteredExecutions = useMemo(() => {
+    return panelExecutions.filter(execution => {
       const engineStatus = String(execution.data_plane_status || execution.status || 'unknown').toLowerCase()
       const isStoppable = ['running', 'starting', 'stale'].includes(engineStatus)
-      return {
-        id: execution.executor_id,
-        name: execution.label || execution.symbol || execution.strategy_name || 'Strategy',
-        symbol: execution.symbol || '—',
-        status: engineStatus,
-        createdAt: execution.created_at,
-        scheduledFor: execution.scheduled_start_at || null,
-        pnl: 0,
-        inPosition: Boolean(execution.is_in_position),
-        isLive: isStoppable,
-        isScheduled: engineStatus === 'scheduled',
-        logFile: execution.log_file || null,
-      }
+      const isScheduled = engineStatus === 'scheduled'
+      if (filter === 'running') return isStoppable
+      if (filter === 'scheduled') return isScheduled
+      if (filter === 'stopped') return !isStoppable && !isScheduled
+      return true
     })
-  }, [panelExecutions])
+  }, [filter, panelExecutions])
 
-  const filteredRows = useMemo(() => {
-    if (filter === 'running') return rows.filter(row => row.isLive)
-    if (filter === 'scheduled') return rows.filter(row => row.isScheduled)
-    if (filter === 'stopped') return rows.filter(row => !row.isLive && !row.isScheduled)
-    return rows
-  }, [filter, rows])
+  const rows = useMemo(() => executionsToStrategyRows(filteredExecutions), [filteredExecutions])
 
-  const pageCount = Math.max(1, Math.ceil(filteredRows.length / STRATEGIES_PAGE_SIZE))
+  const stockGroups = useMemo(
+    () => groupExecutionsBySymbol(filteredExecutions),
+    [filteredExecutions],
+  )
+
+  const pageCount = Math.max(
+    1,
+    Math.ceil((viewMode === 'stock' ? stockGroups.length : rows.length) / STRATEGIES_PAGE_SIZE),
+  )
   const currentPage = Math.min(page, pageCount)
 
   const pagedRows = useMemo(() => {
     const start = (currentPage - 1) * STRATEGIES_PAGE_SIZE
-    return filteredRows.slice(start, start + STRATEGIES_PAGE_SIZE)
-  }, [filteredRows, currentPage])
+    return rows.slice(start, start + STRATEGIES_PAGE_SIZE)
+  }, [rows, currentPage])
 
-  const counts = useMemo(() => ({
-    all: rows.length,
-    running: rows.filter(row => row.isLive).length,
-    scheduled: rows.filter(row => row.isScheduled).length,
-    stopped: rows.filter(row => !row.isLive && !row.isScheduled).length,
-  }), [rows])
+  const pagedStockGroups = useMemo(() => {
+    const start = (currentPage - 1) * STRATEGIES_PAGE_SIZE
+    return stockGroups.slice(start, start + STRATEGIES_PAGE_SIZE)
+  }, [stockGroups, currentPage])
+
+  const counts = useMemo(() => {
+    const allRows = executionsToStrategyRows(panelExecutions)
+    return {
+      all: allRows.length,
+      running: allRows.filter(row => row.isLive).length,
+      scheduled: allRows.filter(row => row.isScheduled).length,
+      stopped: allRows.filter(row => !row.isLive && !row.isScheduled).length,
+      stocks: groupExecutionsBySymbol(panelExecutions).length,
+    }
+  }, [panelExecutions])
 
   return (
     <div className="h-full overflow-auto p-6">
@@ -160,11 +169,15 @@ export function StrategiesListPage() {
           </p>
           {!controlledExecutionsLoading && !controlledExecutionsError ? (
             <p className="mt-1 text-[10px] text-text-secondary">
-              {counts.all} saved · {counts.running} running · {counts.scheduled} scheduled · {counts.stopped} stopped
+              {counts.stocks} stocks · {counts.all} saved · {counts.running} running · {counts.scheduled} scheduled · {counts.stopped} stopped
             </p>
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <UnscheduleAllStrategiesButton
+            alwaysShow
+            onComplete={refreshControlledExecutions}
+          />
           <StopAllStrategiesButton
             alwaysShow
             onComplete={refreshControlledExecutions}
@@ -176,6 +189,26 @@ export function StrategiesListPage() {
             New strategy
           </Link>
         </div>
+      </div>
+
+      <div className="mb-4 flex flex-wrap gap-2">
+        {[
+          { id: 'stock', label: `By stock (${counts.stocks})` },
+          { id: 'strategy', label: `By strategy (${counts.all})` },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => setViewMode(tab.id)}
+            className={`rounded px-3 py-1.5 text-[11px] font-bold transition-colors ${
+              viewMode === tab.id
+                ? 'bg-violet-500 text-white'
+                : 'bg-card text-text-secondary hover:text-text-primary'
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       <div className="mb-4 flex flex-wrap gap-2">
@@ -218,7 +251,31 @@ export function StrategiesListPage() {
         <div className="rounded border border-dashed border-border p-8 text-center text-sm text-text-secondary">
           Loading saved strategies…
         </div>
-      ) : filteredRows.length ? (
+      ) : viewMode === 'stock' ? (
+        stockGroups.length ? (
+          <div className="overflow-hidden rounded-lg border border-border bg-card">
+            <StocksTable
+              rows={pagedStockGroups}
+              onRowClick={symbolKey => navigate(`/trade/stocks/${encodeURIComponent(symbolKey)}`)}
+            />
+            <div className="px-4 pb-4">
+              <PaginationBar
+                page={currentPage}
+                pageCount={pageCount}
+                total={stockGroups.length}
+                pageSize={STRATEGIES_PAGE_SIZE}
+                onPageChange={setPage}
+              />
+            </div>
+          </div>
+        ) : (
+          <div className="rounded border border-dashed border-border p-8 text-center text-sm text-text-secondary">
+            {filter === 'running'
+              ? 'No stocks with running strategies right now.'
+              : 'No stocks yet. Create a strategy to get started.'}
+          </div>
+        )
+      ) : rows.length ? (
         <div className="overflow-hidden rounded-lg border border-border bg-card">
           <StrategiesTable
             rows={pagedRows}
@@ -237,7 +294,7 @@ export function StrategiesListPage() {
             <PaginationBar
               page={currentPage}
               pageCount={pageCount}
-              total={filteredRows.length}
+              total={rows.length}
               pageSize={STRATEGIES_PAGE_SIZE}
               onPageChange={setPage}
             />
@@ -253,6 +310,8 @@ export function StrategiesListPage() {
     </div>
   )
 }
+
+export { StockDetailPage } from './StockDetailPage'
 
 export function StrategyCreatePage() {
   const navigate = useNavigate()

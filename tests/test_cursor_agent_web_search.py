@@ -9,6 +9,7 @@ from api.cursor_agent import (
 def test_wrap_prompt_includes_web_search_enabled_hint():
     prompt = _wrap_prompt("Analyze INFY", new_agent=False, web_search_enabled=True)
     assert WEB_SEARCH_ENABLED_HINT in prompt
+    assert "Do not check the codebase." in prompt
     assert WEB_SEARCH_DISABLED_HINT not in prompt
 
 
@@ -37,11 +38,77 @@ def test_tool_call_allowed_when_web_search_enabled_in_ask_mode():
     assert blocked is False
 
 
-def test_tool_call_blocked_when_web_search_disabled_in_execute_mode():
+def test_wrap_prompt_execute_mode_prefers_mcp_tools():
+    prompt = _wrap_prompt(
+        "Create a strategy for INFY",
+        new_agent=False,
+        interaction_mode="execute",
+        web_search_enabled=False,
+    )
+    assert "create_strategy" in prompt
+    assert "POST /api/control/executions" not in prompt
+
+
+def test_tool_call_blocked_when_shell_curls_control_plane_in_execute_mode():
     blocked, reason = _tool_call_blocked(
-        {"tool_name": "webfetch", "tool_status": "running"},
+        {
+            "tool_name": "shell",
+            "tool_status": "running",
+            "command": "curl -X POST http://127.0.0.1:8000/api/control/executions",
+        },
         interaction_mode="execute",
         web_search_enabled=False,
     )
     assert blocked is True
-    assert "Web search is turned off" in reason
+    assert "create_strategy" in reason
+
+
+def test_tool_call_allowed_when_mcp_create_strategy_used():
+    blocked, _ = _tool_call_blocked(
+        {"tool_name": "create_strategy", "tool_status": "running"},
+        interaction_mode="execute",
+        web_search_enabled=False,
+    )
+    assert blocked is False
+
+
+def test_tool_call_allowed_get_strategies_in_ask_mode():
+    blocked, _ = _tool_call_blocked(
+        {"tool_name": "get_strategies", "tool_status": "running"},
+        interaction_mode="ask",
+        web_search_enabled=False,
+    )
+    assert blocked is False
+
+
+def test_tool_call_allowed_search_instruments_in_ask_mode():
+    blocked, _ = _tool_call_blocked(
+        {"tool_name": "search_instruments", "tool_status": "running", "args": '{"q":"INFY"}'},
+        interaction_mode="ask",
+        web_search_enabled=True,
+    )
+    assert blocked is False
+
+
+def test_tool_call_blocked_create_strategy_in_ask_mode():
+    blocked, reason = _tool_call_blocked(
+        {"tool_name": "create_strategy", "tool_status": "running"},
+        interaction_mode="ask",
+        web_search_enabled=False,
+    )
+    assert blocked is True
+    assert "Execute" in reason
+
+
+def test_wrap_prompt_ask_mode_mentions_read_mcp_tools():
+    prompt = _wrap_prompt("What strategies are saved?", new_agent=False, interaction_mode="ask")
+    assert "get_*" in prompt
+    assert "backtrading-control-plane" in prompt
+
+
+def test_control_plane_mcp_attached_in_ask_mode():
+    from api.cursor_agent import _control_plane_mcp_servers
+
+    servers = _control_plane_mcp_servers("ask")
+    assert servers is not None
+    assert "backtrading-control-plane" in servers

@@ -21,6 +21,7 @@ import SettingsPage from './pages/SettingsPage'
 import {
   ActivityPage,
   ChartsPage,
+  StockDetailPage,
   StrategiesListPage,
   StrategyCreatePage,
   StrategyDetailPage,
@@ -55,6 +56,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             <Route path="strategies" element={<StrategiesListPage />} />
             <Route path="strategies/new" element={<StrategyCreatePage />} />
             <Route path="strategies/:id" element={<StrategyDetailPage />} />
+            <Route path="stocks/:symbol" element={<StockDetailPage />} />
             <Route path="activity" element={<ActivityPage />} />
             <Route path="charts" element={<ChartsPage />} />
           </Route>

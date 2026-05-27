@@ -32,7 +32,7 @@ from control_plane.log_stream import (
     sse_encode,
     stream_engine_log_events,
 )
-from control_plane.execution_scheduler import ExecutionScheduler, parse_utc_datetime
+from control_plane.execution_scheduler import ExecutionScheduler
 from control_plane.execution_sources import DEFAULT_EXECUTION_SOURCE, EXECUTION_SOURCE_AI_RESEARCH
 from control_plane.execution_source_links import ensure_research_source_on_engine
 from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
@@ -74,6 +74,7 @@ engine_registry = EngineRegistry()
 engine_registry.ensure_default_engine()
 engine_process_manager = EngineProcessManager(engine_registry)
 _engine_sweeper_task: Optional[asyncio.Task] = None
+_scheduled_executions_task: Optional[asyncio.Task] = None
 execution_scheduler: ExecutionScheduler | None = None
 _live_events_db: Optional[DbEventWriter] = None
 
@@ -238,20 +239,23 @@ class ControlPlaneExecutionRequest(BaseModel):
 
 @asynccontextmanager
 async def control_plane_lifespan(_app: FastAPI):
-    global _engine_sweeper_task, execution_scheduler
+    global _engine_sweeper_task, _scheduled_executions_task, execution_scheduler
     quiet_uvicorn_poll_access_logs()
     _engine_sweeper_task = asyncio.create_task(_mark_stale_engines_loop())
-    execution_scheduler = ExecutionScheduler(start_controlled_execution)
-    execution_scheduler.start()
-    execution_scheduler.sync_registry(engine_registry.list_engines())
+    execution_scheduler = ExecutionScheduler(engine_registry.list_engines, _fire_scheduled_execution)
+    execution_scheduler.poll_once()
+    _scheduled_executions_task = asyncio.create_task(_scheduled_executions_loop())
     await cursor_agent_service.startup()
     try:
         yield
     finally:
         await cursor_agent_service.shutdown()
-        if execution_scheduler:
-            execution_scheduler.shutdown()
-            execution_scheduler = None
+        if _scheduled_executions_task:
+            _scheduled_executions_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await _scheduled_executions_task
+            _scheduled_executions_task = None
+        execution_scheduler = None
         if _engine_sweeper_task:
             _engine_sweeper_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -274,21 +278,24 @@ async def _mark_stale_engines_loop():
             log.error("[CONTROL] Engine stale sweeper failed: %s", e)
 
 
-def _register_execution_schedule(engine: dict) -> None:
-    if execution_scheduler is None:
-        return
-    if str(engine.get("status") or "").lower() != "scheduled":
-        return
-    metadata = engine.get("metadata") or {}
-    scheduled_at = parse_utc_datetime(metadata.get("scheduled_start_at"))
-    execution_id = engine.get("id")
-    if execution_id and scheduled_at:
-        execution_scheduler.register(execution_id, scheduled_at)
+def _fire_scheduled_execution(execution_id: str) -> None:
+    try:
+        start_controlled_execution(execution_id)
+    except HTTPException as exc:
+        raise RuntimeError(str(exc.detail)) from exc
 
 
-def _unregister_execution_schedule(execution_id: str) -> None:
-    if execution_scheduler is not None:
-        execution_scheduler.unregister(execution_id)
+async def _scheduled_executions_loop():
+    interval_seconds = max(5, int(os.getenv("SCHEDULED_EXECUTION_POLL_SECONDS", "30")))
+    log.info("[SCHEDULER] DB poll loop started (every %ss)", interval_seconds)
+    while True:
+        await asyncio.sleep(interval_seconds)
+        if execution_scheduler is None:
+            continue
+        try:
+            execution_scheduler.poll_once()
+        except Exception as exc:
+            log.error("[SCHEDULER] Poll loop failed: %s", exc, exc_info=True)
 
 
 _SCHEDULE_METADATA_KEYS = (
@@ -308,12 +315,22 @@ def _clear_schedule_from_metadata(metadata: dict) -> dict:
     cleaned["execution_config"] = config
     return cleaned
 
-@app.get("/api/control/engines")
+
+def _unschedule_engine_if_scheduled(execution_id: str, engine: dict) -> dict | None:
+    if str(engine.get("status") or "").lower() != "scheduled":
+        return None
+    metadata = _clear_schedule_from_metadata(engine.get("metadata") or {})
+    return engine_registry.update_engine(
+        execution_id,
+        {"status": "pending", "metadata": metadata},
+    )
+
+@app.get("/api/control/engines", operation_id="get_engines", summary="List data-plane engines")
 def list_data_plane_engines(status: Optional[str] = None):
     return {"status": True, "data": engine_registry.list_engines(status=status)}
 
 
-@app.get("/api/control/engines/{engine_id}")
+@app.get("/api/control/engines/{engine_id}", operation_id="get_engine", summary="Get one data-plane engine")
 def get_data_plane_engine(engine_id: str):
     engine = engine_registry.get_engine(engine_id)
     if not engine:
@@ -321,12 +338,12 @@ def get_data_plane_engine(engine_id: str):
     return {"status": True, "data": engine}
 
 
-@app.post("/api/control/engines")
+@app.post("/api/control/engines", operation_id="register_engine", summary="Register a data-plane engine")
 def register_data_plane_engine(req: DataPlaneEngineRequest):
     return {"status": True, "data": engine_registry.upsert_engine(req.model_dump(exclude_none=True))}
 
 
-@app.patch("/api/control/engines/{engine_id}")
+@app.patch("/api/control/engines/{engine_id}", operation_id="update_engine", summary="Update a data-plane engine")
 def update_data_plane_engine(engine_id: str, req: DataPlaneEngineUpdate):
     engine = engine_registry.update_engine(engine_id, req.model_dump(exclude_none=True))
     if not engine:
@@ -334,7 +351,7 @@ def update_data_plane_engine(engine_id: str, req: DataPlaneEngineUpdate):
     return {"status": True, "data": engine}
 
 
-@app.post("/api/control/engines/{engine_id}/heartbeat")
+@app.post("/api/control/engines/{engine_id}/heartbeat", operation_id="record_engine_heartbeat", summary="Record engine heartbeat")
 def heartbeat_data_plane_engine(engine_id: str, payload: dict = Body(default_factory=dict)):
     engine = engine_registry.record_heartbeat(engine_id, payload or {"status": "running"})
     if not engine:
@@ -342,7 +359,7 @@ def heartbeat_data_plane_engine(engine_id: str, payload: dict = Body(default_fac
     return {"status": True, "data": engine}
 
 
-@app.get("/api/control/engines/{engine_id}/logs")
+@app.get("/api/control/engines/{engine_id}/logs", operation_id="get_engine_logs", summary="Get engine log metadata")
 def get_engine_log_meta(engine_id: str):
     engine = engine_registry.get_engine(engine_id)
     if not engine:
@@ -400,7 +417,7 @@ async def stream_engine_logs(engine_id: str, request: Request):
     )
 
 
-@app.post("/api/control/engines/{engine_id}/stop")
+@app.post("/api/control/engines/{engine_id}/stop", operation_id="stop_engine", summary="Stop a data-plane engine")
 def stop_data_plane_engine(engine_id: str):
     engine = engine_process_manager.stop_engine(engine_id)
     if not engine:
@@ -408,14 +425,14 @@ def stop_data_plane_engine(engine_id: str):
     return {"status": True, "data": engine}
 
 
-@app.delete("/api/control/engines/{engine_id}")
+@app.delete("/api/control/engines/{engine_id}", operation_id="delete_engine", summary="Delete a data-plane engine")
 def delete_data_plane_engine(engine_id: str):
     if not engine_registry.delete_engine(engine_id):
         raise HTTPException(status_code=404, detail="Data-plane engine not found")
     return {"status": True}
 
 
-@app.get("/api/control/search")
+@app.get("/api/control/search", operation_id="search_instruments", summary="Search broker instruments")
 async def control_plane_search(
     q: str,
     broker: str = "angel",
@@ -499,7 +516,7 @@ def _is_controlled_execution(engine: dict) -> bool:
     return False
 
 
-@app.get("/api/control/executions")
+@app.get("/api/control/executions", operation_id="get_strategies", summary="List saved strategy executions")
 def list_controlled_executions():
     store = get_ai_research_store()
     executions = []
@@ -573,13 +590,13 @@ def _controlled_execution_payload(req: ControlPlaneExecutionRequest) -> tuple[st
     return executor_id, executor_payload, engine_config
 
 
-@app.get("/api/control/executions/default-schedule")
+@app.get("/api/control/executions/default-schedule", operation_id="get_default_strategy_schedule", summary="Get default strategy schedule")
 def get_default_execution_schedule(broker: str = "angel", use_fake_client: bool = False):
     broker_name = "fake" if use_fake_client else broker
     return {"status": True, "data": default_schedule(broker_name)}
 
 
-@app.get("/api/control/executions/trading-day-options")
+@app.get("/api/control/executions/trading-day-options", operation_id="get_trading_day_options", summary="List trading-day schedule options")
 def get_trading_day_options(
     broker: str = "angel",
     use_fake_client: bool = False,
@@ -590,7 +607,7 @@ def get_trading_day_options(
     return {"status": True, "data": trading_day_options(broker_name, count=safe_count)}
 
 
-@app.post("/api/control/executions")
+@app.post("/api/control/executions", operation_id="create_strategy", summary="Create a saved strategy execution")
 def create_controlled_execution(req: ControlPlaneExecutionRequest):
     try:
         execution_id, executor_payload, engine_config = _controlled_execution_payload(req)
@@ -608,7 +625,6 @@ def create_controlled_execution(req: ControlPlaneExecutionRequest):
         req.symbol,
         req.source_id,
     )
-    _register_execution_schedule(engine)
     return {
         "status": True,
         "data": {
@@ -619,7 +635,81 @@ def create_controlled_execution(req: ControlPlaneExecutionRequest):
     }
 
 
-@app.post("/api/control/executions/{execution_id}/start")
+@app.post("/api/control/executions/bulk/unschedule", operation_id="unschedule_all_strategies", summary="Unschedule all scheduled strategies")
+def unschedule_all_controlled_executions():
+    unscheduled: list[str] = []
+    failed: list[str] = []
+
+    for engine in engine_registry.list_engines():
+        if not _is_controlled_execution(engine):
+            continue
+
+        execution_id = engine.get("id")
+        if not execution_id:
+            continue
+
+        if str(engine.get("status") or "").lower() != "scheduled":
+            continue
+
+        updated = _unschedule_engine_if_scheduled(execution_id, engine)
+        if updated:
+            unscheduled.append(execution_id)
+            log.info("[CONTROL] Unscheduled execution %s (unschedule-all)", execution_id)
+        else:
+            failed.append(execution_id)
+
+    return {
+        "status": True,
+        "data": {
+            "unscheduled": unscheduled,
+            "failed": failed,
+            "count": len(unscheduled),
+        },
+    }
+
+
+@app.post("/api/control/executions/stop-all", operation_id="stop_all_strategies", summary="Stop all running strategies")
+def stop_all_controlled_executions():
+    stopped: list[str] = []
+    failed: list[str] = []
+
+    for engine in engine_registry.list_engines():
+        if not _is_controlled_execution(engine):
+            continue
+
+        execution_id = engine.get("id")
+        if not execution_id:
+            continue
+
+        status = str(engine.get("status") or "").lower()
+        if status not in {"starting", "running", "stale"}:
+            continue
+
+        if engine.get("pid"):
+            result = engine_process_manager.stop_engine(execution_id)
+        else:
+            result = engine_registry.update_engine(
+                execution_id,
+                {"status": "stopped", "pid": None},
+            )
+
+        if result:
+            stopped.append(execution_id)
+            log.info("[CONTROL] Stopped execution %s (stop-all)", execution_id)
+        else:
+            failed.append(execution_id)
+
+    return {
+        "status": True,
+        "data": {
+            "stopped": stopped,
+            "failed": failed,
+            "count": len(stopped),
+        },
+    }
+
+
+@app.post("/api/control/executions/{execution_id}/start", operation_id="start_strategy", summary="Start/deploy a saved strategy")
 def start_controlled_execution(execution_id: str):
     engine = engine_registry.get_engine(execution_id)
     if not engine:
@@ -660,7 +750,6 @@ def start_controlled_execution(execution_id: str):
 
     config = metadata.get("execution_config") or {}
     executor_payload = metadata.get("executor_payload") or {}
-    _unregister_execution_schedule(execution_id)
     try:
         started = engine_process_manager.start_engine(
             {
@@ -705,7 +794,7 @@ def start_controlled_execution(execution_id: str):
     }
 
 
-@app.get("/api/control/executions/{execution_id}")
+@app.get("/api/control/executions/{execution_id}", operation_id="get_strategy", summary="Get one saved strategy execution")
 def get_controlled_execution(execution_id: str):
     engine = engine_registry.get_engine(execution_id)
     if not engine:
@@ -728,7 +817,7 @@ def get_controlled_execution(execution_id: str):
     }
 
 
-@app.get("/api/control/executions/{execution_id}/duplicate-template")
+@app.get("/api/control/executions/{execution_id}/duplicate-template", operation_id="get_strategy_duplicate_template", summary="Get a duplicate-ready strategy template")
 def duplicate_execution_template(execution_id: str):
     engine = engine_registry.get_engine(execution_id)
     if not engine:
@@ -777,7 +866,7 @@ def duplicate_execution_template(execution_id: str):
     }
 
 
-@app.post("/api/control/executions/{execution_id}/unschedule")
+@app.post("/api/control/executions/{execution_id}/unschedule", operation_id="unschedule_strategy", summary="Unschedule one saved strategy")
 def unschedule_controlled_execution(execution_id: str):
     engine = engine_registry.get_engine(execution_id)
     if not engine:
@@ -789,15 +878,11 @@ def unschedule_controlled_execution(execution_id: str):
     if str(engine.get("status") or "").lower() != "scheduled":
         raise HTTPException(status_code=400, detail="Execution is not scheduled")
 
-    _unregister_execution_schedule(execution_id)
-    metadata = _clear_schedule_from_metadata(engine.get("metadata") or {})
-    updated = engine_registry.update_engine(
-        execution_id,
-        {"status": "pending", "metadata": metadata},
-    )
+    updated = _unschedule_engine_if_scheduled(execution_id, engine)
     if not updated:
         raise HTTPException(status_code=500, detail="Failed to unschedule execution")
 
+    metadata = updated.get("metadata") or {}
     log.info("[CONTROL] Unscheduled execution %s", execution_id)
     return {
         "status": True,
@@ -809,7 +894,7 @@ def unschedule_controlled_execution(execution_id: str):
     }
 
 
-@app.post("/api/control/executions/{execution_id}/stop")
+@app.post("/api/control/executions/{execution_id}/stop", operation_id="stop_strategy", summary="Stop one saved strategy")
 def stop_controlled_execution(execution_id: str):
     engine = engine_registry.get_engine(execution_id)
     if not engine:
@@ -842,47 +927,6 @@ def stop_controlled_execution(execution_id: str):
     }
 
 
-@app.post("/api/control/executions/stop-all")
-def stop_all_controlled_executions():
-    stopped: list[str] = []
-    failed: list[str] = []
-
-    for engine in engine_registry.list_engines():
-        if not _is_controlled_execution(engine):
-            continue
-
-        execution_id = engine.get("id")
-        if not execution_id:
-            continue
-
-        status = str(engine.get("status") or "").lower()
-        if status not in {"starting", "running", "stale"}:
-            continue
-
-        if engine.get("pid"):
-            result = engine_process_manager.stop_engine(execution_id)
-        else:
-            result = engine_registry.update_engine(
-                execution_id,
-                {"status": "stopped", "pid": None},
-            )
-
-        if result:
-            stopped.append(execution_id)
-            log.info("[CONTROL] Stopped execution %s (stop-all)", execution_id)
-        else:
-            failed.append(execution_id)
-
-    return {
-        "status": True,
-        "data": {
-            "stopped": stopped,
-            "failed": failed,
-            "count": len(stopped),
-        },
-    }
-
-
 def _execution_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
@@ -896,7 +940,7 @@ def _execution_id(broker: str, symbol: str, strategy_name: str) -> str:
     return f"{_execution_slug(broker, symbol, strategy_name)}-{_execution_timestamp()}"
 
 
-@app.get("/api/control/events")
+@app.get("/api/control/events", operation_id="get_control_events", summary="List control-plane events")
 def get_control_events(
     limit: int = 100,
     action: Optional[str] = None,
@@ -912,7 +956,7 @@ def get_control_events(
     return {"status": True, "data": events}
 
 
-@app.get("/api/control/trades")
+@app.get("/api/control/trades", operation_id="get_control_trades", summary="List control-plane trades")
 def get_control_trades(
     limit: int = 100,
     action: Optional[str] = None,
@@ -928,19 +972,19 @@ def get_control_trades(
     return {"status": True, "data": trades}
 
 
-@app.get("/api/control/orders")
+@app.get("/api/control/orders", operation_id="get_control_orders", summary="List control-plane orders")
 def get_control_orders(executor_id: Optional[str] = None, limit: int = 100):
     orders = get_live_events_db().query_orders_snapshot(executor_id=executor_id, limit=limit)
     return {"status": True, "data": orders}
 
 
-@app.get("/api/control/event-sessions")
+@app.get("/api/control/event-sessions", operation_id="get_event_sessions", summary="List live event sessions")
 def get_control_event_sessions(limit: int = 100):
     sessions = get_live_events_db().query_event_sessions(limit=limit)
     return {"status": True, "data": sessions}
 
 
-@app.get("/api/control/event-sessions/{session_id}/events")
+@app.get("/api/control/event-sessions/{session_id}/events", operation_id="get_event_session_events", summary="List events for one session")
 def get_control_event_session_events(session_id: str, limit: int = 300):
     db = get_live_events_db()
     events = db.query_trading_events(executor_id=session_id, limit=limit)
@@ -1032,7 +1076,7 @@ def _etoro_position_to_portfolio_row(position: dict) -> dict:
     }
 
 
-@app.get("/api/control/portfolio")
+@app.get("/api/control/portfolio", operation_id="get_portfolio", summary="Get broker portfolio holdings")
 async def control_plane_portfolio(
     broker: str = "angel",
     account_env: str = "live",
@@ -1117,7 +1161,7 @@ async def control_plane_portfolio(
         return {"status": False, "broker": broker_name, "account_env": account_env, "message": str(e), "data": []}
 
 
-@app.get("/api/portfolio")
+@app.get("/api/portfolio", operation_id="get_account_portfolio", summary="Get Angel account holdings")
 def get_portfolio(refresh: bool = False):
     broker_name = "angel"
     account_env = "live"
@@ -1142,7 +1186,7 @@ def get_portfolio(refresh: bool = False):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/search")
+@app.get("/api/search", operation_id="search_scrip", summary="Search scrip symbols and tokens")
 def search_scrip(q: str, exchange: str = "NSE"):
     """Search for scrip by name using SmartApi searchScrip method"""
     try:
@@ -1180,7 +1224,7 @@ def search_scrip(q: str, exchange: str = "NSE"):
         }
 
 
-@app.get("/api/historical/{token}")
+@app.get("/api/historical/{token}", operation_id="get_historical_candles", summary="Get historical OHLC candles")
 def get_historical(
     token: str,
     start: str,

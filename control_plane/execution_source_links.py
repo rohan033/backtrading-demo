@@ -5,12 +5,9 @@ import re
 from typing import Any
 
 from control_plane.execution_sources import EXECUTION_SOURCE_AI_RESEARCH
+from api.control_plane_mcp_tools import CREATE_STRATEGY_TOOL_RE as _CREATE_EXECUTION_TOOL_RE
 
 _EXECUTION_ID_RE = re.compile(r'"execution_id"\s*:\s*"([^"]+)"')
-_CREATE_EXECUTION_TOOL_RE = re.compile(
-    r"(create_controlled_execution|post_api_control_executions|/api/control/executions)",
-    re.IGNORECASE,
-)
 
 
 def execution_has_research_source(metadata: dict[str, Any] | None) -> bool:
