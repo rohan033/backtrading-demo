@@ -33,6 +33,11 @@ const BROKER_OPTIONS = [
   { value: 'angel', label: 'Angel One' },
   { value: 'etoro', label: 'eToro' },
 ]
+const HIGH_CAPITAL_WARNING_THRESHOLD = 2000
+
+function defaultClientMode(broker) {
+  return broker === 'etoro' ? 'bracket' : 'standard'
+}
 const ANGEL_FEED_OPTIONS = [
   { value: 'websocket', label: 'WebSocket (SmartAPI stream)' },
   { value: 'rest', label: 'REST poll (1s)' },
@@ -1736,6 +1741,9 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     [form.close_price, form.initial_threshold, form.long_percent, form.short_percent, form.max_available_capital, form.allow_partial_stocks],
   )
 
+  const capitalValue = Number(form.max_available_capital)
+  const showHighCapitalWarning = Number.isFinite(capitalValue) && capitalValue > HIGH_CAPITAL_WARNING_THRESHOLD
+
   const fallbackTradingDayOptions = useMemo(
     () => buildLocalTradingDayOptions(form.broker).options,
     [form.broker],
@@ -1784,7 +1792,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       max_available_capital: String(template.max_available_capital ?? executor.max_available_capital ?? '100000'),
       allow_partial_stocks: Boolean(template.allow_partial_stocks ?? executor.allow_partial_stocks),
       use_fake_client: Boolean(template.use_fake_client),
-      client_mode: template.client_mode || 'standard',
+      client_mode: template.client_mode || defaultClientMode(template.broker || 'angel'),
       feed_mode: template.feed_mode || 'websocket',
       tick_sample_every: String(template.tick_sample_every ?? executor.tick_sample_every ?? '1'),
     })
@@ -2010,6 +2018,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
                   ...prev,
                   broker: value,
                   allow_partial_stocks: value === 'etoro' ? true : prev.allow_partial_stocks,
+                  client_mode: defaultClientMode(value),
                 }))
               }}
               className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent"
@@ -2102,7 +2111,14 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
           </div>
 
           <FormField label="Initial Threshold %" type="number" value={form.initial_threshold} onChange={value => setForm(prev => ({ ...prev, initial_threshold: value }))} />
-          <FormField label="Capital" type="number" value={form.max_available_capital} onChange={value => setForm(prev => ({ ...prev, max_available_capital: value }))} />
+          <FormField
+            label="Capital"
+            type="number"
+            value={form.max_available_capital}
+            onChange={value => setForm(prev => ({ ...prev, max_available_capital: value }))}
+            highlighted={showHighCapitalWarning}
+            warning={showHighCapitalWarning ? 'High capital — risky' : undefined}
+          />
           <FormField label="Take Profit %" type="number" value={form.long_percent} onChange={value => setForm(prev => ({ ...prev, long_percent: value }))} />
           <FormField label="Stop Loss %" type="number" value={form.short_percent} onChange={value => setForm(prev => ({ ...prev, short_percent: value }))} />
           <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
@@ -2618,16 +2634,35 @@ function DataTable({ columns, rows }) {
   )
 }
 
-function FormField({ label, value, onChange, type = 'text' }) {
+function FormField({ label, value, onChange, type = 'text', highlighted = false, warning = '' }) {
   return (
-    <div>
-      <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">{label}</label>
+    <div className={highlighted ? 'rounded border border-red/40 bg-red/5 px-2 py-2' : undefined}>
+      <label
+        className={`text-[9px] uppercase tracking-[1.5px] block mb-1 ${
+          highlighted ? 'text-red font-semibold' : 'text-text-secondary'
+        }`}
+      >
+        {label}
+      </label>
       <input
         type={type}
         value={value}
         onChange={e => onChange(e.target.value)}
-        className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent [color-scheme:dark]"
+        className={`w-full px-3 py-2 bg-card border rounded text-xs outline-none [color-scheme:dark] ${
+          highlighted
+            ? 'border-red text-red focus:border-red'
+            : 'border-border text-text-primary focus:border-accent'
+        }`}
       />
+      {warning ? (
+        <div
+          role="alert"
+          className="mt-2 flex items-center gap-2 rounded border border-red/60 bg-red/15 px-2 py-1.5 text-[10px] font-bold uppercase tracking-wide text-red animate-pulse"
+        >
+          <span aria-hidden="true" className="text-sm leading-none">⚠</span>
+          <span>{warning}</span>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -3169,7 +3204,7 @@ function normalizeExecution(executor, dataPlane = DEFAULT_DATA_PLANE) {
     ws_url: dataPlane.ws_url,
     log_file: dataPlane.metadata?.log_file || null,
     account_env: executor.account_env || dataPlane.account_env || 'live',
-    client_mode: executor.client_mode || dataPlane.client_mode || 'standard',
+    client_mode: executor.client_mode || dataPlane.client_mode || defaultClientMode(broker),
     is_bracket_order_client: Boolean(executor.is_bracket_order_client || dataPlane.is_bracket_order_client),
     strategy_name: strategyName,
     label: executor.label || `${broker}-${executor.symbol}-strategy-${strategyName}`,

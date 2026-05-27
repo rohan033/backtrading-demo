@@ -24,6 +24,7 @@ from backtesting import Backtesting
 from api.manual_robo_routes import router as manual_robo_router
 from api.ai_research_routes import get_ai_research_store, router as ai_research_router
 from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket, router as cursor_agent_router
+from control_plane.client_mode import normalize_client_mode
 from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
 from control_plane.ops_logging import configure_control_plane_logging, quiet_uvicorn_poll_access_logs
@@ -216,7 +217,7 @@ class ControlPlaneExecutionRequest(BaseModel):
     max_available_capital: float = 100000
     allow_partial_stocks: bool = False
     use_fake_client: bool = False
-    client_mode: str = "standard"
+    client_mode: Optional[str] = None
     feed_mode: str = "websocket"
     tick_sample_every: int = Field(default=1, ge=1, le=300)
     schedule_enabled: bool = False
@@ -232,6 +233,7 @@ class ControlPlaneExecutionRequest(BaseModel):
             self.source_meta_id = meta
         else:
             self.source_meta_id = None
+        self.client_mode = normalize_client_mode(self.broker, self.client_mode)
         return self
 
 
@@ -757,7 +759,10 @@ def start_controlled_execution(execution_id: str):
                 "broker": engine.get("broker") or config.get("broker") or "angel",
                 "account_env": engine.get("account_env") or config.get("account_env") or "live",
                 "strategy_name": engine.get("strategy_name") or config.get("strategy_name") or "default",
-                "client_mode": metadata.get("client_mode") or config.get("client_mode") or "standard",
+                "client_mode": normalize_client_mode(
+                    engine.get("broker") or config.get("broker"),
+                    metadata.get("client_mode") or config.get("client_mode"),
+                ),
                 "feed_mode": config.get("feed_mode") or metadata.get("feed_mode") or "websocket",
                 "symbol": engine.get("symbol") or config.get("symbol"),
                 "token": engine.get("token") or config.get("token"),
@@ -837,7 +842,10 @@ def duplicate_execution_template(execution_id: str):
             "strategy_name": engine.get("strategy_name"),
             "account_env": engine.get("account_env"),
             "exchange": metadata.get("exchange") or executor_payload.get("exchange"),
-            "client_mode": metadata.get("client_mode") or "standard",
+            "client_mode": normalize_client_mode(
+                engine.get("broker") or config.get("broker"),
+                metadata.get("client_mode") or config.get("client_mode"),
+            ),
             "feed_mode": metadata.get("feed_mode") or config.get("feed_mode") or "websocket",
             "use_fake_client": metadata.get("use_fake_client") or False,
             "executor_id": executor_payload.get("executor_id") or execution_id,
@@ -1047,15 +1055,60 @@ def _etoro_instrument_to_search_row(instrument: dict) -> dict:
     }
 
 
-def _etoro_position_to_portfolio_row(position: dict) -> dict:
-    instrument_id = position.get("instrumentID") or position.get("instrumentId")
-    symbol = (
-        position.get("instrumentDisplayName")
-        or position.get("InstrumentDisplayName")
-        or position.get("symbol")
-        or position.get("Symbol")
-        or str(instrument_id or "")
+def _etoro_instrument_id(record: dict) -> int | None:
+    raw = (
+        record.get("instrumentID")
+        or record.get("instrumentId")
+        or record.get("InstrumentID")
     )
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _etoro_display_symbol(record: dict, symbol_map: dict[int, str] | None = None) -> str:
+    instrument_id = _etoro_instrument_id(record)
+    for key in (
+        "instrumentDisplayName",
+        "InstrumentDisplayName",
+        "symbolFull",
+        "internalSymbolFull",
+        "displayName",
+        "DisplayName",
+        "symbol",
+        "Symbol",
+    ):
+        value = record.get(key)
+        if value is not None and str(value).strip():
+            text = str(value).strip()
+            if instrument_id is None or text != str(instrument_id):
+                return text
+    if instrument_id is not None and symbol_map:
+        mapped = symbol_map.get(instrument_id)
+        if mapped:
+            return mapped
+    return str(instrument_id or "")
+
+
+async def _etoro_symbol_map_for_records(client, records: list[dict]) -> dict[int, str]:
+    instrument_ids: list[int] = []
+    seen: set[int] = set()
+    for record in records:
+        instrument_id = _etoro_instrument_id(record)
+        if instrument_id is not None and instrument_id not in seen:
+            seen.add(instrument_id)
+            instrument_ids.append(instrument_id)
+    if not instrument_ids:
+        return {}
+    return await client.aget_instrument_symbol_map(instrument_ids)
+
+
+def _etoro_position_to_portfolio_row(position: dict, symbol_map: dict[int, str] | None = None) -> dict:
+    instrument_id = _etoro_instrument_id(position)
+    symbol = _etoro_display_symbol(position, symbol_map)
     units = position.get("units") or position.get("Units") or position.get("amount") or 0
     open_rate = position.get("openRate") or position.get("OpenRate") or position.get("open") or 0
     ltp = (
@@ -1074,6 +1127,20 @@ def _etoro_position_to_portfolio_row(position: dict) -> dict:
         "ltp": str(ltp),
         "broker": "etoro",
     }
+
+
+def _enrich_etoro_orders_snapshot(snapshot: dict, symbol_map: dict[int, str]) -> dict:
+    enriched: dict[str, list[dict]] = {}
+    for key in ("orders", "orders_for_open", "orders_for_close"):
+        items = []
+        for item in snapshot.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            row["symbol"] = _etoro_display_symbol(row, symbol_map)
+            items.append(row)
+        enriched[key] = items
+    return enriched
 
 
 @app.get("/api/control/portfolio", operation_id="get_portfolio", summary="Get broker portfolio holdings")
@@ -1128,7 +1195,8 @@ async def control_plane_portfolio(
             client = EtoroTradingClient(account_env=account_env)
             client.generate_session()
             positions = await client.aget_positions()
-            rows = [_etoro_position_to_portfolio_row(item) for item in positions]
+            symbol_map = await _etoro_symbol_map_for_records(client, positions)
+            rows = [_etoro_position_to_portfolio_row(item, symbol_map) for item in positions]
             _set_portfolio_cache(broker_name, account_env, rows)
             log.info("[CONTROL_PORTFOLIO] etoro returned %d positions", len(rows))
             return {"status": True, "broker": broker_name, "account_env": account_env, "data": rows}
@@ -1159,6 +1227,104 @@ async def control_plane_portfolio(
                 "message": str(e),
             }
         return {"status": False, "broker": broker_name, "account_env": account_env, "message": str(e), "data": []}
+
+
+async def _etoro_trading_client(account_env: str):
+    from brokers.etoro.trading_client import EtoroTradingClient
+
+    client = EtoroTradingClient(account_env=account_env)
+    client.generate_session()
+    return client
+
+
+@app.get("/api/control/etoro/positions", operation_id="get_etoro_positions", summary="Get eToro open positions")
+async def control_plane_etoro_positions(
+    account_env: str = "demo",
+    refresh: bool = False,
+):
+    env = "demo" if (account_env or "demo").lower() == "demo" else "live"
+    log.info("[CONTROL_ETORO] positions request env=%s refresh=%s", env, refresh)
+    cached_rows, cached_at, cache_fresh = _get_portfolio_cache_entry("etoro", env)
+    if cached_rows is not None and cache_fresh and not refresh:
+        return {
+            "status": True,
+            "broker": "etoro",
+            "account_env": env,
+            "data": cached_rows,
+            "raw_count": len(cached_rows),
+            "cached": True,
+        }
+
+    try:
+        client = await _etoro_trading_client(env)
+        positions = await client.aget_positions()
+        symbol_map = await _etoro_symbol_map_for_records(client, positions)
+        rows = [_etoro_position_to_portfolio_row(item, symbol_map) for item in positions]
+        _set_portfolio_cache("etoro", env, rows)
+        log.info("[CONTROL_ETORO] positions env=%s count=%d", env, len(rows))
+        return {
+            "status": True,
+            "broker": "etoro",
+            "account_env": env,
+            "data": rows,
+            "raw": positions,
+            "raw_count": len(positions),
+            "cached": False,
+        }
+    except Exception as e:
+        log.error("[CONTROL_ETORO] positions failed env=%s: %s", env, e, exc_info=True)
+        if cached_rows is not None:
+            return {
+                "status": True,
+                "broker": "etoro",
+                "account_env": env,
+                "data": cached_rows,
+                "raw_count": len(cached_rows),
+                "cached": True,
+                "stale": True,
+                "message": str(e),
+            }
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.get("/api/control/etoro/orders", operation_id="get_etoro_orders", summary="Get eToro pending and active orders")
+async def control_plane_etoro_orders(account_env: str = "demo"):
+    env = "demo" if (account_env or "demo").lower() == "demo" else "live"
+    log.info("[CONTROL_ETORO] orders request env=%s", env)
+    try:
+        client = await _etoro_trading_client(env)
+        snapshot = await client.aget_orders_snapshot()
+        order_records = [
+            *(snapshot.get("orders") or []),
+            *(snapshot.get("orders_for_open") or []),
+            *(snapshot.get("orders_for_close") or []),
+        ]
+        symbol_map = await _etoro_symbol_map_for_records(client, order_records)
+        enriched = _enrich_etoro_orders_snapshot(snapshot, symbol_map)
+        total = sum(len(enriched.get(key) or []) for key in ("orders", "orders_for_open", "orders_for_close"))
+        log.info(
+            "[CONTROL_ETORO] orders env=%s total=%d open=%d close=%d limit=%d",
+            env,
+            total,
+            len(enriched.get("orders_for_open") or []),
+            len(enriched.get("orders_for_close") or []),
+            len(enriched.get("orders") or []),
+        )
+        return {
+            "status": True,
+            "broker": "etoro",
+            "account_env": env,
+            "data": enriched,
+            "counts": {
+                "orders": len(enriched.get("orders") or []),
+                "orders_for_open": len(enriched.get("orders_for_open") or []),
+                "orders_for_close": len(enriched.get("orders_for_close") or []),
+                "total": total,
+            },
+        }
+    except Exception as e:
+        log.error("[CONTROL_ETORO] orders failed env=%s: %s", env, e, exc_info=True)
+        raise HTTPException(status_code=502, detail=str(e)) from e
 
 
 @app.get("/api/portfolio", operation_id="get_account_portfolio", summary="Get Angel account holdings")

@@ -222,6 +222,53 @@ class EtoroClient:
         )
         return response.get("rates", []) if isinstance(response, dict) else []
 
+    async def aget_instrument_symbol_map(self, instrument_ids: list[int]) -> dict[int, str]:
+        """Resolve instrument IDs to ticker/display symbols via market-data metadata."""
+        symbol_map: dict[int, str] = {}
+        if not instrument_ids:
+            return symbol_map
+
+        for start in range(0, len(instrument_ids), 100):
+            batch = instrument_ids[start:start + 100]
+            response = await self.arequest(
+                "GET",
+                "/market-data/instruments",
+                params={"instrumentIds": batch},
+            )
+            instruments: list[Any] = []
+            if isinstance(response, dict):
+                instruments = (
+                    response.get("items")
+                    or response.get("instruments")
+                    or response.get("Instrument")
+                    or response.get("data")
+                    or []
+                )
+            if isinstance(instruments, dict):
+                instruments = [instruments]
+
+            for instrument in instruments:
+                if not isinstance(instrument, dict):
+                    continue
+                instrument_id = (
+                    instrument.get("instrumentId")
+                    or instrument.get("instrumentID")
+                    or instrument.get("InstrumentID")
+                )
+                if instrument_id is None:
+                    continue
+                symbol = (
+                    instrument.get("symbolFull")
+                    or instrument.get("internalSymbolFull")
+                    or instrument.get("displayName")
+                    or instrument.get("instrumentDisplayName")
+                    or instrument.get("symbol")
+                )
+                if symbol:
+                    symbol_map[int(instrument_id)] = str(symbol)
+
+        return symbol_map
+
     async def aresolve_instrument_id(self, symbol: str) -> int | None:
         if not symbol:
             return None

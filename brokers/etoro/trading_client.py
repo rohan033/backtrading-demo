@@ -1,7 +1,10 @@
+import asyncio
+import json
+from typing import Any
+
 from brokers.etoro.client import EtoroClient
 from brokers.interfaces import TickClient, Subscription, LTPData
 from logzero import logger
-import asyncio
 
 
 class EtoroTradingClient(EtoroClient, TickClient):
@@ -142,13 +145,29 @@ class EtoroTradingClient(EtoroClient, TickClient):
         logger.info("[eToro] Getting open positions")
 
         try:
-            response = await self.arequest("GET", f"{self.info_base_path()}/pnl")
+            portfolio = await self.aget_client_portfolio()
+            return portfolio.get("positions", []) or []
         except Exception as e:
             logger.error("[eToro] Error getting positions: %s", e)
             return []
 
-        portfolio = response.get("clientPortfolio", {}) if isinstance(response, dict) else {}
-        return portfolio.get("positions", []) or []
+    async def aget_client_portfolio(self) -> dict[str, Any]:
+        """Fetch the full clientPortfolio object from eToro /pnl."""
+        response = await self.arequest("GET", f"{self.info_base_path()}/pnl")
+        if isinstance(response, dict):
+            portfolio = response.get("clientPortfolio")
+            if isinstance(portfolio, dict):
+                return portfolio
+        return {}
+
+    async def aget_orders_snapshot(self) -> dict[str, list[dict[str, Any]]]:
+        """Return pending/active orders from eToro /pnl."""
+        portfolio = await self.aget_client_portfolio()
+        return {
+            "orders": portfolio.get("orders", []) or [],
+            "orders_for_open": portfolio.get("ordersForOpen", []) or [],
+            "orders_for_close": portfolio.get("ordersForClose", []) or [],
+        }
 
     async def aclose_position(self, position_id):
         """Close a specific position on eToro."""
@@ -239,10 +258,17 @@ class EtoroTradingClient(EtoroClient, TickClient):
         return self.leverage
 
     async def _place_market_open_by_amount(self, payload, side_label):
+        endpoint = f"{self.execution_base_path()}/market-open-orders/by-amount"
+        logger.info(
+            "[eToro] %s request endpoint=%s payload=%s",
+            side_label,
+            endpoint,
+            json.dumps(payload, sort_keys=True),
+        )
         try:
             response = await self.arequest(
                 "POST",
-                f"{self.execution_base_path()}/market-open-orders/by-amount",
+                endpoint,
                 json_body=payload,
                 trade_execution=True,
             )

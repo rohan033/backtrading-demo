@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import Any
 
 from brokers.angel.client import AngelClient
@@ -95,6 +96,10 @@ class AngelOneTradingClient(AngelClient, TickClient):
             "duration": duration,
             "variety": variety
         }
+        logger.info(
+            "[Angel] BUY request payload=%s",
+            json.dumps(buy_params, sort_keys=True),
+        )
 
         try:
             res = await asyncio.to_thread(self._client.placeOrderFullResponse, buy_params)

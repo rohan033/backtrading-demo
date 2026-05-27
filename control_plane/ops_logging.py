@@ -31,6 +31,13 @@ def quiet_uvicorn_poll_access_logs() -> None:
     access_logger.addFilter(UvicornAccessPollFilter())
 
 
+def quiet_uvicorn_live_engine_access_logs() -> None:
+    """Disable uvicorn HTTP access lines on data-plane engines (frontend poll noise)."""
+    if os.getenv("LIVE_ENGINE_LOG_ACCESS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    logging.getLogger("uvicorn.access").disabled = True
+
+
 def _log_formatter() -> logging.Formatter:
     return logging.Formatter(
         "%(asctime)s [%(levelname)s] %(name)s %(message)s",

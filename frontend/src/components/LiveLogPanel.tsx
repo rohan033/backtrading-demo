@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { X } from 'lucide-react'
 
@@ -8,6 +8,7 @@ import {
   parseLogLine,
   type ParsedLogLine,
 } from '../lib/logLineStyle'
+import { formatLogMessage, hasLogJsonBody } from '../lib/logJsonFormat'
 
 const MAX_RENDERED_LINES = 2500
 const BATCH_FRAME_LINES = 120
@@ -22,6 +23,14 @@ type LogPanelTarget = {
 type StreamPhase = 'idle' | 'waiting' | 'loading' | 'live' | 'error'
 
 function LogLineRow({ line }: { line: ParsedLogLine }) {
+  const [prettified, setPrettified] = useState(false)
+  const messageText = line.message || line.raw
+  const canPrettify = useMemo(() => hasLogJsonBody(messageText), [messageText])
+  const displayMessage = useMemo(
+    () => formatLogMessage(messageText, prettified),
+    [messageText, prettified],
+  )
+
   return (
     <div
       className={`group flex gap-2 border-b border-border/30 px-3 py-1.5 ${line.rowClassName}`}
@@ -37,9 +46,19 @@ function LogLineRow({ line }: { line: ParsedLogLine }) {
           {line.timestamp ? (
             <span className="mr-2 text-text-secondary/60">{line.timestamp}</span>
           ) : null}
-          <span>{line.message || line.raw}</span>
+          <span>{displayMessage}</span>
         </div>
       </div>
+      {canPrettify ? (
+        <button
+          type="button"
+          onClick={() => setPrettified(value => !value)}
+          className="mt-0.5 shrink-0 self-start rounded border border-border/70 bg-card/80 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-text-secondary hover:text-text-primary"
+          title={prettified ? 'Show compact JSON' : 'Prettify JSON body'}
+        >
+          {prettified ? 'Raw' : 'JSON'}
+        </button>
+      ) : null}
     </div>
   )
 }

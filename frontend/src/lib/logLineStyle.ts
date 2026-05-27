@@ -123,7 +123,7 @@ function classifyLogLine(message: string): LogLineCategory {
     return 'trigger'
   }
 
-  if (/\[(WS|WEBSOCKET|PRICESTREAM)\]|\bWEBSOCKET\b/i.test(message)) {
+  if (/\[(WS|WEBSOCKET|PRICESTREAM)\]|\bWEBSOCKET\b|\[TM\] WS ORDER COMPLETION/i.test(message)) {
     return 'ws'
   }
 

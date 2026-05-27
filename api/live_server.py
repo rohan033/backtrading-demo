@@ -28,7 +28,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from logzero import logger
 from pydantic import BaseModel, Field
 
-from control_plane.ops_logging import live_engine_log_path
+from control_plane.client_mode import normalize_client_mode
+from control_plane.ops_logging import live_engine_log_path, quiet_uvicorn_live_engine_access_logs
 from brokers.interfaces import TickData
 from brokers.etoro.env import load_etoro_env
 from event.db_event_consumer import DbEventWriter
@@ -96,7 +97,7 @@ class LiveEngine:
         self.symbol = symbol
         self.token = token
         self.strategy_name = strategy_name
-        self.client_mode = "bracket" if client_mode == "bracket" else "standard"
+        self.client_mode = normalize_client_mode(self.broker, client_mode)
         from brokers.angel.feed_config import normalize_angel_feed_mode
 
         self.feed_mode = normalize_angel_feed_mode(feed_mode)
@@ -503,6 +504,7 @@ engine: Optional[LiveEngine] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global engine
+    quiet_uvicorn_live_engine_access_logs()
     use_fake = "--fake" in sys.argv
     account_env = _arg_value("--env", os.getenv("BROKER_ENV", "live"))
     engine_id = _arg_value("--engine-id", "")
@@ -510,17 +512,18 @@ async def lifespan(app: FastAPI):
     log_path = live_engine_log_path(engine_id) if engine_id else None
     if log_path:
         logger.info("[ENGINE] Live engine log file path=%s", log_path)
+    broker = _arg_value("--broker", "angel")
     engine = LiveEngine(
         use_fake_client=use_fake,
         account_env=account_env,
-        broker=_arg_value("--broker", "angel"),
+        broker=broker,
         engine_id=engine_id,
         control_url=_arg_value("--control-url", ""),
         heartbeat_interval=float(_arg_value("--heartbeat-interval", "5")),
         symbol=_arg_value("--symbol", ""),
         token=_arg_value("--token", ""),
         strategy_name=_arg_value("--strategy-name", "default"),
-        client_mode=_arg_value("--client-mode", "standard"),
+        client_mode=_arg_value("--client-mode", normalize_client_mode(broker)),
         feed_mode=_arg_value("--feed-mode", "websocket"),
     )
     await engine.start()
@@ -804,4 +807,5 @@ if __name__ == "__main__":
     parser.add_argument("--heartbeat-interval", type=float, default=5.0, help="Seconds between control-plane heartbeats")
     args = parser.parse_args()
 
-    uvicorn.run(app, host="0.0.0.0", port=args.port)
+    quiet_uvicorn_live_engine_access_logs()
+    uvicorn.run(app, host="0.0.0.0", port=args.port, access_log=False)

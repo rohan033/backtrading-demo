@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from control_plane.client_mode import normalize_client_mode
 from control_plane.engine_registry import EngineRegistry
 from control_plane.ops_logging import live_engine_log_path
 
@@ -41,7 +42,7 @@ class EngineProcessManager:
         broker = data.get("broker") or "angel"
         account_env = _normalize_env(data.get("account_env"))
         strategy_name = data.get("strategy_name") or "default"
-        client_mode = "bracket" if data.get("client_mode") == "bracket" else "standard"
+        client_mode = normalize_client_mode(broker, data.get("client_mode"))
         feed_mode = data.get("feed_mode") or "websocket"
         symbol = data.get("symbol")
         token = data.get("token")

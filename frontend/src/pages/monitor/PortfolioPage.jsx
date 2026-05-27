@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import { Button } from '../../components/ui/button'
-import { fetchPortfolio, getPortfolioFetchedAt, readCachedPortfolio } from '../../lib/portfolio-cache'
+import { fetchPortfolio, getPortfolioFetchedAt, primePortfolioCache, readCachedPortfolio } from '../../lib/portfolio-cache'
+import {
+  fetchEtoroOrders,
+  fetchEtoroPositions,
+  flattenEtoroOrders,
+} from '../../lib/etoro-account-data'
 
 const BROKER_TABS = [
   { id: 'angel', label: 'Angel One', accountEnv: 'live', description: 'NSE/BSE holdings via SmartAPI' },
@@ -103,6 +108,11 @@ export default function PortfolioPage() {
   const [lastRefreshedAt, setLastRefreshedAt] = useState(null)
   const [sort, setSort] = useState({ column: 'tradingsymbol', direction: 'asc' })
   const [, setClockTick] = useState(0)
+  const [etoroOrders, setEtoroOrders] = useState([])
+  const [ordersLoading, setOrdersLoading] = useState(false)
+  const [ordersError, setOrdersError] = useState('')
+  const [ordersFetchedAt, setOrdersFetchedAt] = useState(null)
+  const [positionsLoading, setPositionsLoading] = useState(false)
 
   const activeTab = BROKER_TABS.find(tab => tab.id === activeBroker) || BROKER_TABS[0]
 
@@ -151,9 +161,66 @@ export default function PortfolioPage() {
     }
   }, [activeBroker, accountEnv, activeTab.label, syncLastRefreshedAt])
 
+  const loadEtoroPositions = useCallback(async () => {
+    setPositionsLoading(true)
+    setError('')
+    try {
+      const data = await fetchEtoroPositions(accountEnv, { refresh: true })
+      if (!data.status) {
+        setHoldings([])
+        setError(data.message || 'Failed to load eToro positions')
+        return
+      }
+      const rows = data.data || []
+      setHoldings(rows)
+      setFromCache(Boolean(data.cached))
+      primePortfolioCache('etoro', accountEnv, rows)
+      syncLastRefreshedAt('etoro', accountEnv)
+      if (!rows.length) {
+        setError(`No open positions returned for eToro (${accountEnv.toUpperCase()}).`)
+      }
+    } catch (err) {
+      setHoldings([])
+      setError(err.message || 'eToro positions request failed')
+    } finally {
+      setPositionsLoading(false)
+      setLoading(false)
+    }
+  }, [accountEnv, syncLastRefreshedAt])
+
+  const loadEtoroOrders = useCallback(async () => {
+    setOrdersLoading(true)
+    setOrdersError('')
+    try {
+      const data = await fetchEtoroOrders(accountEnv)
+      if (!data.status) {
+        setEtoroOrders([])
+        setOrdersError(data.message || 'Failed to load eToro orders')
+        return
+      }
+      const rows = flattenEtoroOrders(data.data)
+      setEtoroOrders(rows)
+      setOrdersFetchedAt(Date.now())
+      if (!rows.length) {
+        setOrdersError(`No orders returned for eToro (${accountEnv.toUpperCase()}).`)
+      }
+    } catch (err) {
+      setEtoroOrders([])
+      setOrdersError(err.message || 'eToro orders request failed')
+    } finally {
+      setOrdersLoading(false)
+    }
+  }, [accountEnv])
+
   useEffect(() => {
     loadPortfolio()
   }, [loadPortfolio])
+
+  useEffect(() => {
+    setEtoroOrders([])
+    setOrdersError('')
+    setOrdersFetchedAt(null)
+  }, [activeBroker, accountEnv])
 
   useEffect(() => {
     if (activeBroker === 'etoro' && accountEnv === 'live') return
@@ -242,14 +309,34 @@ export default function PortfolioPage() {
         ))}
 
         {activeBroker === 'etoro' ? (
-          <select
-            value={accountEnv}
-            onChange={event => setAccountEnv(event.target.value)}
-            className="ml-2 rounded border border-border bg-card px-2 py-1.5 text-[11px] outline-none focus:border-accent"
-          >
-            <option value="demo">Demo</option>
-            <option value="live">Live</option>
-          </select>
+          <>
+            <select
+              value={accountEnv}
+              onChange={event => setAccountEnv(event.target.value)}
+              className="ml-2 rounded border border-border bg-card px-2 py-1.5 text-[11px] outline-none focus:border-accent"
+            >
+              <option value="demo">Demo</option>
+              <option value="live">Live</option>
+            </select>
+            <Button
+              type="button"
+              variant="tertiary"
+              size="xs"
+              onClick={loadEtoroPositions}
+              disabled={positionsLoading || loading}
+            >
+              {positionsLoading ? 'Fetching positions…' : 'Get open positions'}
+            </Button>
+            <Button
+              type="button"
+              variant="tertiary"
+              size="xs"
+              onClick={loadEtoroOrders}
+              disabled={ordersLoading}
+            >
+              {ordersLoading ? 'Fetching orders…' : 'Get orders'}
+            </Button>
+          </>
         ) : (
           <span className="ml-2 text-[10px] text-text-secondary uppercase tracking-wide">Live account</span>
         )}
@@ -260,9 +347,9 @@ export default function PortfolioPage() {
             variant="tertiary"
             size="xs"
             onClick={() => loadPortfolio({ refresh: true })}
-            disabled={loading}
+            disabled={loading || positionsLoading}
           >
-            {loading ? 'Refreshing…' : 'Refresh'}
+            {loading || positionsLoading ? 'Refreshing…' : 'Refresh'}
           </Button>
           {lastRefreshLabel ? (
             <span className="text-[10px] text-text-secondary">Last refresh · {lastRefreshLabel}</span>
@@ -272,6 +359,11 @@ export default function PortfolioPage() {
 
       <div className="mb-4 flex flex-wrap items-center gap-2 text-[10px] text-text-secondary">
         <span>{activeTab.description}</span>
+        {activeBroker === 'etoro' ? (
+          <span className="rounded bg-card px-2 py-0.5">
+            Uses eToro GET /trading/info/{accountEnv === 'demo' ? 'demo' : 'real'}/pnl
+          </span>
+        ) : null}
         {fromCache ? <span className="rounded bg-card px-2 py-0.5">Cached · avoids broker rate limits</span> : null}
       </div>
 
@@ -300,6 +392,50 @@ export default function PortfolioPage() {
         <p className="text-sm text-text-secondary">Loading {activeTab.label} portfolio…</p>
       ) : null}
       {error ? <p className="mb-4 text-sm text-red">{error}</p> : null}
+
+      {activeBroker === 'etoro' && (ordersLoading || ordersError || etoroOrders.length > 0 || ordersFetchedAt) ? (
+        <div className="mb-5 overflow-auto rounded border border-border">
+          <div className="flex flex-wrap items-center gap-2 border-b border-border bg-secondary px-4 py-3">
+            <div className="text-[10px] font-bold uppercase tracking-wider text-text-secondary">eToro orders</div>
+            {ordersFetchedAt ? (
+              <span className="text-[10px] text-text-secondary">
+                Last fetch · {fmtLastRefresh(ordersFetchedAt)}
+              </span>
+            ) : null}
+            <span className="text-[10px] text-text-secondary">{etoroOrders.length} rows</span>
+          </div>
+          {ordersError ? <p className="px-4 py-3 text-sm text-red">{ordersError}</p> : null}
+          {!ordersLoading && etoroOrders.length > 0 ? (
+            <table className="w-full min-w-[720px] text-left text-xs">
+              <thead className="bg-secondary/70 text-[10px] uppercase tracking-wider text-text-secondary">
+                <tr>
+                  <th className="px-4 py-3">Kind</th>
+                  <th className="px-4 py-3">Order ID</th>
+                  <th className="px-4 py-3">Symbol</th>
+                  <th className="px-4 py-3 text-right">Status</th>
+                  <th className="px-4 py-3 text-right">Amount</th>
+                  <th className="px-4 py-3 text-right">Units</th>
+                </tr>
+              </thead>
+              <tbody>
+                {etoroOrders.map((row, index) => (
+                  <tr key={`${row.kind}:${row.order_id}:${index}`} className="border-t border-border/70 hover:bg-card/40">
+                    <td className="px-4 py-3">{row.kind}</td>
+                    <td className="px-4 py-3 font-mono">{row.order_id ?? '—'}</td>
+                    <td className="px-4 py-3 font-semibold">{row.symbol || '—'}</td>
+                    <td className="px-4 py-3 font-mono text-right">{row.status_id ?? '—'}</td>
+                    <td className="px-4 py-3 font-mono text-right">{row.amount ?? '—'}</td>
+                    <td className="px-4 py-3 font-mono text-right">{row.units ?? '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : null}
+          {ordersLoading ? (
+            <p className="px-4 py-3 text-sm text-text-secondary">Loading eToro orders…</p>
+          ) : null}
+        </div>
+      ) : null}
 
       {!loading && holdings.length > 0 ? (
         <div className="overflow-auto rounded border border-border">

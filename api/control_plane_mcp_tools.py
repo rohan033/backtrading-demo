@@ -166,6 +166,8 @@ MCP_TOOL_DESCRIPTIONS: dict[str, str] = {
     GET_ENGINE_LOGS_TOOL: "Get log file metadata for one data-plane engine.",
     SEARCH_INSTRUMENTS_TOOL: "Search broker instruments/symbols via the control plane.",
     GET_PORTFOLIO_TOOL: "Fetch portfolio/holdings for a broker via the control plane.",
+    "get_etoro_positions": "Fetch open eToro positions for demo or live via GET /trading/info/{env}/pnl.",
+    "get_etoro_orders": "Fetch eToro pending orders (open, close, limit) for demo or live via GET /trading/info/{env}/pnl.",
     SEARCH_SCRIP_TOOL: "Search NSE/BSE scrip symbols and tokens.",
     GET_ACCOUNT_PORTFOLIO_TOOL: "Fetch Angel account holdings from the legacy portfolio endpoint.",
     GET_HISTORICAL_CANDLES_TOOL: "Fetch historical OHLC candles for a symbol token.",

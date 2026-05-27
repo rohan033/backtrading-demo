@@ -44,6 +44,8 @@ export function formatToolLabel(rawName: string): string {
     search_instruments: 'Search instruments',
     search_scrip: 'Search scrip',
     get_portfolio: 'Get portfolio',
+    get_etoro_positions: 'Get eToro positions',
+    get_etoro_orders: 'Get eToro orders',
     get_account_portfolio: 'Get account portfolio',
     get_historical_candles: 'Get historical candles',
     get_control_events: 'Get events',

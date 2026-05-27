@@ -1,8 +1,10 @@
 import asyncio
+import json
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Set
 from brokers.interfaces import OrderActivity
 from brokers.etoro.ws_order_events import (
+    TERMINAL_ACTIONS,
     extract_position_id,
     map_tracked_order_status,
     map_websocket_update,
@@ -100,7 +102,27 @@ class TradingManager:
         )
         
         available_capital = signal.entry_price * signal.quantity
-        if self.is_bo_client() and hasattr(self.client, "abuy_with_take_profit_stop_loss"):
+        use_bracket_order = (
+            self.is_bo_client()
+            and hasattr(self.client, "abuy_with_take_profit_stop_loss")
+        )
+        logger.info(
+            "%s[TM]%s BUY dispatch path=%s is_bo_client=%s symbol=%s token=%s exchange=%s "
+            "capital=%.2f entry=%.2f qty=%.2f TP=%s SL=%s",
+            MAGENTA,
+            RESET,
+            "bracket" if use_bracket_order else "standard",
+            self.is_bo_client(),
+            getattr(signal, "symbol", ""),
+            getattr(signal, "token", ""),
+            getattr(signal, "exchange", "NSE"),
+            available_capital,
+            signal.entry_price,
+            signal.quantity,
+            signal.take_profit_price,
+            signal.stop_loss_price,
+        )
+        if use_bracket_order:
             buy_result = await self.client.abuy_with_take_profit_stop_loss(
                 ltp=signal.entry_price,
                 available_capital=available_capital,
@@ -323,6 +345,13 @@ class TradingManager:
 
         if not action:
             return
+
+        if activity.source == "websocket" and action in TERMINAL_ACTIONS:
+            logger.info(
+                "[TM] WS order completion action=%s body=%s",
+                action,
+                json.dumps(raw, default=str, separators=(",", ":")),
+            )
 
         position_id = activity.position_id or extract_position_id(content)
         order_id = activity.order_id or content.get("OrderID") or content.get("orderID")
