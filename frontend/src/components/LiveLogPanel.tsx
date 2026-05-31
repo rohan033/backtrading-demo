@@ -6,9 +6,16 @@ import {
   categoryBadge,
   categoryBadgeClass,
   parseLogLine,
+  type LogLineCategory,
   type ParsedLogLine,
 } from '../lib/logLineStyle'
 import { formatLogMessage, hasLogJsonBody } from '../lib/logJsonFormat'
+import {
+  fuzzyMatchLog,
+  LOG_LEVEL_FILTERS,
+  matchesLogLevelFilter,
+  type LogLevelFilter,
+} from '../lib/logFilters'
 
 const MAX_RENDERED_LINES = 2500
 const BATCH_FRAME_LINES = 120
@@ -76,6 +83,8 @@ export default function LiveLogPanel({
   const [lineCount, setLineCount] = useState(0)
   const [fileSize, setFileSize] = useState(0)
   const [followTail, setFollowTail] = useState(true)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [levelFilters, setLevelFilters] = useState<Set<LogLevelFilter>>(new Set(['all']))
 
   const containerRef = useRef<HTMLDivElement | null>(null)
   const pendingLinesRef = useRef<string[]>([])
@@ -234,6 +243,35 @@ export default function LiveLogPanel({
     atBottomRef.current = distanceFromBottom < 48
   }
 
+  const filteredLines = useMemo(() => {
+    return lines.filter(line => {
+      if (!matchesLogLevelFilter(line.category, levelFilters)) return false
+      const searchable = `${line.timestamp || ''} ${line.message} ${line.raw}`
+      return fuzzyMatchLog(searchQuery, searchable)
+    })
+  }, [lines, levelFilters, searchQuery])
+
+  const toggleLevelFilter = (level: LogLevelFilter) => {
+    setLevelFilters(prev => {
+      const next = new Set(prev)
+      if (level === 'all') {
+        return new Set(['all'])
+      }
+      next.delete('all')
+      if (next.has(level)) {
+        next.delete(level)
+      } else {
+        next.add(level)
+      }
+      if (!next.size) {
+        next.add('all')
+      }
+      return next
+    })
+  }
+
+  const hiddenCount = lines.length - filteredLines.length
+
   return (
     <aside className="fixed inset-y-0 right-0 z-40 flex w-full max-w-xl flex-col border-l border-border bg-secondary shadow-2xl">
       <div className="border-b border-border px-4 py-3.5">
@@ -297,6 +335,42 @@ export default function LiveLogPanel({
             {followTail ? 'Following tail' : 'Tail paused'}
           </button>
         </div>
+
+        <div className="mt-3 flex flex-col gap-2">
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={event => setSearchQuery(event.target.value)}
+            placeholder="Fuzzy search logs…"
+            className="w-full rounded-lg border border-border bg-primary px-2.5 py-1.5 text-[11px] text-text-primary outline-none placeholder:text-text-secondary focus:border-accent/60"
+          />
+          <div className="flex flex-wrap gap-1">
+            {LOG_LEVEL_FILTERS.map(level => {
+              const active = levelFilters.has(level.id)
+              return (
+                <button
+                  key={level.id}
+                  type="button"
+                  onClick={() => toggleLevelFilter(level.id)}
+                  className={`rounded border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide transition-colors ${
+                    active
+                      ? level.id === 'all'
+                        ? 'border-accent/50 bg-accent/15 text-accent'
+                        : `${categoryBadgeClass(level.id as LogLineCategory)} border-transparent`
+                      : 'border-border/60 bg-card/50 text-text-secondary hover:text-text-primary'
+                  }`}
+                >
+                  {level.label}
+                </button>
+              )
+            })}
+          </div>
+          {hiddenCount > 0 ? (
+            <span className="text-[10px] text-text-secondary">
+              Showing {filteredLines.length.toLocaleString()} of {lines.length.toLocaleString()} lines
+            </span>
+          ) : null}
+        </div>
       </div>
 
       <div
@@ -310,7 +384,13 @@ export default function LiveLogPanel({
           </div>
         ) : null}
 
-        {lines.map(line => (
+        {lines.length > 0 && filteredLines.length === 0 ? (
+          <div className="px-4 py-10 text-center text-sm text-text-secondary">
+            No log lines match the current filters.
+          </div>
+        ) : null}
+
+        {filteredLines.map(line => (
           <LogLineRow key={line.id} line={line} />
         ))}
 

@@ -10,7 +10,7 @@ DEFAULT_LIVE_LOG_DIR = REPO_ROOT / "logs" / "executions"
 
 # Frontend poll endpoints (list refreshes) — noisy at INFO in uvicorn access logs.
 _QUIET_POLL_GET_RE = re.compile(
-    r'"GET /api/control/(?:engines|executions)(?:\?[^ ]*)? HTTP/',
+    r'"GET /api/control/(?:engines/[^/]+/logs/stream|engines|executions)(?:\?[^ ]*)? HTTP/',
     re.IGNORECASE,
 )
 
