@@ -1,6 +1,5 @@
 import os
 import json
-import shlex
 import time
 import urllib.error
 import urllib.parse
@@ -124,8 +123,6 @@ class EtoroClient:
         last_error: Exception | None = None
         for attempt in range(attempts):
             headers = self._headers(include_json_content_type=body is not None)
-            if attempt == 0:
-                logger.info("[eToro] curl equivalent: %s", self._to_curl(method, url, headers, body))
             request = urllib.request.Request(url, data=body, headers=headers, method=method.upper())
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
@@ -149,27 +146,6 @@ class EtoroClient:
                 time.sleep([0.2, 0.6, 1.5][min(attempt, 2)])
 
         raise EtoroApiError(f"eToro request failed: {last_error}")
-
-    @staticmethod
-    def _redact_header_value(header_name: str, value: str) -> str:
-        if header_name.lower() in {"authorization", "x-api-key", "x-user-key"}:
-            return "***REDACTED***"
-        return value
-
-    @staticmethod
-    def _to_curl(
-        method: str,
-        url: str,
-        headers: dict[str, str],
-        body: bytes | None = None,
-    ) -> str:
-        parts = ["curl", "-X", method.upper(), shlex.quote(url)]
-        for key, value in headers.items():
-            safe_value = EtoroClient._redact_header_value(key, value)
-            parts.extend(["-H", shlex.quote(f"{key}: {safe_value}")])
-        if body:
-            parts.extend(["-d", shlex.quote(body.decode("utf-8"))])
-        return " ".join(parts)
 
     @staticmethod
     def _read_error_payload(exc: urllib.error.HTTPError) -> Any:

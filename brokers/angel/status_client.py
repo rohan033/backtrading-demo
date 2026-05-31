@@ -198,6 +198,8 @@ class AngelWebsocketOrderStatusClient(AngelClient):
             logger.debug("[Angel] Ignoring non-JSON order status message: %s", raw_message)
             return
 
+        logger.info("[Angel] Order status websocket JSON: %s", json.dumps(payload, default=str))
+
         order_data = payload.get("orderData") if isinstance(payload.get("orderData"), dict) else {}
         order_id = str(order_data.get("orderid") or order_data.get("orderId") or "").strip()
         order_status_code = str(payload.get("order-status") or payload.get("order_status") or "").upper()

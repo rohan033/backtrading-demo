@@ -7,7 +7,21 @@ from logzero import logger
 
 from brokers.etoro.env import ETORO_HTTP_USER_AGENT
 from brokers.etoro.trading_client import EtoroTradingClient
-from brokers.etoro.ws_order_events import TERMINAL_ACTIONS, map_tracked_order_status
+from brokers.etoro.ws_order_events import (
+    TERMINAL_ACTIONS,
+    is_close_event,
+    is_open_event,
+    map_tracked_order_status,
+)
+
+
+def _is_order_websocket_event(event_type: str | None) -> bool:
+    if not event_type:
+        return False
+    normalized = event_type.lower()
+    if is_open_event(event_type) or is_close_event(event_type):
+        return True
+    return "order" in normalized
 
 
 StatusCallback = Callable[[dict[str, Any]], None | Awaitable[None]]
@@ -327,7 +341,7 @@ class EtoroWebsocketPortfolioStatusClient(EtoroTradingClient):
             item for item in (message.get("messages", []) or []) if item.get("topic") == "private"
         ]
         if private_messages:
-            logger.info(
+            logger.debug(
                 "[eToro] WS private batch size=%d types=%s",
                 len(private_messages),
                 sorted({item.get("type") for item in private_messages if item.get("type")}),
@@ -352,14 +366,14 @@ class EtoroWebsocketPortfolioStatusClient(EtoroTradingClient):
                 "content": content,
                 "raw": item,
             }
-            logger.info(
-                "[eToro] WS private update type=%s order=%s status=%s error=%s executed_units=%s",
-                item.get("type"),
-                content.get("OrderID") or content.get("orderID"),
-                content.get("StatusID") or content.get("StatusId") or content.get("statusID"),
-                content.get("ErrorCode") or content.get("errorCode"),
-                content.get("ExecutedUnits") or content.get("executedUnits"),
-            )
+            event_type = item.get("type") or ""
+            if _is_order_websocket_event(event_type):
+                logger.info(
+                    "[eToro] Order status websocket JSON: %s",
+                    json.dumps(item, default=str),
+                )
+            else:
+                logger.debug("[eToro] WS private message type=%s", event_type)
             self.latest_update = status_update
             self.update_history.append(status_update)
             if len(self.update_history) > self.max_update_history:
