@@ -24,6 +24,7 @@ from backtesting import Backtesting
 from api.manual_robo_routes import router as manual_robo_router
 from api.ai_research_routes import get_ai_research_store, router as ai_research_router
 from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket, router as cursor_agent_router
+from api.workspace_media import router as workspace_media_router
 from control_plane.client_mode import normalize_client_mode
 from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
@@ -68,6 +69,7 @@ app.add_middleware(
 app.include_router(manual_robo_router)
 app.include_router(cursor_agent_router)
 app.include_router(ai_research_router)
+app.include_router(workspace_media_router)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 TRADE_FEE = 25  # ₹25 per buy-sell round trip
@@ -551,6 +553,7 @@ def _controlled_execution_payload(req: ControlPlaneExecutionRequest) -> tuple[st
         "max_available_capital": req.max_available_capital,
         "allow_partial_stocks": req.allow_partial_stocks,
         "tick_sample_every": max(1, int(req.tick_sample_every or 1)),
+        "strategy_type": req.strategy_name,
     }
     broker = "fake" if req.use_fake_client else req.broker
     label = f"{req.broker}-{req.symbol}-strategy-{req.strategy_name}"

@@ -270,7 +270,7 @@ class LiveEngine:
         self._tick_stats["generated"] += 1
         if tick_key not in self._logged_first_ticks:
             self._logged_first_ticks.add(tick_key)
-            logger.info(
+            logger.debug(
                 "[TICK] First tick symbol=%s token=%s exchange=%s ltp=%s",
                 tick.symbol,
                 tick.token,
@@ -318,7 +318,7 @@ class LiveEngine:
         self._last_flow_log_at = now
         generated = self._tick_stats["generated"]
         broadcast = self._tick_stats["broadcast"]
-        logger.info(
+        logger.debug(
             "[TICK] Flow stats generated=%d broadcast=%d ws_clients=%d engine_id=%s",
             generated,
             broadcast,
@@ -419,6 +419,11 @@ class LiveEngine:
             max_available_capital=req.max_available_capital,
             allow_partial_stocks=req.allow_partial_stocks,
             tick_sample_every=req.tick_sample_every,
+            strategy_type=req.strategy_type or req.strategy_name,
+            rsi_period=req.rsi_period,
+            bb_period=req.bb_period,
+            bb_std=req.bb_std,
+            rsi_oversold=req.rsi_oversold,
         )
 
         executor = StrategyExecutor(
@@ -426,7 +431,9 @@ class LiveEngine:
             on_status_change=self._on_executor_status
         )
         executor.set_strategy_config(config)
-        executor.strategy.initialize_with_close_price(req.close_price)
+        init_close = getattr(executor.strategy, "initialize_with_close_price", None)
+        if callable(init_close):
+            init_close(req.close_price)
         executor.is_active = True
 
         await executor.start()
@@ -494,6 +501,12 @@ class RegisterExecutorRequest(BaseModel):
     allow_partial_stocks: bool = False
     tick_sample_every: int = Field(default=1, ge=1, le=300)
     close_price: float
+    strategy_type: str = "one-percent"
+    strategy_name: str | None = None
+    rsi_period: int = Field(default=14, ge=2, le=100)
+    bb_period: int = Field(default=20, ge=2, le=200)
+    bb_std: float = Field(default=2.0, ge=0.5, le=5.0)
+    rsi_oversold: float = Field(default=30.0, ge=5.0, le=50.0)
 
 
 # ─── App Setup ────────────────────────────────────────────────────────────────

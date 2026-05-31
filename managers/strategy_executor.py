@@ -5,7 +5,7 @@ from typing import Callable, Optional
 from logzero import logger
 from managers.trading_manager import TradingManager
 from brokers.interfaces import TickData, TickListener, Subscription
-from strategies import OnePercentStrategy
+from strategies import create_strategy
 
 QUEUE_MAX_SIZE = 10
 MAX_ENTRY_FAILURES = 3
@@ -42,7 +42,7 @@ class StrategyExecutor(TickListener):
 
     def set_strategy_config(self, strategy_config):
         self.strategy_config = strategy_config
-        self.strategy = OnePercentStrategy(strategy_config)
+        self.strategy = create_strategy(strategy_config)
         self._ticks_seen = 0
         self._update_required_subscriptions()
 
@@ -78,10 +78,25 @@ class StrategyExecutor(TickListener):
             'max_available_capital': getattr(cfg, 'max_available_capital', None) if cfg else None,
             'allow_partial_stocks': getattr(cfg, 'allow_partial_stocks', False) if cfg else False,
             'close_price': close_price,
+            'strategy_type': getattr(cfg, 'strategy_type', None) if cfg else None,
+            'indicators': self._indicator_state(),
             'pending_entry': self._pending_entry,
             'entry_halted': self._entry_halted,
             'entry_failure_count': self._entry_failure_count,
             'tick_sample_every': self._tick_sample_every(),
+        }
+
+    def _indicator_state(self) -> dict | None:
+        snap = getattr(self.strategy, 'last_snapshot', None)
+        if snap is None:
+            return None
+        return {
+            'rsi': snap.rsi,
+            'bb_middle': snap.bb_middle,
+            'bb_upper': snap.bb_upper,
+            'bb_lower': snap.bb_lower,
+            'ready': snap.ready,
+            'price_count': snap.price_count,
         }
 
     def _update_required_subscriptions(self):
@@ -216,14 +231,6 @@ class StrategyExecutor(TickListener):
                             MAX_ENTRY_FAILURES,
                             ENTRY_COOLDOWN_SECONDS,
                         )
-            else:
-                logger.debug(
-                    "%s[%s]%s %sTICK%s    %s  ltp=%.2f  chg=%+.3f%%",
-                    DIM, self.executor_id, RESET,
-                    DIM, RESET,
-                    tick.symbol, tick.ltp, trade_signal.pct_change
-                )
-
     # TickListener protocol — kept for interface compatibility
     async def handle_tick(self, tick: TickData):
         self.enqueue_tick(tick)
