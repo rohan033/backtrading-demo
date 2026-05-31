@@ -4,13 +4,16 @@ import { Octagon } from 'lucide-react'
 const STOPPABLE_STATUSES = new Set(['running', 'starting', 'stale'])
 
 type ExecutionRow = {
+  engine?: { status?: string }
   status?: string
   data_plane_status?: string
 }
 
 function countRunningExecutions(rows: ExecutionRow[]) {
   return rows.filter(row => {
-    const status = String(row.data_plane_status || row.status || '').toLowerCase()
+    const status = String(
+      row.data_plane_status || row.engine?.status || row.status || '',
+    ).toLowerCase()
     return STOPPABLE_STATUSES.has(status)
   }).length
 }
