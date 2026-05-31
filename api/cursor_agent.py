@@ -18,15 +18,22 @@ from pydantic import BaseModel, Field
 from api.ai_research_routes import (
     derive_research_summary,
     derive_session_title,
+    extract_reply_summary,
     get_ai_research_store,
     merge_extracted_actions,
     strip_ai_action_blocks,
+    strip_ai_summary_blocks,
+)
+from api.workspace_media import (
+    attachments_from_paths,
+    extract_media_attachments,
+    extract_media_paths_from_text,
 )
 from control_plane.engine_process_manager import REPO_ROOT
 from control_plane.execution_source_links import (
     apply_research_source_to_engine,
     extract_execution_id_from_tool_payload,
-    tool_call_created_execution,
+    tool_call_links_research_execution,
 )
 from api.control_plane_mcp_tools import (
     ASK_CONTROL_PLANE_READ_MCP_HINT,
@@ -84,7 +91,15 @@ USER_FACING_RESPONSE_HINT = """User-facing reply rules (critical — applies to 
 - Never expose platform or codebase internals in chat prose. Do not mention or explain: APScheduler, control plane, data plane, executor registration, engine registry, POST/GET routes, API payloads, MCP tools, uvicorn, repo paths, file names, UI component names, "UI action blocks", or how scheduled jobs work under the hood.
 - Do not tell the user to manually POST payloads, register executors, or perform developer/debug steps. If they need to act, point them to product actions only: Save strategy, Schedule, Deploy live, or Stop — without describing what happens internally.
 - You may use repo tools and control-plane actions silently when appropriate, but do not narrate that machinery in the reply unless the user explicitly asks for developer or architecture documentation.
-- Keep `ai_action` JSON fences for strategy suggestions when needed; they are parsed by the UI and must not be preceded by technical explanations about how the UI consumes them."""
+- Keep `ai_action` JSON fences for strategy suggestions when needed; they are parsed by the UI and must not be preceded by technical explanations about how the UI consumes them.
+
+When a reply benefits from a quick trader recap (research answers, stock analysis, strategy tradeoffs), end with a fenced JSON block the UI renders as Highlights / Lowlights / Cautions (omit the block for trivial one-line replies):
+
+```json
+{"ai_summary":{"highlights":["…"],"lowlights":["…"],"cautions":["…"]}}
+```
+
+Use 1–4 short bullets per section; leave a section empty only if truly not applicable. Do not duplicate the same bullet across sections."""
 
 ASK_MODE_HINT = f"""You are in ASK mode (read-only guardrails).
 
@@ -418,6 +433,7 @@ class CursorAgentService:
                 store.set_cursor_agent_id(research_session_id, agent.agent_id)
 
             assistant_chunks: list[str] = []
+            media_paths: list[str] = []
 
             async for message_event in run.stream():
                 if cancel_event is not None and cancel_event.is_set():
@@ -440,9 +456,16 @@ class CursorAgentService:
                     continue
 
                 message_type = payload.get("message_type")
-                if message_type == "assistant" and payload.get("text"):
-                    assistant_chunks.append(payload["text"])
-                    yield {"type": "text_delta", "text": payload["text"]}
+                if message_type == "assistant":
+                    if payload.get("text"):
+                        assistant_chunks.append(payload["text"])
+                        yield {"type": "text_delta", "text": payload["text"]}
+                    for path in payload.get("media_paths") or ():
+                        if path not in media_paths:
+                            media_paths.append(path)
+                    new_attachments = attachments_from_paths(payload.get("media_paths") or ())
+                    if new_attachments:
+                        yield {"type": "media", "attachments": new_attachments}
                 elif message_type == "tool_call":
                     if store and research_session_id:
                         store.append_message(
@@ -471,6 +494,13 @@ class CursorAgentService:
                             "message": reason,
                         }
                         return
+                    tool_attachments = extract_media_attachments(_tool_call_text(payload))
+                    if tool_attachments:
+                        for row in tool_attachments:
+                            path = row.get("path")
+                            if path and path not in media_paths:
+                                media_paths.append(path)
+                        yield {"type": "media", "attachments": tool_attachments}
                     yield {"type": "tool_call", **payload}
                 elif message_type == "status":
                     yield {"type": "status", **payload}
@@ -490,14 +520,30 @@ class CursorAgentService:
                 return
 
             final_text = result.result or await run.text() or "".join(assistant_chunks)
-            display_text = strip_ai_action_blocks(final_text)
+            display_text = strip_ai_action_blocks(strip_ai_summary_blocks(final_text))
+            reply_summary = extract_reply_summary(final_text)
+            for path in extract_media_attachments(final_text):
+                rel = path.get("path")
+                if rel and rel not in media_paths:
+                    media_paths.append(rel)
+            final_attachments = attachments_from_paths(media_paths)
+            if final_attachments:
+                yield {"type": "media", "attachments": final_attachments}
             assistant_message_id: str | None = None
             if store and research_session_id and final_text.strip():
+                metadata: dict[str, Any] | None = None
+                if final_attachments or reply_summary:
+                    metadata = {}
+                    if final_attachments:
+                        metadata["attachments"] = final_attachments
+                    if reply_summary:
+                        metadata["reply_summary"] = reply_summary
                 saved = store.append_message(
                     research_session_id,
                     role="assistant",
                     content=display_text,
                     run_id=run.id,
+                    metadata=metadata,
                 )
                 assistant_message_id = saved.get("id") if saved else None
                 merge_extracted_actions(
@@ -516,6 +562,7 @@ class CursorAgentService:
                 "status": result.status,
                 "text": display_text,
                 "research_session_id": research_session_id,
+                "attachments": final_attachments,
             }
         except CursorAgentError as exc:
             log.error("[CURSOR_AGENT] Run startup failed agent=%s: %s", agent.agent_id, exc)
@@ -798,7 +845,7 @@ def _maybe_tag_research_execution_from_tool(
     tool_status = str(payload.get("tool_status") or "").lower()
     if tool_status not in {"completed", "complete", "success", "succeeded", "done"}:
         return
-    if not tool_call_created_execution(payload):
+    if not tool_call_links_research_execution(payload):
         return
 
     execution_id = extract_execution_id_from_tool_payload(payload)
@@ -809,10 +856,19 @@ def _maybe_tag_research_execution_from_tool(
         from control_plane.engine_registry import EngineRegistry
 
         registry = EngineRegistry()
+        engine = registry.get_engine(execution_id)
         apply_research_source_to_engine(registry, execution_id, research_session_id)
+        if engine is None:
+            engine = registry.get_engine(execution_id)
+        store = get_ai_research_store()
+        store.link_execution_to_session_actions(
+            research_session_id,
+            execution_id,
+            engine,
+        )
     except Exception as exc:
         log.warning(
-            "[CURSOR_AGENT] Failed to tag research source on %s: %s",
+            "[CURSOR_AGENT] Failed to link research execution %s: %s",
             execution_id,
             exc,
         )
@@ -841,7 +897,24 @@ def _sdk_message_payload(message: Any) -> dict[str, Any] | None:
     payload: dict[str, Any] = {"message_type": message_type}
     if message_type == "assistant":
         blocks = getattr(getattr(message, "message", None), "content", ()) or ()
-        payload["text"] = "".join(getattr(block, "text", "") for block in blocks)
+        text_parts: list[str] = []
+        media_paths: list[str] = []
+        for block in blocks:
+            block_type = getattr(block, "type", None)
+            if block_type == "image":
+                for attr in ("path", "file_path", "url", "source", "image_url"):
+                    value = getattr(block, attr, None)
+                    if isinstance(value, str) and value.strip():
+                        media_paths.append(value.strip())
+                        break
+                continue
+            text_parts.append(getattr(block, "text", ""))
+        payload["text"] = "".join(text_parts)
+        combined_paths = extract_media_paths_from_text(payload["text"]) + media_paths
+        payload["media_paths"] = [
+            row["path"]
+            for row in attachments_from_paths(combined_paths)
+        ]
     elif message_type == "tool_call":
         payload["tool_name"] = getattr(message, "name", None)
         payload["tool_status"] = getattr(message, "status", None)
