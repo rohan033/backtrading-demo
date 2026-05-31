@@ -13,7 +13,11 @@ export type PageMeta = {
 const ROUTE_META: Record<string, PageMeta> = {
   '/dashboard': { title: 'Dashboard', scope: 'All strategies' },
   '/portfolio': { title: 'Portfolio', scope: 'Monitor' },
-  '/watchlist': { title: 'Watchlist', scope: 'Monitor' },
+  '/watchlist': {
+    title: 'Watchlist',
+    scope: 'Monitor',
+    description: 'Custom watchlists with Angel One live ticks and tick-over-tick % change.',
+  },
   '/market': { title: 'Market', scope: 'Monitor' },
   '/trade/strategies': {
     title: 'Strategies',

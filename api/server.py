@@ -25,6 +25,8 @@ from api.manual_robo_routes import router as manual_robo_router
 from api.ai_research_routes import get_ai_research_store, router as ai_research_router
 from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket, router as cursor_agent_router
 from api.workspace_media import router as workspace_media_router
+from api.watchlist_routes import router as watchlist_router
+from api.watchlist_feed import get_watchlist_feed_hub
 from control_plane.client_mode import normalize_client_mode
 from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
@@ -70,6 +72,7 @@ app.include_router(manual_robo_router)
 app.include_router(cursor_agent_router)
 app.include_router(ai_research_router)
 app.include_router(workspace_media_router)
+app.include_router(watchlist_router)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 TRADE_FEE = 25  # ₹25 per buy-sell round trip
@@ -1729,6 +1732,11 @@ async def _run_market_preview(ws: WebSocket, cfg: dict) -> None:
 @app.websocket("/ws/control/cursor-agent")
 async def ws_control_cursor_agent(ws: WebSocket):
     await handle_cursor_agent_websocket(ws)
+
+
+@app.websocket("/ws/watchlist")
+async def ws_watchlist(ws: WebSocket):
+    await get_watchlist_feed_hub().handle(ws)
 
 
 @app.websocket("/ws/control/market")
