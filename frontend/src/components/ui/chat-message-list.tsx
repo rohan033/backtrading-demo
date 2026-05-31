@@ -1,9 +1,12 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, type ReactNode } from 'react'
 
 import { ToolCallHint } from '@/components/ui/tool-call-hint'
+import { ChatMediaGallery } from '@/components/ui/chat-media'
 import { ChatMarkdown } from '@/components/ui/chat-markdown'
 import { ChatTypingDots } from '@/components/ui/chat-typing-dots'
 import { stripAiActionBlocks } from '@/lib/aiActionBlocks'
+import { splitAssistantDisplayContent } from '@/lib/aiReplySummary'
+import { ChatReplySummaryPanel } from '@/components/ui/chat-reply-summary'
 import { cn } from '@/lib/utils'
 import type { ChatMessage } from '@/lib/useCursorAgentChat'
 
@@ -108,10 +111,17 @@ export const ChatMessageList = forwardRef<ChatMessageListHandle, ChatMessageList
       {messages.length === 0 && emptyState ? emptyState : null}
 
       {messages.map(message => {
-        const displayContent =
+        const assistantParts =
           message.role === 'assistant'
-            ? stripAiActionBlocks(message.content, Boolean(message.streaming))
-            : message.content
+            ? splitAssistantDisplayContent(message.content, Boolean(message.streaming))
+            : null
+        const displayContent = assistantParts
+          ? stripAiActionBlocks(assistantParts.body, Boolean(message.streaming))
+          : message.content
+        const replySummary =
+          message.role === 'assistant' && !message.streaming
+            ? message.replySummary ?? assistantParts?.summary ?? null
+            : null
 
         if (message.role === 'assistant' && !displayContent && !message.streaming) {
           return null
@@ -164,6 +174,8 @@ export const ChatMessageList = forwardRef<ChatMessageListHandle, ChatMessageList
                     Strategy AI
                   </div>
                   {displayContent ? <ChatMarkdown content={displayContent} /> : null}
+                  <ChatMediaGallery attachments={message.attachments} />
+                  {replySummary ? <ChatReplySummaryPanel summary={replySummary} /> : null}
                   {message.streaming ? (
                     displayContent ? (
                       <ChatTypingDots className="mt-2" />

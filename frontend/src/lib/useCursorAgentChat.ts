@@ -7,6 +7,12 @@ import {
   type ToolCallStatus,
 } from '@/lib/tool-call-display'
 import { stripAiActionBlocks } from '@/lib/aiActionBlocks'
+import { extractChatReplySummary, stripAiSummaryBlocks, type ChatReplySummary } from '@/lib/aiReplySummary'
+import {
+  extractMediaAttachments,
+  mergeAttachments,
+  type ChatMediaAttachment,
+} from '@/lib/workspaceMedia'
 
 export type AgentInteractionMode = 'ask' | 'execute'
 
@@ -20,6 +26,8 @@ export type ChatMessage = {
   toolName?: string
   toolStatus?: ToolCallStatus
   toolDetail?: string
+  attachments?: ChatMediaAttachment[]
+  replySummary?: ChatReplySummary
 }
 
 export type AgentHealth = {
@@ -32,7 +40,8 @@ export type AgentHealth = {
 type CursorAgentEvent =
   | { type: 'start'; agent_id?: string; run_id?: string; model?: string }
   | { type: 'text_delta'; text?: string }
-  | { type: 'done'; agent_id?: string; text?: string }
+  | { type: 'done'; agent_id?: string; text?: string; attachments?: ChatMediaAttachment[] }
+  | { type: 'media'; attachments?: ChatMediaAttachment[] }
   | { type: 'stopped'; agent_id?: string; run_id?: string }
   | { type: 'error'; message?: string; phase?: string }
   | { type: 'health'; data?: AgentHealth }
@@ -102,7 +111,11 @@ export function useCursorAgentChat(
     setMessages(
       rows.map(row =>
         row.role === 'assistant'
-          ? { ...row, content: stripAiActionBlocks(row.content) }
+          ? {
+              ...row,
+              content: stripAiActionBlocks(stripAiSummaryBlocks(row.content)),
+              replySummary: row.replySummary ?? extractChatReplySummary(row.content) ?? undefined,
+            }
           : row,
       ),
     )
@@ -124,26 +137,49 @@ export function useCursorAgentChat(
     )
   }, [])
 
-  const finalizeAssistant = useCallback((finalText?: string, stopped = false) => {
+  const appendAssistantAttachments = useCallback((attachments?: ChatMediaAttachment[]) => {
     const draftId = assistantDraftIdRef.current
-    if (!draftId) return
-    assistantDraftIdRef.current = null
+    if (!draftId || !attachments?.length) return
     setMessages(prev =>
       prev.map(msg =>
         msg.id === draftId
           ? {
               ...msg,
-              content: finalText?.trim()
-                ? stripAiActionBlocks(finalText)
-                : stopped
-                  ? msg.content || 'Response stopped.'
-                  : stripAiActionBlocks(msg.content),
-              streaming: false,
+              attachments: mergeAttachments(msg.attachments, attachments),
             }
           : msg,
       ),
     )
   }, [])
+
+  const finalizeAssistant = useCallback(
+    (finalText?: string, stopped = false, attachments?: ChatMediaAttachment[]) => {
+      const draftId = assistantDraftIdRef.current
+      if (!draftId) return
+      assistantDraftIdRef.current = null
+      setMessages(prev =>
+        prev.map(msg => {
+          if (msg.id !== draftId) return msg
+          const rawContent = finalText?.trim()
+            ? finalText
+            : stopped
+              ? msg.content || 'Response stopped.'
+              : msg.content
+          const resolvedContent = stripAiActionBlocks(stripAiSummaryBlocks(rawContent))
+          const replySummary = extractChatReplySummary(rawContent) ?? undefined
+          const inferred = extractMediaAttachments(resolvedContent)
+          return {
+            ...msg,
+            content: resolvedContent,
+            streaming: false,
+            attachments: mergeAttachments(msg.attachments, attachments, inferred),
+            replySummary,
+          }
+        }),
+      )
+    },
+    [],
+  )
 
   const upsertToolCall = useCallback((event: Extract<CursorAgentEvent, { type: 'tool_call' }>) => {
     const toolName = event.tool_name?.trim() || 'tool'
@@ -228,9 +264,14 @@ export function useCursorAgentChat(
         return
       }
 
+      if (event.type === 'media' && event.attachments?.length) {
+        appendAssistantAttachments(event.attachments)
+        return
+      }
+
       if (event.type === 'done') {
         if (event.agent_id) agentIdRef.current = event.agent_id
-        finalizeAssistant(event.text)
+        finalizeAssistant(event.text, false, event.attachments)
         setSending(false)
         onResearchSessionUpdatedRef.current?.()
         return
@@ -262,7 +303,7 @@ export function useCursorAgentChat(
         })
       }
     },
-    [appendAssistantDelta, finalizeAssistant, upsertToolCall],
+    [appendAssistantAttachments, appendAssistantDelta, finalizeAssistant, upsertToolCall],
   )
 
   useEffect(() => {

@@ -24,6 +24,10 @@ export type AiResearchSession = {
   last_message_at?: string | null
 }
 
+import type { ChatReplySummary } from '@/lib/aiReplySummary'
+import { extractChatReplySummary } from '@/lib/aiReplySummary'
+import { extractMediaAttachments, type ChatMediaAttachment } from '@/lib/workspaceMedia'
+
 export type AiResearchMessage = {
   id: string
   session_id: string
@@ -33,6 +37,7 @@ export type AiResearchMessage = {
   tool_name?: string | null
   tool_status?: string | null
   tool_detail?: string | null
+  metadata?: { attachments?: ChatMediaAttachment[]; reply_summary?: ChatReplySummary } | null
   created_at: string
 }
 
@@ -133,6 +138,13 @@ export function messageToChatRow(message: AiResearchMessage) {
   const role = message.role === 'assistant' || message.role === 'tool' || message.role === 'system'
     ? message.role
     : 'user'
+  const storedAttachments = message.metadata?.attachments
+  const inferredAttachments =
+    role === 'assistant' ? extractMediaAttachments(message.content) : []
+  const attachments = [...(storedAttachments || []), ...inferredAttachments].filter(
+    (item, index, list) => list.findIndex(row => row.path === item.path) === index,
+  )
+
   return {
     id: message.id,
     role,
@@ -140,5 +152,9 @@ export function messageToChatRow(message: AiResearchMessage) {
     toolName: message.tool_name || undefined,
     toolStatus: message.tool_status || undefined,
     toolDetail: message.tool_detail || undefined,
+    attachments: attachments.length ? attachments : undefined,
+    replySummary:
+      message.metadata?.reply_summary ??
+      (role === 'assistant' ? extractChatReplySummary(message.content) ?? undefined : undefined),
   }
 }

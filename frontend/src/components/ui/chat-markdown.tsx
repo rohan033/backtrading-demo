@@ -1,6 +1,7 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
+import { resolveMarkdownImageSrc } from '@/lib/workspaceMedia'
 import { cn } from '@/lib/utils'
 
 type ChatMarkdownProps = {
@@ -57,6 +58,18 @@ export function ChatMarkdown({ content, className }: ChatMarkdownProps) {
             <th className="px-2 py-1.5 font-medium text-text-primary">{children}</th>
           ),
           td: ({ children }) => <td className="px-2 py-1.5 text-text-secondary">{children}</td>,
+          img: ({ src, alt }) => {
+            const resolved = resolveMarkdownImageSrc(typeof src === 'string' ? src : undefined)
+            if (!resolved) return null
+            return (
+              <img
+                src={resolved}
+                alt={alt || ''}
+                loading="lazy"
+                className="my-2 max-h-72 w-full cursor-zoom-in rounded-md border border-border/60 object-contain"
+              />
+            )
+          },
           code: ({ className: codeClassName, children, ...props }) => {
             const text = String(children).replace(/\n$/, '')
             const isBlock = Boolean(codeClassName) || text.includes('\n')

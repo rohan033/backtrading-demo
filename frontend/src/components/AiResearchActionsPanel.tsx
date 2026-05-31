@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PanelRightOpen, X } from 'lucide-react'
 
@@ -6,8 +6,14 @@ import { startControlledExecution } from '../ExecutionWorkspace'
 import {
   type AiResearchAction,
   type AiResearchSession,
+  getResearchSession,
   upsertResearchAction,
 } from '../lib/aiResearch'
+import {
+  filterSessionExecutions,
+  resolveExecutionIdForAction,
+  type ResearchSessionExecution,
+} from '../lib/researchActionLinks'
 import { EXECUTION_SOURCE_AI_RESEARCH } from '../lib/executionSources'
 import '../pages/learn/ai-research.css'
 
@@ -110,11 +116,13 @@ function ActionCard({
   action,
   sessionId,
   sessionSummary,
+  resolvedExecutionId,
   onSessionUpdated,
 }: {
   action: AiResearchAction
   sessionId: string
   sessionSummary?: string | null
+  resolvedExecutionId?: string | null
   onSessionUpdated: (session: AiResearchSession) => void
 }) {
   const [editing, setEditing] = useState(false)
@@ -192,7 +200,12 @@ function ActionCard({
     }
   }
 
-  const executionId = String((action.payload || {}).execution_id || '')
+  const executionId = String(
+    (action.payload || {}).execution_id || resolvedExecutionId || '',
+  ).trim()
+  const strategyHref = executionId
+    ? `/trade/strategies/${encodeURIComponent(executionId)}`
+    : null
   const isStrategy = action.type.includes('strategy') || Boolean((action.payload || {}).symbol)
 
   return (
@@ -215,16 +228,24 @@ function ActionCard({
             {action.status ? (
               <div className="mt-1 text-[10px] uppercase text-text-secondary">{action.status}</div>
             ) : null}
+            {executionId ? (
+              <div className="mt-1 truncate font-mono text-[10px] text-text-secondary/80">{executionId}</div>
+            ) : null}
           </div>
-          {executionId ? (
-            <Link
-              to={`/trade/strategies/${encodeURIComponent(executionId)}`}
-              className="shrink-0 rounded px-2 py-1 text-[10px] font-semibold text-accent hover:underline"
-            >
-              Open
-            </Link>
-          ) : null}
         </div>
+
+        {strategyHref ? (
+          <Link
+            to={strategyHref}
+            className="mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-3 py-2 text-[11px] font-semibold text-accent transition-colors hover:bg-accent/20"
+          >
+            View strategy
+          </Link>
+        ) : isStrategy ? (
+          <p className="mt-2 text-[10px] text-text-secondary/80">
+            Save or deploy this action to link it to a strategy page.
+          </p>
+        ) : null}
 
         {(action.sources || []).length ? (
           <ul className="mt-2 space-y-1 text-[10px] text-text-secondary">
@@ -305,7 +326,54 @@ export default function AiResearchActionsPanel({
   onClose?: () => void
   onSessionUpdated: (session: AiResearchSession) => void
 }) {
+  const [sessionExecutions, setSessionExecutions] = useState<ResearchSessionExecution[]>([])
+  const onSessionUpdatedRef = useRef(onSessionUpdated)
+
+  useEffect(() => {
+    onSessionUpdatedRef.current = onSessionUpdated
+  }, [onSessionUpdated])
+
+  useEffect(() => {
+    let cancelled = false
+
+    void (async () => {
+      try {
+        const [freshSession, execRes] = await Promise.all([
+          getResearchSession(session.session_id),
+          fetch('/api/control/executions'),
+        ])
+        if (cancelled) return
+        onSessionUpdatedRef.current(freshSession)
+        const execPayload = await execRes.json().catch(() => null)
+        if (execRes.ok && execPayload?.status) {
+          setSessionExecutions(
+            filterSessionExecutions(execPayload.data || [], session.session_id),
+          )
+        }
+      } catch {
+        if (!cancelled) setSessionExecutions([])
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [session.session_id])
+
   const actions = useMemo(() => session.actions || [], [session.actions])
+
+  const resolvedByActionId = useMemo(() => {
+    const claimed = new Set<string>()
+    const map = new Map<string, string>()
+    for (const action of actions) {
+      const id = resolveExecutionIdForAction(action, sessionExecutions, claimed)
+      if (id) {
+        map.set(action.id, id)
+        claimed.add(id)
+      }
+    }
+    return map
+  }, [actions, sessionExecutions])
 
   return (
     <aside className="ai-research-ui fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col border-l border-border bg-secondary shadow-2xl">
@@ -329,6 +397,7 @@ export default function AiResearchActionsPanel({
               action={action}
               sessionId={session.session_id}
               sessionSummary={session.summary}
+              resolvedExecutionId={resolvedByActionId.get(action.id)}
               onSessionUpdated={onSessionUpdated}
             />
           ))

@@ -3,6 +3,8 @@ import { Link, useParams } from 'react-router-dom'
 import { Info, Globe } from 'lucide-react'
 
 import AiResearchActionsPanel, { ActionsToggleButton } from '../../components/AiResearchActionsPanel'
+import { EdgarSearchBar } from '../../components/EdgarSearchBar'
+import { buildPromptWithEdgarContext, formatEdgarDraftLine } from '../../lib/edgar'
 import { ChatMessageList, type ChatMessageListHandle } from '../../components/ui/chat-message-list'
 import {
   getResearchSession,
@@ -42,6 +44,7 @@ export function AiResearchSessionPage() {
   const [hasMoreOlder, setHasMoreOlder] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [oldestMessageId, setOldestMessageId] = useState<string | null>(null)
+  const [edgarSymbol, setEdgarSymbol] = useState('')
   const chatListRef = useRef<ChatMessageListHandle>(null)
   const statsRef = useRef<HTMLDivElement>(null)
   const titleRef = useRef<HTMLTextAreaElement>(null)
@@ -181,8 +184,21 @@ export function AiResearchSessionPage() {
   }, [connected, health])
 
   const submit = async () => {
-    const ok = await sendMessage(draft)
+    const text = draft.trim()
+    const prompt = buildPromptWithEdgarContext(text, edgarSymbol)
+    if (!prompt.trim()) return
+    const ok = await sendMessage(prompt)
     if (ok) setDraft('')
+  }
+
+  const appendEdgarPromptToDraft = (symbol: string, searchUrl: string) => {
+    const line = formatEdgarDraftLine(symbol, searchUrl)
+    setDraft(prev => {
+      const base = prev.trim()
+      if (!base) return line
+      if (base.includes(searchUrl)) return base
+      return `${base}\n\n${line}`
+    })
   }
 
   const saveTitle = async (title: string) => {
@@ -381,7 +397,11 @@ export function AiResearchSessionPage() {
             </div>
             <span className="text-[11px] text-text-secondary">{statusText}</span>
           </div>
-          <div className="flex items-end gap-2">
+          <EdgarSearchBar
+            onSymbolChange={setEdgarSymbol}
+            onEdgarSearchClick={(symbol, searchUrl) => appendEdgarPromptToDraft(symbol, searchUrl)}
+          />
+          <div className="mt-2 flex items-end gap-2">
             <textarea
               value={draft}
               onChange={e => setDraft(e.target.value)}

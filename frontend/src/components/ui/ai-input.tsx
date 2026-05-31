@@ -4,6 +4,7 @@ import { GripHorizontal, Globe, Maximize2, Minimize2, Send, Sparkles, Square, X 
 
 import { AI_WORKFLOWS } from '@/lib/ai-workflows'
 import { ChatMessageList, type ChatMessageListHandle } from '@/components/ui/chat-message-list'
+import { ToolCallsCollapsible } from '@/components/ui/tool-calls-collapsible'
 import { cn } from '@/lib/utils'
 import type { AgentInteractionMode, ChatMessage } from '@/lib/useCursorAgentChat'
 
@@ -237,6 +238,15 @@ export function MorphPanel({
   const statusLabel = connected ? statusText : 'Connecting…'
   const canSend = connected && !sending && Boolean(draft.trim())
 
+  const chatMessages = React.useMemo(
+    () => messages.filter(message => message.role !== 'tool'),
+    [messages],
+  )
+  const toolMessages = React.useMemo(
+    () => messages.filter(message => message.role === 'tool'),
+    [messages],
+  )
+
   return (
     <div className={cn('font-sans', className)}>
       <AnimatePresence mode="wait">
@@ -315,36 +325,39 @@ export function MorphPanel({
             </div>
 
             {/* Messages */}
-            <ChatMessageList
-              ref={messagesRef}
-              messages={messages}
-              pinToBottom
-              emptyState={
-                <div className="space-y-3">
-                  <p className="text-text-secondary">
-                    Ask about strategies, live executions, brokers, or this codebase.
-                  </p>
-                  <div>
-                    <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
-                      Quick workflows
+            <div className="flex min-h-0 flex-1 flex-col">
+              <ChatMessageList
+                ref={messagesRef}
+                messages={chatMessages}
+                pinToBottom
+                emptyState={
+                  <div className="space-y-3">
+                    <p className="text-text-secondary">
+                      Ask about strategies, live executions, brokers, or this codebase.
                     </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {AI_WORKFLOWS.map(workflow => (
-                        <button
-                          key={workflow.id}
-                          type="button"
-                          disabled={!connected || sending}
-                          onClick={() => void runQuickPrompt(workflow.prompt)}
-                          className="rounded-full border border-border/70 bg-primary/50 px-2.5 py-1 text-[11px] text-text-primary transition-colors hover:border-accent/40 hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          {workflow.label}
-                        </button>
-                      ))}
+                    <div>
+                      <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
+                        Quick workflows
+                      </p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {AI_WORKFLOWS.map(workflow => (
+                          <button
+                            key={workflow.id}
+                            type="button"
+                            disabled={!connected || sending}
+                            onClick={() => void runQuickPrompt(workflow.prompt)}
+                            className="rounded-full border border-border/70 bg-primary/50 px-2.5 py-1 text-[11px] text-text-primary transition-colors hover:border-accent/40 hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            {workflow.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
-                </div>
-              }
-            />
+                }
+              />
+              <ToolCallsCollapsible tools={toolMessages} />
+            </div>
 
             {error ? (
               <div className="shrink-0 border-b border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
