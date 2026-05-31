@@ -7,6 +7,15 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from control_plane.execution_source_links import (
+    action_payload_matches_engine,
+    action_status_for_engine,
+    engine_belongs_to_research_session,
+    symbol_from_action,
+    symbol_from_engine,
+    symbols_match,
+)
+
 
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "control_plane.db")
 
@@ -360,6 +369,133 @@ class AiResearchStore:
             return None
         actions = [item for item in (session.get("actions") or []) if item.get("id") != action_id]
         return self.update_session(session_id, {"actions": actions})
+
+    def link_execution_to_session_actions(
+        self,
+        session_id: str,
+        execution_id: str,
+        engine: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        session = self.get_session(session_id)
+        if not session:
+            return None
+
+        actions: list[dict[str, Any]] = list(session.get("actions") or [])
+        if not actions:
+            return session
+
+        engine = engine or {}
+        linked = False
+        next_actions: list[dict[str, Any]] = []
+
+        for action in actions:
+            payload = dict(action.get("payload") or {})
+            existing_id = str(payload.get("execution_id") or "")
+            if existing_id == execution_id:
+                next_actions.append(action)
+                continue
+            if existing_id:
+                next_actions.append(action)
+                continue
+            if engine and action_payload_matches_engine(action, engine):
+                payload["execution_id"] = execution_id
+                patch: dict[str, Any] = {"payload": payload}
+                if engine:
+                    patch["status"] = action_status_for_engine(engine)
+                next_actions.append({**action, **patch})
+                linked = True
+                continue
+            next_actions.append(action)
+
+        if not linked:
+            return session
+
+        return self.update_session(session_id, {"actions": next_actions})
+
+    def sync_session_action_links(self, session_id: str, registry: Any) -> dict[str, Any] | None:
+        session = self.get_session(session_id)
+        if not session:
+            return None
+
+        session_engines = [
+            engine
+            for engine in registry.list_engines()
+            if engine_belongs_to_research_session(engine, session_id) and engine.get("id")
+        ]
+        actions: list[dict[str, Any]] = list(session.get("actions") or [])
+        if not actions:
+            return session
+
+        claimed_engine_ids = {
+            str((action.get("payload") or {}).get("execution_id") or "")
+            for action in actions
+        }
+        claimed_engine_ids.discard("")
+
+        changed = False
+        next_actions: list[dict[str, Any]] = []
+
+        for action in actions:
+            payload = dict(action.get("payload") or {})
+            existing_id = str(payload.get("execution_id") or "")
+            if existing_id:
+                next_actions.append(action)
+                continue
+
+            action_symbol = symbol_from_action(action)
+            if not action_symbol:
+                next_actions.append(action)
+                continue
+
+            candidates = [
+                engine
+                for engine in session_engines
+                if str(engine.get("id") or "") not in claimed_engine_ids
+                and symbols_match(symbol_from_engine(engine), action_symbol)
+            ]
+            if not candidates:
+                next_actions.append(action)
+                continue
+
+            if len(candidates) > 1:
+                payload_close = payload.get("close_price")
+                if payload_close is not None:
+                    try:
+                        target_close = float(payload_close)
+                    except (TypeError, ValueError):
+                        target_close = None
+                    if target_close is not None:
+                        narrowed = []
+                        for engine in candidates:
+                            metadata = engine.get("metadata") or {}
+                            config = metadata.get("execution_config") or {}
+                            executor = metadata.get("executor_payload") or {}
+                            try:
+                                engine_close = float(
+                                    executor.get("close_price") or config.get("close_price") or 0,
+                                )
+                            except (TypeError, ValueError):
+                                continue
+                            if abs(engine_close - target_close) <= 0.01:
+                                narrowed.append(engine)
+                        if narrowed:
+                            candidates = narrowed
+
+            engine = candidates[0]
+            execution_id = str(engine.get("id") or "")
+            payload["execution_id"] = execution_id
+            next_actions.append({
+                **action,
+                "payload": payload,
+                "status": action_status_for_engine(engine),
+            })
+            claimed_engine_ids.add(execution_id)
+            changed = True
+
+        if not changed:
+            return session
+
+        return self.update_session(session_id, {"actions": next_actions})
 
     def find_research_session_for_execution(
         self,

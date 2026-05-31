@@ -83,8 +83,11 @@ def create_research_session(req: CreateSessionRequest):
 
 @router.get("/sessions/{session_id}", operation_id="get_research_session", summary="Get one AI research session")
 def get_research_session(session_id: str):
+    from control_plane.engine_registry import EngineRegistry
+
     store = get_ai_research_store()
     enrich_session_metadata(store, session_id)
+    store.sync_session_action_links(session_id, EngineRegistry())
     session = store.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Research session not found")
@@ -107,7 +110,7 @@ def list_research_messages(session_id: str, limit: int = 50, before: Optional[st
     page = get_ai_research_store().list_messages(session_id, limit=limit, before=before)
     for message in page["messages"]:
         if message.get("role") == "assistant" and message.get("content"):
-            message["content"] = strip_ai_action_blocks(message["content"])
+            message["content"] = strip_ai_action_blocks(strip_ai_summary_blocks(message["content"]))
     return {"status": True, "data": page}
 
 
@@ -131,12 +134,16 @@ def append_research_message(session_id: str, req: AppendMessageRequest):
 
 @router.post("/sessions/{session_id}/actions", operation_id="upsert_research_action", summary="Create or update a research action")
 def upsert_research_action(session_id: str, req: UpsertActionRequest):
-    session = get_ai_research_store().upsert_action(
+    store = get_ai_research_store()
+    session = store.upsert_action(
         session_id,
         req.model_dump(exclude_none=True),
     )
     if not session:
         raise HTTPException(status_code=404, detail="Research session not found")
+    from control_plane.engine_registry import EngineRegistry
+
+    session = store.sync_session_action_links(session_id, EngineRegistry()) or session
     return {"status": True, "data": session}
 
 
@@ -178,7 +185,7 @@ def _first_user_message_content(store: AiResearchStore, session_id: str) -> str 
 
 
 def derive_research_summary(text: str, *, max_len: int = 320) -> str:
-    cleaned = strip_ai_action_blocks(text.strip())
+    cleaned = strip_ai_action_blocks(strip_ai_summary_blocks(text.strip()))
     if not cleaned:
         return ""
     paragraph = cleaned.split("\n\n")[0].replace("\n", " ").strip()
@@ -234,6 +241,79 @@ def _json_contains_ai_action(text: str) -> bool:
     except json.JSONDecodeError:
         return False
     return isinstance(payload, dict) and bool(payload.get("ai_action"))
+
+
+_AI_SUMMARY_BLOCK_RE = _AI_ACTION_BLOCK_RE
+
+
+def _json_contains_ai_summary(text: str) -> bool:
+    import json
+
+    try:
+        payload = json.loads(text.strip())
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    summary = payload.get("ai_summary")
+    return isinstance(summary, dict) and bool(summary)
+
+
+def extract_reply_summary(content: str) -> dict[str, list[str]] | None:
+    import json
+
+    for match in _AI_SUMMARY_BLOCK_RE.finditer(content):
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        summary = payload.get("ai_summary")
+        if not isinstance(summary, dict):
+            continue
+        parsed = {
+            "highlights": _normalize_summary_items(summary.get("highlights")),
+            "lowlights": _normalize_summary_items(summary.get("lowlights")),
+            "cautions": _normalize_summary_items(summary.get("cautions")),
+        }
+        if any(parsed.values()):
+            return parsed
+    return None
+
+
+def _normalize_summary_items(value: Any) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()][:8]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def strip_ai_summary_blocks(content: str) -> str:
+    import json
+
+    def replace_fenced(match: re.Match[str]) -> str:
+        return "" if _json_contains_ai_summary(match.group(1)) else match.group(0)
+
+    text = _AI_SUMMARY_BLOCK_RE.sub(replace_fenced, content)
+
+    kept_lines: list[str] = []
+    for line in text.splitlines():
+        stripped_line = line.strip()
+        if stripped_line.startswith("{") and stripped_line.endswith("}"):
+            try:
+                payload = json.loads(stripped_line)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict) and payload.get("ai_summary"):
+                continue
+        kept_lines.append(line)
+
+    cleaned = "\n".join(kept_lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
 
 
 def strip_ai_action_blocks(content: str) -> str:
