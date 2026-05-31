@@ -30,6 +30,55 @@ function Toast({ order }) {
   )
 }
 
+function AngelStockSearch({
+  query,
+  onQueryChange,
+  onSearch,
+  loading,
+  results,
+  onSelect,
+  className = '',
+  inputClassName = '',
+}) {
+  return (
+    <div className={`relative ${className}`}>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => onQueryChange(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && onSearch()}
+          placeholder="Search NSE/BSE symbol (e.g. SBIN, RELIANCE)"
+          className={`flex-1 px-3 py-1.5 bg-card border border-white rounded text-[11px] font-medium focus:outline-none focus:border-accent ${inputClassName}`}
+        />
+        <button
+          type="button"
+          onClick={onSearch}
+          disabled={loading || !query.trim()}
+          className="px-3 py-1.5 bg-accent/20 text-accent rounded text-[10px] font-bold hover:bg-accent/30 transition-colors disabled:opacity-50 shrink-0"
+        >
+          {loading ? '...' : 'Search'}
+        </button>
+      </div>
+      {results.length > 0 && (
+        <div className="absolute left-0 right-0 mt-1 border border-white rounded max-h-40 overflow-auto bg-card z-20 shadow-lg">
+          {results.map((stock) => (
+            <button
+              key={`${stock.exchange}-${stock.symboltoken}`}
+              type="button"
+              onClick={() => onSelect(stock)}
+              className="w-full text-left px-3 py-1.5 text-[10px] hover:bg-accent/5 transition-colors border-b border-white/30 last:border-b-0"
+            >
+              <div className="font-medium">{stock.tradingsymbol}</div>
+              <div className="text-text-secondary text-[9px]">{stock.exchange} · Token {stock.symboltoken}</div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function PlatformViews({ mode = 'portfolio' }) {
   const location = useLocation()
   // ── State ──
@@ -680,42 +729,15 @@ export default function PlatformViews({ mode = 'portfolio' }) {
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-sm font-semibold">Portfolio Overview</h2>
                 
-                {/* Search Section */}
-                <div className="w-80">
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      onKeyPress={(e) => e.key === 'Enter' && searchStock()}
-                      placeholder="Search stock (e.g., SBIN, RELIANCE)"
-                      className="flex-1 px-3 py-1.5 bg-card border border-white rounded text-[11px] font-medium focus:outline-none focus:border-accent"
-                    />
-                    <button
-                      onClick={searchStock}
-                      disabled={searchLoading || !searchQuery.trim()}
-                      className="px-3 py-1.5 bg-accent/20 text-accent rounded text-[10px] font-bold hover:bg-accent/30 transition-colors disabled:opacity-50"
-                    >
-                      {searchLoading ? '...' : 'Search'}
-                    </button>
-                  </div>
-                  
-                  {/* Search Results */}
-                  {searchResults.length > 0 && (
-                    <div className="absolute mt-1 w-76 border border-white rounded max-h-32 overflow-auto bg-card z-10">
-                      {searchResults.map(stock => (
-                        <button
-                          key={stock.symboltoken}
-                          onClick={() => selectSearchedStock(stock)}
-                          className="w-full text-left px-3 py-1.5 text-[10px] hover:bg-accent/5 transition-colors border-b border-white/30 last:border-b-0"
-                        >
-                          <div className="font-medium">{stock.tradingsymbol}</div>
-                          <div className="text-text-secondary text-[9px]">{stock.exchange} • Token: {stock.symboltoken}</div>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <AngelStockSearch
+                  className="w-80"
+                  query={searchQuery}
+                  onQueryChange={setSearchQuery}
+                  onSearch={searchStock}
+                  loading={searchLoading}
+                  results={searchResults}
+                  onSelect={selectSearchedStock}
+                />
               </div>
               
               {portfolioLoading ? (
@@ -771,31 +793,31 @@ export default function PlatformViews({ mode = 'portfolio' }) {
                     <div className="flex items-center gap-3">
                       <span className="text-accent text-xs">Selected: {selected.tradingsymbol}</span>
                       <button
-                        onClick={() => { setSelected(null); setSearchedStock(null) }}
+                        onClick={() => {
+                          setSelected(null)
+                          setSearchedStock(null)
+                          setSearchResults([])
+                          setSearchQuery('')
+                        }}
                         className="text-[9px] text-text-secondary hover:text-text-primary transition-colors"
                       >
                         ✕ Change
                       </button>
                     </div>
                   ) : (
-                    <div className="mb-3">
-                      <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Select Stock</label>
-                      <select
-                        value={selected?.symboltoken || ''}
-                        onChange={(e) => {
-                          const stock = portfolio.find(item => item.symboltoken === e.target.value)
-                          setSelected(stock || null)
-                          setSearchedStock(null)
-                        }}
-                        className="w-full px-3 py-1.5 bg-card border border-white rounded text-[11px] font-medium focus:outline-none focus:border-accent"
-                      >
-                        <option value="">Choose a stock...</option>
-                        {[...portfolio].sort((a, b) => a.tradingsymbol.localeCompare(b.tradingsymbol)).map(item => (
-                          <option key={item.symboltoken} value={item.symboltoken}>
-                            {item.tradingsymbol} — {formatInr(Number(item.ltp))}
-                          </option>
-                        ))}
-                      </select>
+                    <div className="mb-3 max-w-md">
+                      <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">
+                        Search Stock
+                      </label>
+                      <p className="text-[9px] text-text-secondary mb-2">Angel One — any NSE/BSE symbol, not limited to your portfolio</p>
+                      <AngelStockSearch
+                        query={searchQuery}
+                        onQueryChange={setSearchQuery}
+                        onSearch={searchStock}
+                        loading={searchLoading}
+                        results={searchResults}
+                        onSelect={selectSearchedStock}
+                      />
                     </div>
                   )}
                 </div>
@@ -870,7 +892,7 @@ export default function PlatformViews({ mode = 'portfolio' }) {
                   disabled={backtestLoading || !selected}
                   className="px-8 py-2.5 rounded-md font-bold text-xs tracking-wide text-white bg-green hover:opacity-85 transition-opacity disabled:opacity-50"
                 >
-                  {backtestLoading ? '⏳ Running...' : !selected ? 'Select a stock first' : '▶ Run Backtest'}
+                  {backtestLoading ? '⏳ Running...' : !selected ? 'Search and select a stock first' : '▶ Run Backtest'}
                 </button>
               </div>
             </div>
