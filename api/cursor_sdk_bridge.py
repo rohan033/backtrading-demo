@@ -345,6 +345,24 @@ class CursorSdkBridge:
             if active_run is not None:
                 active_run["run"] = None
 
+    async def open_session(
+        self,
+        *,
+        session_name: str,
+        mcp_servers: dict[str, Any] | None = None,
+    ) -> str:
+        """Create a new Cursor agent and return its session id."""
+        if not self.configured:
+            raise RuntimeError(CURSOR_CONFIG_HINT)
+        client = await self._require_client()
+        agent = await self._get_or_create_agent(
+            client,
+            session_name,
+            None,
+            mcp_servers=mcp_servers,
+        )
+        return agent.agent_id
+
     async def _require_client(self) -> AsyncClient:
         if self._client is None:
             await self.startup()

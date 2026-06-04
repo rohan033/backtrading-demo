@@ -177,7 +177,9 @@ def _escape_html(text: str) -> str:
 TELEGRAM_CHANNEL_SKILL_PATH = ".cursor/skills/telegram-channel-html/SKILL.md"
 TELEGRAM_CHANNEL_SKILL_NAME = "telegram-channel-html"
 
-TELEGRAM_AGENT_REPLY_HINT = """Telegram delivery (critical): return ONLY the HTML message body — no markdown fences, no preamble. Replies use parse_mode=HTML on mobile."""
+TELEGRAM_AGENT_REPLY_HINT = """Telegram delivery (critical): return ONLY the HTML message body — no markdown fences, no preamble.
+
+Use section layout: headline + one <b>Section</b> per stock/sector/theme, each with at most 4 bullet lines starting with • . No tables or <pre> blocks."""
 
 _SKILL_BODY_RE = re.compile(r"^```(?:html)?\s*\n(.*)\n```\s*$", re.DOTALL | re.IGNORECASE)
 

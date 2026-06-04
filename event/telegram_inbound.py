@@ -79,7 +79,7 @@ async def _dispatch_update(update: dict[str, Any], *, log_inbound: bool) -> None
             if asyncio.iscoroutine(result):
                 await result
         except Exception as exc:
-            logger.error("[TELEGRAM] Inbound handler error: %s", exc)
+            logger.exception("[TELEGRAM] Inbound handler error: %s", exc)
 
 
 class TelegramInboundPoller:
@@ -207,6 +207,10 @@ async def start_telegram_inbound_services() -> None:
 
     if config.cursor_agent:
         maybe_start_telegram_cursor_agent()
+        from event.telegram_client import sync_telegram_bot_commands
+
+        if sync_telegram_bot_commands(config):
+            logger.info("[TELEGRAM] Bot commands synced with Telegram")
 
     if not (config.inbound_log or config.cursor_agent):
         return
