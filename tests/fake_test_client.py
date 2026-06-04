@@ -29,7 +29,7 @@ logzero.loglevel(logzero.INFO)
 from brokers.interfaces import TickClient, Subscription, LTPData
 from managers.tick_provider import TickProvider
 from event.db_event_consumer import DbEventWriter
-from event.event_manager import EventManager
+from event.event_manager import create_event_manager
 from managers.trading_manager import TradingManager
 from managers.strategy_executor import StrategyExecutor
 from strategy_config import StrategyConfig
@@ -205,7 +205,7 @@ class TestOrchestrator:
         self.tick_generator = FakeTickGenerator(base_price=base_price, mode=tick_mode)
         self.fake_client = FakeTradingClient(self.tick_generator)
         self.db_writer = DbEventWriter(db_path=db_path)
-        self.event_manager = EventManager(self.db_writer)
+        self.event_manager = create_event_manager(self.db_writer)
         self.trading_manager = TradingManager(self.fake_client, self.event_manager)
         self.tick_provider = TickProvider(self.fake_client, interval_seconds=poll_interval)
         self.executors: dict[str, StrategyExecutor] = {}

@@ -51,12 +51,9 @@ class _BrokerFeed:
         self.key = _feed_key(broker, account_env)
         self.subscriptions: dict[str, Subscription] = {}
         self.client: Any = None
-        self._poll_task: asyncio.Task | None = None
-        self._on_tick = None
 
     async def start(self, subscriptions: list[Subscription], on_tick) -> None:
         self.subscriptions = {str(s.token): s for s in subscriptions}
-        self._on_tick = on_tick
         if self.broker == "etoro":
             from brokers.etoro.feed_client import EtoroWebsocketFeedClient
 
@@ -74,8 +71,7 @@ class _BrokerFeed:
                         exc,
                     )
             self.client = feed
-            self._poll_task = asyncio.create_task(self._etoro_poll_loop())
-            log.info("[WATCHLIST] eToro feed started env=%s symbols=%d", self.account_env, len(subscriptions))
+            log.info("[WATCHLIST] eToro websocket feed started env=%s symbols=%d", self.account_env, len(subscriptions))
             return
 
         from brokers.angel.feed_client import AngelWebsocketFeedClient
@@ -108,49 +104,14 @@ class _BrokerFeed:
             return
         await self.client.sync_subscriptions(subscriptions)
 
-    async def _etoro_poll_loop(self) -> None:
-        """REST rates fallback so symbols without WS ticks still show LTP."""
-        from brokers.etoro.trading_client import EtoroTradingClient
-
-        client = EtoroTradingClient(account_env=self.account_env)
-        try:
-            while self.client is not None:
-                subs = list(self.subscriptions.values())
-                if subs and self._on_tick is not None:
-                    try:
-                        client.generate_session()
-                        for row in await client.aget_ltp_bulk(subs):
-                            await self._on_tick(
-                                TickData(
-                                    symbol=row.symbol,
-                                    token=str(row.token),
-                                    ltp=float(row.ltp),
-                                    exchange=row.exchange,
-                                )
-                            )
-                    except Exception as exc:
-                        log.warning("[WATCHLIST] eToro poll error: %s", exc)
-                await asyncio.sleep(2.0)
-        except asyncio.CancelledError:
-            raise
-
     async def stop(self) -> None:
-        if self._poll_task is not None:
-            self._poll_task.cancel()
-            try:
-                await self._poll_task
-            except asyncio.CancelledError:
-                pass
-            self._poll_task = None
         if self.client is None:
-            self._on_tick = None
             return
         try:
             await self.client.stop()
         except Exception as exc:
             log.warning("[WATCHLIST] feed stop error key=%s: %s", self.key, exc)
         self.client = None
-        self._on_tick = None
 
 
 class WatchlistFeedHub:

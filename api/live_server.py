@@ -33,12 +33,15 @@ from control_plane.ops_logging import live_engine_log_path, quiet_uvicorn_live_e
 from brokers.interfaces import TickData
 from brokers.etoro.env import load_etoro_env
 from event.db_event_consumer import DbEventWriter
-from event.event_manager import EventManager
+from event.event_manager import create_event_manager
 from managers.strategy_executor import StrategyExecutor
 from managers.order_manager import OrderManager
 from managers.tick_provider import TickProvider
 from managers.trading_manager import TradingManager
 from strategy_config import StrategyConfig
+from event.telegram_env import load_telegram_env
+
+load_telegram_env()
 
 
 # ─── WebSocket Connection Manager ─────────────────────────────────────────────
@@ -140,7 +143,7 @@ class LiveEngine:
             logger.info("[ENGINE] AngelOneTradingClient session established")
 
         self.db_writer = DbEventWriter(db_path="live_events.db")
-        self.event_manager = EventManager(self.db_writer)
+        self.event_manager = create_event_manager(self.db_writer)
         status_client = self._create_status_client()
         self.order_manager = OrderManager(client=status_client)
         self.trading_manager = TradingManager(

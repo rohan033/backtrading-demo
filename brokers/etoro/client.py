@@ -68,7 +68,6 @@ class EtoroClient:
         if self.env not in {"demo", "real"}:
             raise ValueError("ETORO_ENV must be 'demo', 'live', or 'real'")
 
-        logger.info("[eToro] Session configured for %s environment", self.env)
         return self._session
 
     def _headers(self, *, include_json_content_type: bool = False) -> dict[str, str]:

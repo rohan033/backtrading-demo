@@ -41,8 +41,19 @@ from control_plane.execution_sources import DEFAULT_EXECUTION_SOURCE, EXECUTION_
 from control_plane.execution_source_links import ensure_research_source_on_engine
 from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
 from event.db_event_consumer import DbEventWriter
+from event.platform_notifier import emit_strategy_event, shutdown_platform_notifier
+from event.telegram_env import load_telegram_env
+from event.strategy_events import (
+    STRATEGY_CANCELLED,
+    STRATEGY_CREATED,
+    STRATEGY_DEPLOYED,
+    STRATEGY_RUNNING,
+    STRATEGY_SCHEDULED,
+    STRATEGY_STOPPED,
+)
 
 load_dotenv()
+load_telegram_env()
 _cursor_api_env_path = REPO_ROOT / ".cursor-api.env"
 if _cursor_api_env_path.is_file():
     load_dotenv(_cursor_api_env_path, override=True)
@@ -271,6 +282,7 @@ async def control_plane_lifespan(_app: FastAPI):
         stopped = engine_process_manager.stop_all_engines()
         if stopped:
             log.info("[CONTROL] Shutdown stopped %d live trading server(s)", len(stopped))
+        shutdown_platform_notifier()
 
 
 async def _mark_stale_engines_loop():
@@ -285,9 +297,14 @@ async def _mark_stale_engines_loop():
             log.error("[CONTROL] Engine stale sweeper failed: %s", e)
 
 
+def _notify_controlled_strategy(engine: dict, action: str, **kwargs) -> None:
+    if _is_controlled_execution(engine):
+        emit_strategy_event(action, engine, **kwargs)
+
+
 def _fire_scheduled_execution(execution_id: str) -> None:
     try:
-        start_controlled_execution(execution_id)
+        _start_controlled_execution(execution_id, trigger="scheduler")
     except HTTPException as exc:
         raise RuntimeError(str(exc.detail)) from exc
 
@@ -360,9 +377,24 @@ def update_data_plane_engine(engine_id: str, req: DataPlaneEngineUpdate):
 
 @app.post("/api/control/engines/{engine_id}/heartbeat", operation_id="record_engine_heartbeat", summary="Record engine heartbeat")
 def heartbeat_data_plane_engine(engine_id: str, payload: dict = Body(default_factory=dict)):
+    previous = engine_registry.get_engine(engine_id)
+    previous_status = str((previous or {}).get("status") or "").lower()
     engine = engine_registry.record_heartbeat(engine_id, payload or {"status": "running"})
     if not engine:
         raise HTTPException(status_code=404, detail="Data-plane engine not found")
+    new_status = str(engine.get("status") or "").lower()
+    if (
+        previous
+        and _is_controlled_execution(engine)
+        and previous_status in {"starting"}
+        and new_status == "running"
+    ):
+        _notify_controlled_strategy(
+            engine,
+            STRATEGY_RUNNING,
+            previous_state=previous_status,
+            trigger="heartbeat",
+        )
     return {"status": True, "data": engine}
 
 
@@ -626,6 +658,11 @@ def create_controlled_execution(req: ControlPlaneExecutionRequest):
     except Exception as e:
         log.error("[CONTROL] Failed to create execution: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    status = str(engine.get("status") or "pending").lower()
+    if status == "scheduled":
+        _notify_controlled_strategy(engine, STRATEGY_SCHEDULED, trigger="create")
+    else:
+        _notify_controlled_strategy(engine, STRATEGY_CREATED, trigger="create")
     log.info(
         "[CONTROL] Created %s execution %s for %s source_id=%s",
         engine.get("status") or "pending",
@@ -662,6 +699,12 @@ def unschedule_all_controlled_executions():
         updated = _unschedule_engine_if_scheduled(execution_id, engine)
         if updated:
             unscheduled.append(execution_id)
+            _notify_controlled_strategy(
+                updated,
+                STRATEGY_CANCELLED,
+                previous_state="scheduled",
+                trigger="unschedule_all",
+            )
             log.info("[CONTROL] Unscheduled execution %s (unschedule-all)", execution_id)
         else:
             failed.append(execution_id)
@@ -703,6 +746,12 @@ def stop_all_controlled_executions():
 
         if result:
             stopped.append(execution_id)
+            _notify_controlled_strategy(
+                result,
+                STRATEGY_STOPPED,
+                previous_state=status,
+                trigger="stop_all",
+            )
             log.info("[CONTROL] Stopped execution %s (stop-all)", execution_id)
         else:
             failed.append(execution_id)
@@ -719,6 +768,10 @@ def stop_all_controlled_executions():
 
 @app.post("/api/control/executions/{execution_id}/start", operation_id="start_strategy", summary="Start/deploy a saved strategy")
 def start_controlled_execution(execution_id: str):
+    return _start_controlled_execution(execution_id, trigger="manual")
+
+
+def _start_controlled_execution(execution_id: str, *, trigger: str = "manual"):
     engine = engine_registry.get_engine(execution_id)
     if not engine:
         raise HTTPException(status_code=404, detail="Execution not found")
@@ -791,6 +844,12 @@ def start_controlled_execution(execution_id: str):
         execution_id,
         started.get("port"),
         log_file,
+    )
+    _notify_controlled_strategy(
+        started,
+        STRATEGY_DEPLOYED,
+        previous_state=str(engine.get("status") or "").lower() or None,
+        trigger=trigger,
     )
     return {
         "status": True,
@@ -897,6 +956,12 @@ def unschedule_controlled_execution(execution_id: str):
         raise HTTPException(status_code=500, detail="Failed to unschedule execution")
 
     metadata = updated.get("metadata") or {}
+    _notify_controlled_strategy(
+        updated,
+        STRATEGY_CANCELLED,
+        previous_state="scheduled",
+        trigger="unschedule",
+    )
     log.info("[CONTROL] Unscheduled execution %s", execution_id)
     return {
         "status": True,
@@ -930,6 +995,12 @@ def stop_controlled_execution(execution_id: str):
     if not stopped:
         raise HTTPException(status_code=500, detail="Failed to stop execution")
 
+    _notify_controlled_strategy(
+        stopped,
+        STRATEGY_STOPPED,
+        previous_state=str(engine.get("status") or "").lower() or None,
+        trigger="stop",
+    )
     log.info("[CONTROL] Stopped execution %s", execution_id)
     return {
         "status": True,

@@ -213,8 +213,14 @@ class EtoroWebsocketFeedClient(EtoroTradingClient):
         payload = {"id": str(uuid.uuid4()), **message}
         await self._socket.send(json.dumps(payload))
 
-    async def _handle_message(self, raw_message: str) -> None:
+    async def _handle_message(self, raw_message: str | bytes) -> None:
         import json
+
+        if isinstance(raw_message, (bytes, bytearray)):
+            if raw_message in (b"\x00", b""):
+                return
+            logger.debug("[eToro] Ignoring non-text websocket frame: %r", raw_message)
+            return
 
         try:
             message = json.loads(raw_message)
