@@ -101,31 +101,12 @@ When a reply benefits from a quick trader recap (research answers, stock analysi
 
 Use 1–4 short bullets per section; leave a section empty only if truly not applicable. Do not duplicate the same bullet across sections."""
 
-ASK_MODE_HINT = f"""You are in ASK mode (read-only guardrails).
+ASK_MODE_HINT = f"""You are in ASK mode (research / Q&A).
 
-- Answer questions and explain tradeoffs using the codebase and read-only context.
-- You may use read-only repo tools (search/read files) when needed to ground answers.
+- Answer questions and explain tradeoffs; use repo and control-plane read tools when helpful.
 {ASK_CONTROL_PLANE_READ_MCP_HINT}
-- Do NOT modify files, run shell commands, or use write/edit/terminal tools.
-- Do NOT create, deploy, start, duplicate, stop, or unschedule strategies or engines.
-- Do NOT run `make dev`, `make cp`, `uvicorn`, or scripts that spawn/stop data-plane engines.
-- If the user wants strategies created/stopped or code changed, explain the steps and tell them to switch to Execute mode."""
-
-ASK_MODE_WEB_SEARCH_HINT = f"""You are in ASK mode (read-only guardrails).
-
-- Do not search or read the codebase for this message; use websearch/webfetch only.
-{ASK_CONTROL_PLANE_READ_MCP_HINT}
-- Do NOT modify files, run shell commands, or use write/edit/terminal tools.
-- Do NOT create, deploy, start, duplicate, stop, or unschedule strategies or engines.
-- If the user wants strategies created/stopped or code changed, explain the steps and tell them to switch to Execute mode."""
-
-EXECUTE_MODE_WEB_SEARCH_HINT = f"""You are in EXECUTE mode.
-
-Do not search or read the codebase for this message; use websearch/webfetch only.
-
-{EXECUTE_CONTROL_PLANE_MCP_HINT}
-
-Prefer minimal, safe diffs and explain consequential actions before destructive control-plane operations."""
+- Prefer not to modify files or run destructive control-plane actions unless the user clearly asks.
+- If they want strategies created, deployed, or code changed, you may do it when they ask — briefly confirm intent first."""
 
 EXECUTE_MODE_HINT = f"""You are in EXECUTE mode.
 
@@ -166,18 +147,14 @@ REPO_READ_TOOL_NAMES = frozenset(
     if name not in WEB_SEARCH_TOOL_NAMES and name not in READ_MCP_TOOL_NAMES
 )
 
-WEB_SEARCH_ENABLED_HINT = """Web search is ENABLED for this message.
+WEB_SEARCH_ENABLED_HINT = """Web search toggle is ON (optional).
 
-Do not check the codebase.
+For live market news, prices, or recent events, websearch/webfetch are available. You may combine web search with repo and control-plane tools in the same turn when useful.
+If you use the web for factual claims, end with a short **Sources** section (trader-facing site names / URLs). Do not name internal tools in the reply."""
 
-For stock / market analysis, earnings, news, sector context, or any question that depends on current or recent public information:
-- Prefer the websearch and webfetch tools before guessing from memory.
-- Treat an internet check as mandatory: use websearch/webfetch to verify claims, levels, news, and market context before answering.
-- End every reply that used web search with a short **Sources** section listing the sites or publications consulted (trader-facing labels and URLs when available). Do not name internal tools in the reply."""
+WEB_SEARCH_DISABLED_HINT = """Web search toggle is OFF (optional).
 
-WEB_SEARCH_DISABLED_HINT = """Web search is DISABLED for this message.
-
-Do not use websearch or webfetch. Answer from repo context, control-plane data, and general knowledge only. If live market data is required, tell the user to enable the Web search toggle."""
+Prefer repo and control-plane context first. Websearch/webfetch are still allowed if you need them — the toggle is a UI preference, not a hard block."""
 
 ASK_BLOCKED_TOOL_NAMES = frozenset({
     "shell",
@@ -343,7 +320,7 @@ class CursorAgentService:
             return
 
         mode = interaction_mode if interaction_mode in VALID_INTERACTION_MODES else "ask"
-        sdk_mode = "agent" if mode == "execute" else "ask"
+        sdk_mode = _sdk_agent_mode(mode)
         store = get_ai_research_store() if research_session_id else None
         user_message_id: str | None = None
 
@@ -411,13 +388,7 @@ class CursorAgentService:
             mcp_servers = _control_plane_mcp_servers(mode)
             if mcp_servers is not None:
                 send_options = SendOptions(mode=sdk_mode, mcp_servers=mcp_servers)
-            try:
-                run = await agent.send(message, send_options)
-            except Exception as exc:
-                if sdk_mode != "ask":
-                    raise
-                log.warning("[CURSOR_AGENT] ask mode rejected by SDK, using prompt guardrails only: %s", exc)
-                run = await agent.send(message)
+            run = await agent.send(message, send_options)
             if active_run is not None:
                 active_run["run"] = run
             yield {
@@ -609,7 +580,7 @@ class CursorAgentService:
         from cursor_sdk import AgentOptions
 
         api_key = os.environ[CURSOR_API_KEY_ENV].strip()
-        sdk_mode = "agent" if interaction_mode == "execute" else "ask"
+        sdk_mode = _sdk_agent_mode(interaction_mode)
         mcp_servers = _control_plane_mcp_servers(interaction_mode)
         options = AgentOptions(
             api_key=api_key,
@@ -803,6 +774,21 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
             await ws.send_json({"type": "error", "phase": "session", "message": str(exc)})
 
 
+def _sdk_agent_mode(interaction_mode: str) -> str:
+    """Cursor SDK mode: always agent so repo/MCP/shell tools are not blocked by the SDK."""
+    _ = interaction_mode
+    return "agent"
+
+
+def _strict_ask_guardrails_enabled() -> bool:
+    return os.getenv("CURSOR_AGENT_STRICT_ASK_GUARDRAILS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _wrap_prompt(
     user_prompt: str,
     *,
@@ -816,7 +802,7 @@ def _wrap_prompt(
         parts.append(STRATEGY_AGENT_HINT)
     parts.append(WEB_SEARCH_ENABLED_HINT if web_search_enabled else WEB_SEARCH_DISABLED_HINT)
     if interaction_mode == "execute":
-        parts.append(EXECUTE_MODE_WEB_SEARCH_HINT if web_search_enabled else EXECUTE_MODE_HINT)
+        parts.append(EXECUTE_MODE_HINT)
         if research_session_id:
             parts.append(
                 f'Active AI Research session ({research_session_id}): '
@@ -829,7 +815,7 @@ def _wrap_prompt(
                 'use source_id "ai_chatbot_panel" and leave source_meta_id blank.'
             )
     else:
-        parts.append(ASK_MODE_WEB_SEARCH_HINT if web_search_enabled else ASK_MODE_HINT)
+        parts.append(ASK_MODE_HINT)
     parts.append(USER_FACING_RESPONSE_HINT)
     if new_agent:
         parts.append(f"User question:\n{user_prompt}")
@@ -962,18 +948,7 @@ def _tool_call_blocked(
 ) -> tuple[bool, str]:
     normalized = _normalize_tool_name(payload)
     blob = _tool_call_text(payload)
-
-    if not web_search_enabled and normalized in WEB_SEARCH_TOOL_NAMES:
-        return (
-            True,
-            "Web search is turned off. Enable the Web search toggle to look up live market data.",
-        )
-
-    if web_search_enabled and normalized in REPO_READ_TOOL_NAMES and not is_read_mcp_tool_name(normalized):
-        return (
-            True,
-            "Web search is on — do not check the codebase. Turn off Web search to use repo tools.",
-        )
+    _ = web_search_enabled
 
     if (
         normalized in SHELL_TOOL_NAMES
@@ -983,6 +958,9 @@ def _tool_call_blocked(
             True,
             f"Use {CONTROL_PLANE_MCP_SERVER} MCP tools (e.g. create_strategy) instead of shell/curl for control-plane APIs.",
         )
+
+    if not _strict_ask_guardrails_enabled():
+        return False, ""
 
     if interaction_mode != "ask":
         return False, ""
@@ -1010,9 +988,6 @@ def _tool_call_blocked(
             True,
             "Ask mode is read-only. Switch to Execute to run shell commands or modify files.",
         )
-
-    if normalized in ASK_READ_ONLY_TOOL_NAMES:
-        return False, ""
 
     return (
         True,

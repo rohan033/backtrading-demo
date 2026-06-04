@@ -439,12 +439,9 @@ export function MorphPanel({
                 </div>
                 <span className="text-[11px] text-text-secondary">
                   {interactionMode === 'ask'
-                    ? webSearchEnabled
-                      ? 'Read-only · web search for market data'
-                      : 'Read-only · no control plane changes'
-                    : webSearchEnabled
-                      ? 'Can edit, run tools & control plane · web search on'
-                      : 'Can edit, run tools & control plane'}
+                    ? 'Ask · research & Q&A'
+                    : 'Execute · apply changes & control plane'}
+                  {webSearchEnabled ? ' · web search hint on' : ''}
                 </span>
               </div>
               <div className="flex items-end gap-2">
