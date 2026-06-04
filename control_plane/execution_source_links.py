@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from control_plane.execution_sources import EXECUTION_SOURCE_AI_RESEARCH
-from api.control_plane_mcp_tools import CREATE_STRATEGY_TOOL_RE as _CREATE_EXECUTION_TOOL_RE
+from mcps.catalog import CREATE_STRATEGY_TOOL_RE as _CREATE_EXECUTION_TOOL_RE
 
 _EXECUTION_ID_RE = re.compile(r'"execution_id"\s*:\s*"([^"]+)"')
 _PATH_EXECUTION_ID_RE = re.compile(r"/api/control/executions/([^/\"'\s]+)")

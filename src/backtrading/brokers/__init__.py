@@ -1,21 +1,19 @@
-"""Deprecated: use brokers.protocols."""
-
 from brokers.protocols import (
-    LTPData,
     OrderActivity,
     OrderActivityListener,
     Subscription,
     TickClient,
     TickData,
     TickListener,
+    LTPData,
 )
 
 __all__ = [
-    "TickData",
-    "Subscription",
-    "LTPData",
     "OrderActivity",
-    "TickClient",
-    "TickListener",
     "OrderActivityListener",
+    "Subscription",
+    "TickClient",
+    "TickData",
+    "TickListener",
+    "LTPData",
 ]

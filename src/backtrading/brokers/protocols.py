@@ -1,4 +1,4 @@
-"""Deprecated: use brokers.protocols."""
+"""Package shim for broker protocols."""
 
 from brokers.protocols import (
     LTPData,

@@ -2,7 +2,9 @@ import sys
 import os
 import logging
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _repo_root)
+sys.path.insert(0, os.path.join(_repo_root, "src"))
 
 from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -40,6 +42,17 @@ from control_plane.execution_scheduler import ExecutionScheduler
 from control_plane.execution_sources import DEFAULT_EXECUTION_SOURCE, EXECUTION_SOURCE_AI_RESEARCH
 from control_plane.execution_source_links import ensure_research_source_on_engine
 from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
+from brokers.angel.adapters.portfolio import angel_portfolio_rows_from_holdings
+from brokers.etoro.adapters.portfolio import (
+    enrich_etoro_orders_snapshot as _enrich_etoro_orders_snapshot,
+    etoro_display_symbol as _etoro_display_symbol,
+    etoro_instrument_id as _etoro_instrument_id,
+    etoro_instrument_to_search_row as _etoro_instrument_to_search_row,
+    etoro_position_to_portfolio_row as _etoro_position_to_portfolio_row,
+    etoro_symbol_map_for_records as _etoro_symbol_map_for_records,
+    mock_search_rows as _mock_search_rows,
+)
+from brokers.fake.adapters.portfolio import fake_portfolio_rows
 from event.db_event_consumer import DbEventWriter
 from event.platform_notifier import emit_strategy_event, shutdown_platform_notifier
 from event.telegram_env import load_telegram_env
@@ -71,6 +84,14 @@ log = logging.getLogger("backtrading")
 log.info("[CONTROL] Control plane logging to %s", _control_plane_log_path)
 
 app = FastAPI(title="Backtrading API")
+
+
+@app.get("/health")
+def health_check():
+    from backtrading.observability.health import control_plane_health_payload
+
+    return control_plane_health_payload()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -1081,148 +1102,6 @@ def get_control_event_session_events(session_id: str, limit: int = 300):
     return {"status": True, "data": events}
 
 
-def _mock_search_rows(q: str) -> list[dict]:
-    mock_stocks = [
-        {"tradingsymbol": "RELIANCE-EQ", "symboltoken": "2885", "exchange": "NSE"},
-        {"tradingsymbol": "INFY-EQ", "symboltoken": "1594", "exchange": "NSE"},
-        {"tradingsymbol": "TCS-EQ", "symboltoken": "11536", "exchange": "NSE"},
-        {"tradingsymbol": "HDFCBANK-EQ", "symboltoken": "1333", "exchange": "NSE"},
-        {"tradingsymbol": "BAJFINANCE-EQ", "symboltoken": "317", "exchange": "NSE"},
-        {"tradingsymbol": "SBIN-EQ", "symboltoken": "3045", "exchange": "NSE"},
-        {"tradingsymbol": "ICICIBANK-EQ", "symboltoken": "4963", "exchange": "NSE"},
-        {"tradingsymbol": "LUPIN-EQ", "symboltoken": "10440", "exchange": "NSE"},
-        {"tradingsymbol": "WIPRO-EQ", "symboltoken": "3787", "exchange": "NSE"},
-        {"tradingsymbol": "TATAMOTORS-EQ", "symboltoken": "3456", "exchange": "NSE"},
-    ]
-    mock_crypto = [
-        {"tradingsymbol": "BTC", "symboltoken": "100000", "exchange": "ETORO"},
-        {"tradingsymbol": "ETH", "symboltoken": "100001", "exchange": "ETORO"},
-        {"tradingsymbol": "AAPL", "symboltoken": "100002", "exchange": "ETORO"},
-        {"tradingsymbol": "TSLA", "symboltoken": "100003", "exchange": "ETORO"},
-    ]
-    needle = q.upper()
-    return [
-        stock for stock in (mock_stocks + mock_crypto)
-        if needle in stock["tradingsymbol"].upper()
-    ]
-
-
-def _etoro_instrument_to_search_row(instrument: dict) -> dict:
-    instrument_id = (
-        instrument.get("instrumentId")
-        or instrument.get("instrumentID")
-        or instrument.get("InstrumentID")
-    )
-    symbol = (
-        instrument.get("symbolFull")
-        or instrument.get("internalSymbolFull")
-        or instrument.get("symbol")
-        or instrument.get("displayName")
-        or str(instrument_id or "")
-    )
-    exchange = (
-        instrument.get("exchangeName")
-        or instrument.get("exchange")
-        or instrument.get("exchangeCode")
-        or "ETORO"
-    )
-    return {
-        "tradingsymbol": symbol,
-        "symboltoken": str(instrument_id) if instrument_id is not None else "",
-        "exchange": exchange,
-        "name": instrument.get("displayName") or instrument.get("instrumentDisplayName") or symbol,
-        "raw": instrument,
-    }
-
-
-def _etoro_instrument_id(record: dict) -> int | None:
-    raw = (
-        record.get("instrumentID")
-        or record.get("instrumentId")
-        or record.get("InstrumentID")
-    )
-    if raw is None:
-        return None
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
-
-
-def _etoro_display_symbol(record: dict, symbol_map: dict[int, str] | None = None) -> str:
-    instrument_id = _etoro_instrument_id(record)
-    for key in (
-        "instrumentDisplayName",
-        "InstrumentDisplayName",
-        "symbolFull",
-        "internalSymbolFull",
-        "displayName",
-        "DisplayName",
-        "symbol",
-        "Symbol",
-    ):
-        value = record.get(key)
-        if value is not None and str(value).strip():
-            text = str(value).strip()
-            if instrument_id is None or text != str(instrument_id):
-                return text
-    if instrument_id is not None and symbol_map:
-        mapped = symbol_map.get(instrument_id)
-        if mapped:
-            return mapped
-    return str(instrument_id or "")
-
-
-async def _etoro_symbol_map_for_records(client, records: list[dict]) -> dict[int, str]:
-    instrument_ids: list[int] = []
-    seen: set[int] = set()
-    for record in records:
-        instrument_id = _etoro_instrument_id(record)
-        if instrument_id is not None and instrument_id not in seen:
-            seen.add(instrument_id)
-            instrument_ids.append(instrument_id)
-    if not instrument_ids:
-        return {}
-    return await client.aget_instrument_symbol_map(instrument_ids)
-
-
-def _etoro_position_to_portfolio_row(position: dict, symbol_map: dict[int, str] | None = None) -> dict:
-    instrument_id = _etoro_instrument_id(position)
-    symbol = _etoro_display_symbol(position, symbol_map)
-    units = position.get("units") or position.get("Units") or position.get("amount") or 0
-    open_rate = position.get("openRate") or position.get("OpenRate") or position.get("open") or 0
-    ltp = (
-        position.get("currentRate")
-        or position.get("CurrentRate")
-        or position.get("rate")
-        or position.get("openRate")
-        or open_rate
-    )
-    return {
-        "tradingsymbol": symbol,
-        "symboltoken": str(instrument_id) if instrument_id is not None else "",
-        "exchange": "ETORO",
-        "quantity": str(units),
-        "averageprice": str(open_rate),
-        "ltp": str(ltp),
-        "broker": "etoro",
-    }
-
-
-def _enrich_etoro_orders_snapshot(snapshot: dict, symbol_map: dict[int, str]) -> dict:
-    enriched: dict[str, list[dict]] = {}
-    for key in ("orders", "orders_for_open", "orders_for_close"):
-        items = []
-        for item in snapshot.get(key) or []:
-            if not isinstance(item, dict):
-                continue
-            row = dict(item)
-            row["symbol"] = _etoro_display_symbol(row, symbol_map)
-            items.append(row)
-        enriched[key] = items
-    return enriched
-
-
 @app.get("/api/control/portfolio", operation_id="get_portfolio", summary="Get broker portfolio holdings")
 async def control_plane_portfolio(
     broker: str = "angel",
@@ -1255,17 +1134,7 @@ async def control_plane_portfolio(
 
     try:
         if broker_name == "fake":
-            rows = [
-                {
-                    "tradingsymbol": "FAKE-EQ",
-                    "symboltoken": "1",
-                    "exchange": "NSE",
-                    "quantity": "10",
-                    "averageprice": "100",
-                    "ltp": "105",
-                    "broker": "fake",
-                }
-            ]
+            rows = fake_portfolio_rows()
             _set_portfolio_cache(broker_name, account_env, rows)
             return {"status": True, "broker": broker_name, "account_env": account_env, "data": rows}
 
@@ -1284,7 +1153,7 @@ async def control_plane_portfolio(
         log.info("[CONTROL_PORTFOLIO] fetching fresh angel holdings...")
         client = get_client()
         raw = client._client.holding().get("data") or []
-        rows = [{**item, "broker": "angel"} for item in raw]
+        rows = angel_portfolio_rows_from_holdings(raw)
         _set_portfolio_cache(broker_name, account_env, rows)
         log.info("[CONTROL_PORTFOLIO] angel returned %d holdings", len(rows))
         return {"status": True, "broker": broker_name, "account_env": account_env, "data": rows}

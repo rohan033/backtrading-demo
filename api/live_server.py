@@ -18,7 +18,9 @@ import sys
 import urllib.error
 import urllib.request
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _repo_root)
+sys.path.insert(0, os.path.join(_repo_root, "src"))
 
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -556,6 +558,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/health")
+async def health_check():
+    try:
+        from backtrading.observability.health import live_engine_health_payload
+
+        eng = get_engine()
+        info = eng.engine_info() if eng else {}
+        return live_engine_health_payload(
+            engine_id=info.get("engine_id"),
+            broker=info.get("broker"),
+            degraded=not getattr(eng, "running", True) if eng else True,
+        )
+    except HTTPException:
+        from backtrading.observability.health import live_engine_health_payload
+
+        return live_engine_health_payload(engine_id=None, broker=None, degraded=True)
 
 
 def get_engine() -> LiveEngine:

@@ -187,8 +187,17 @@ _SKILL_BODY_RE = re.compile(r"^```(?:html)?\s*\n(.*)\n```\s*$", re.DOTALL | re.I
 @lru_cache(maxsize=1)
 def load_telegram_channel_skill_body() -> str:
     """Load telegram-channel-html skill text (body only, no YAML frontmatter)."""
+    try:
+        from backtrading.agentic.loader import load_skill
+
+        return load_skill("telegram-channel-html", strip_frontmatter=True).strip()
+    except Exception:
+        pass
     repo_root = Path(__file__).resolve().parents[1]
-    path = repo_root / TELEGRAM_CHANNEL_SKILL_PATH
+    canonical = (
+        repo_root / "src" / "backtrading" / "agentic" / "skills" / TELEGRAM_CHANNEL_SKILL_NAME / "SKILL.md"
+    )
+    path = canonical if canonical.is_file() else repo_root / TELEGRAM_CHANNEL_SKILL_PATH
     text = path.read_text(encoding="utf-8")
     if text.startswith("---"):
         end = text.find("---", 3)

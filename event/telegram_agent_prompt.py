@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from api.control_plane_mcp_tools import EXECUTE_CONTROL_PLANE_MCP_HINT
+try:
+    from mcps.catalog import EXECUTE_CONTROL_PLANE_MCP_HINT
+except ImportError:
+    from api.control_plane_mcp_tools import EXECUTE_CONTROL_PLANE_MCP_HINT
 from event.telegram_format import telegram_channel_skill_instructions
 
 TELEGRAM_SESSION_NAME = "telegram"
