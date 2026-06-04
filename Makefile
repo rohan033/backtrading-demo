@@ -1,4 +1,8 @@
-.PHONY: cp cp-reload fe dev dev-reload install-fe
+.PHONY: cp cp-reload fe dev dev-reload install-fe install-backend docs docs-build install-docs
+
+# Editable install of src/backtrading (optional; dev scripts also add src/ to PYTHONPATH)
+install-backend:
+	pip install -e .
 
 # Control plane (FastAPI) — http://localhost:8000
 cp:
@@ -22,3 +26,13 @@ dev-reload:
 # One-time frontend deps
 install-fe:
 	cd frontend && npm install
+
+# MkDocs (Material) — http://127.0.0.1:8001
+install-docs:
+	pip install -e ".[docs]"
+
+docs:
+	mkdocs serve -a 127.0.0.1:8001
+
+docs-build:
+	mkdocs build
