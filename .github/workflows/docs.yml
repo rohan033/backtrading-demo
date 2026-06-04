@@ -1,7 +1,9 @@
 # Publish MkDocs to GitHub Pages (project site).
 # URL: https://rohan033.github.io/backtrading-demo/
 #
-# One-time repo setup: Settings → Pages → Build and deployment → Source: GitHub Actions
+# One-time setup (required or deploy job returns 404):
+#   Settings → Pages → Build and deployment → Source: GitHub Actions
+#   https://github.com/rohan033/backtrading-demo/settings/pages
 
 name: docs
 
