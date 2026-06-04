@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from event.strategy_events import strategy_details_from_engine
+from event.telegram_inbound import maybe_telegram_inbound_logger, stop_telegram_inbound_logger
 from event.telegram_listener import TelegramEventListener, maybe_telegram_listener
 
 log = logging.getLogger("backtrading")
@@ -11,16 +12,23 @@ log = logging.getLogger("backtrading")
 _listeners: list[TelegramEventListener] = []
 
 
-def _telegram_listener() -> TelegramEventListener | None:
+def _start_telegram_services() -> TelegramEventListener | None:
     global _listeners
-    if not _listeners:
-        from event.telegram_env import load_telegram_env
+    if _listeners:
+        return _listeners[0]
 
-        load_telegram_env()
-        listener = maybe_telegram_listener()
-        if listener is not None:
-            _listeners.append(listener)
+    from event.telegram_env import load_telegram_env
+
+    load_telegram_env()
+    listener = maybe_telegram_listener()
+    if listener is not None:
+        _listeners.append(listener)
+        maybe_telegram_inbound_logger()
     return _listeners[0] if _listeners else None
+
+
+def _telegram_listener() -> TelegramEventListener | None:
+    return _start_telegram_services()
 
 
 def emit_strategy_event(
@@ -61,6 +69,7 @@ def emit_strategy_event(
 
 def shutdown_platform_notifier() -> None:
     global _listeners
+    stop_telegram_inbound_logger()
     for listener in _listeners:
         listener.stop()
     _listeners.clear()

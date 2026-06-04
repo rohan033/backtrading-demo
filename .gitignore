@@ -52,5 +52,9 @@ manual_robo.db
 control_plane.db
 live_events.db
 
+# Generated chart exports (matplotlib / analysis scripts at repo root)
+/*.png
+/charts/
+
 # UX simulation prototype (HTML/JS mock — not the React app)
 ux-prototype/

@@ -43,6 +43,7 @@ from control_plane.trading_schedule import default_schedule, resolve_schedule, t
 from event.db_event_consumer import DbEventWriter
 from event.platform_notifier import emit_strategy_event, shutdown_platform_notifier
 from event.telegram_env import load_telegram_env
+from event.telegram_inbound import maybe_telegram_inbound_logger
 from event.strategy_events import (
     STRATEGY_CANCELLED,
     STRATEGY_CREATED,
@@ -53,7 +54,16 @@ from event.strategy_events import (
 )
 
 load_dotenv()
-load_telegram_env()
+if load_telegram_env():
+    from event.telegram_config import load_telegram_config
+
+    if load_telegram_config() is not None:
+        maybe_telegram_inbound_logger()
+    else:
+        log_pre = logging.getLogger("backtrading")
+        log_pre.warning(
+            "[TELEGRAM] .telegram.env loaded but TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing"
+        )
 _cursor_api_env_path = REPO_ROOT / ".cursor-api.env"
 if _cursor_api_env_path.is_file():
     load_dotenv(_cursor_api_env_path, override=True)
