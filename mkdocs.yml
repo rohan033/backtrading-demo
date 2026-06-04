@@ -1,0 +1,116 @@
+site_name: Backtrading
+site_description: Control plane, live trading engine, and frontend for strategy deployment
+site_url: https://rohan033.github.io/backtrading-demo/
+repo_url: https://github.com/rohan033/backtrading-demo
+edit_uri: edit/main/documentation/
+
+docs_dir: documentation
+site_dir: site
+
+theme:
+  name: material
+  language: en
+  logo: material/finance
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Light mode
+
+validation:
+  links:
+    not_found: ignore
+    unrecognized_links: ignore
+    absolute_links: ignore
+
+plugins:
+  - search
+  - include-markdown:
+      rewrite_relative_urls: false
+  - mermaid2:
+      arguments:
+        theme: neutral
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid_custom
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - tables
+  - attr_list
+  - md_in_html
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Quickstart: getting-started.md
+      - Environment: guides/env-setup.md
+      - UI smoke checklist: guides/ui-smoke.md
+      - Fake broker: guides/fake-broker.md
+  - Architecture:
+      - Overview: architecture/index.md
+      - System context: architecture/01-system-context.md
+      - Layers and modules: architecture/02-layers-and-modules.md
+      - Domain models: architecture/03-domain-models.md
+      - Live engine: architecture/04-live-engine.md
+      - Control plane: architecture/05-control-plane.md
+      - Brokers: architecture/06-brokers.md
+      - Events and Telegram: architecture/07-events-and-telegram.md
+      - Agent and MCP: architecture/08-agent-mcp.md
+      - Frontend API: architecture/09-frontend-api.md
+      - Legacy and package: architecture/10-legacy-and-package.md
+      - Claude suggestions: architecture/11-claude-suggestions-reconciliation.md
+      - Migration overview: migration-overview.md
+  - Guides:
+      - Event bus: guides/event-bus.md
+      - Observability: guides/observability.md
+      - Add a strategy: guides/adding-strategy.md
+      - Add a broker: guides/adding-broker.md
+      - Add a skill: guides/adding-skill.md
+      - Brokers overview: guides/brokers.md
+  - Contributing: contributing.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/rohan033/backtrading-demo
+
+extra_css:
+  - stylesheets/extra.css

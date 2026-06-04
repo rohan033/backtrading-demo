@@ -1,1 +1,66 @@
+# Virtual environment
+.ven/
+.env
+.demo.env
+.live.env
+live.read.env
+.cursor-api.env
+.telegram.env
+.cursor/*
+!.cursor/skills/
+!.cursor/skills/**
+.claude/    
+# Python cache files
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# MkDocs output
+site/
+
+# Distribution / packaging
+.Python build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+/lib/
+!frontend/src/lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Logs
+logs/
+
+# Local test scripts (may contain credentials)
+scripts/
+
+# Node.js
+node_modules/
+frontend/dist/
+
+# Database
+manual_robo.db
+control_plane.db
+live_events.db
+
+# Generated chart exports (matplotlib / analysis scripts at repo root)
+/*.png
+/charts/
+
+# UX simulation prototype (HTML/JS mock — not the React app)
+ux-prototype/

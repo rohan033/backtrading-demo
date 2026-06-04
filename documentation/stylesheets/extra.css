@@ -1,0 +1,4 @@
+/* Slight readability tweaks for Material */
+.md-typeset { font-size: 0.95rem; }
+.md-typeset table:not([class]) { font-size: 0.85rem; }
+.md-typeset .mermaid { text-align: center; margin: 1.5rem 0; }
