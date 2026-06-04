@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import os
 import re
-from collections import OrderedDict
 from typing import Any, AsyncIterator, Optional
 
-from cursor_sdk import AsyncClient, CursorAgentError, LocalAgentOptions
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
@@ -27,13 +24,6 @@ from api.ai_research_routes import (
 from api.workspace_media import (
     attachments_from_paths,
     extract_media_attachments,
-    extract_media_paths_from_text,
-)
-from control_plane.engine_process_manager import REPO_ROOT
-from control_plane.execution_source_links import (
-    apply_research_source_to_engine,
-    extract_execution_id_from_tool_payload,
-    tool_call_links_research_execution,
 )
 from api.control_plane_mcp_tools import (
     ASK_CONTROL_PLANE_READ_MCP_HINT,
@@ -45,28 +35,14 @@ from api.control_plane_mcp_tools import (
     is_read_mcp_tool_name,
 )
 
+from api.cursor_sdk_bridge import (
+    CURSOR_CONFIG_HINT,
+    control_plane_mcp_servers,
+    cursor_sdk_bridge,
+    load_cursor_api_env,
+)
+
 log = logging.getLogger("backtrading.cursor_agent")
-
-CURSOR_API_KEY_ENV = "CURSOR_API_KEY"
-CURSOR_API_ENV_FILE = ".cursor-api.env"
-CURSOR_AGENT_MODEL_ENV = "CURSOR_AGENT_MODEL"
-CURSOR_AGENT_WORKSPACE_ENV = "CURSOR_AGENT_WORKSPACE"
-CURSOR_AGENT_MAX_SESSIONS_ENV = "CURSOR_AGENT_MAX_SESSIONS"
-
-DEFAULT_MODEL = "composer-2.5"
-MAX_AGENT_SESSIONS = 32
-CURSOR_CONFIG_HINT = f"Set {CURSOR_API_KEY_ENV} in {CURSOR_API_ENV_FILE} and restart the control plane."
-
-
-def load_cursor_api_env() -> bool:
-    """Load gitignored Cursor credentials from repo root."""
-    from dotenv import load_dotenv
-
-    path = REPO_ROOT / CURSOR_API_ENV_FILE
-    if not path.is_file():
-        return False
-    load_dotenv(path, override=True)
-    return bool(os.getenv(CURSOR_API_KEY_ENV, "").strip())
 
 STRATEGY_AGENT_HINT = """You are the in-repo assistant for a backtrading / live-strategy platform.
 
@@ -206,97 +182,33 @@ class CursorAgentChatRequest(BaseModel):
     agent_id: Optional[str] = Field(default=None, max_length=256)
 
 
+STRATEGY_AI_SESSION = "strategy_ai"
+
+
 class CursorAgentService:
+    """Strategy AI / research chat — web UI prompts on top of the shared SDK bridge."""
+
     def __init__(self) -> None:
-        self._client: AsyncClient | None = None
-        self._client_lock = asyncio.Lock()
-        self._agents: OrderedDict[str, Any] = OrderedDict()
-        self._agents_lock = asyncio.Lock()
+        self._bridge = cursor_sdk_bridge
 
     @property
     def configured(self) -> bool:
-        return bool(os.getenv(CURSOR_API_KEY_ENV, "").strip())
+        return self._bridge.configured
 
     def workspace(self) -> str:
-        configured = os.getenv(CURSOR_AGENT_WORKSPACE_ENV, "").strip()
-        return configured or str(REPO_ROOT)
+        return self._bridge.workspace()
 
     def model(self) -> str:
-        return os.getenv(CURSOR_AGENT_MODEL_ENV, DEFAULT_MODEL).strip() or DEFAULT_MODEL
-
-    def max_sessions(self) -> int:
-        raw = os.getenv(CURSOR_AGENT_MAX_SESSIONS_ENV, str(MAX_AGENT_SESSIONS)).strip()
-        try:
-            return max(1, int(raw))
-        except ValueError:
-            return MAX_AGENT_SESSIONS
+        return self._bridge.model()
 
     async def startup(self) -> None:
-        load_cursor_api_env()
-        if not self.configured:
-            log.warning(
-                "[CURSOR_AGENT] %s is not set; add it to %s to enable Strategy AI",
-                CURSOR_API_KEY_ENV,
-                CURSOR_API_ENV_FILE,
-            )
-            return
-
-        async with self._client_lock:
-            if self._client is not None:
-                return
-            workspace = self.workspace()
-            log.info("[CURSOR_AGENT] Launching SDK bridge workspace=%s model=%s", workspace, self.model())
-            self._client = await AsyncClient.launch_bridge(workspace=workspace)
+        await self._bridge.startup()
 
     async def shutdown(self) -> None:
-        async with self._agents_lock:
-            agent_ids = list(self._agents.keys())
-            self._agents.clear()
-
-        for agent_id in agent_ids:
-            await self._close_agent(agent_id, reason="shutdown")
-
-        async with self._client_lock:
-            client = self._client
-            self._client = None
-            if client is not None:
-                await client.aclose()
-                log.info("[CURSOR_AGENT] SDK bridge closed")
+        await self._bridge.shutdown()
 
     async def health(self) -> dict[str, Any]:
-        if not self.configured:
-            return {
-                "configured": False,
-                "ready": False,
-                "api_key_env": CURSOR_API_KEY_ENV,
-                "message": CURSOR_CONFIG_HINT,
-            }
-
-        client = await self._require_client()
-        try:
-            ping = await client.ping()
-            version = await client.get_version()
-        except Exception as exc:
-            log.warning("[CURSOR_AGENT] Health check failed: %s", exc)
-            return {
-                "configured": True,
-                "ready": False,
-                "api_key_env": CURSOR_API_KEY_ENV,
-                "workspace": self.workspace(),
-                "model": self.model(),
-                "message": str(exc),
-            }
-
-        return {
-            "configured": True,
-            "ready": True,
-            "api_key_env": CURSOR_API_KEY_ENV,
-            "workspace": self.workspace(),
-            "model": self.model(),
-            "ping": ping,
-            "version": version,
-            "active_sessions": len(self._agents),
-        }
+        return await self._bridge.health()
 
     async def stream_chat(
         self,
@@ -320,9 +232,7 @@ class CursorAgentService:
             return
 
         mode = interaction_mode if interaction_mode in VALID_INTERACTION_MODES else "ask"
-        sdk_mode = _sdk_agent_mode(mode)
         store = get_ai_research_store() if research_session_id else None
-        user_message_id: str | None = None
 
         if store and research_session_id:
             session = store.get_session(research_session_id)
@@ -335,12 +245,7 @@ class CursorAgentService:
                 return
             if agent_id is None and session.get("cursor_agent_id"):
                 agent_id = session.get("cursor_agent_id")
-            saved = store.append_message(
-                research_session_id,
-                role="user",
-                content=user_prompt,
-            )
-            user_message_id = saved.get("id") if saved else None
+            store.append_message(research_session_id, role="user", content=user_prompt)
             if session.get("title") in (None, "", "New research"):
                 store.update_session(
                     research_session_id,
@@ -353,276 +258,134 @@ class CursorAgentService:
                 session_metadata["web_search_enabled"] = web_search_enabled
                 store.update_session(research_session_id, {"metadata": session_metadata})
 
-        client = await self._require_client()
-        created_new_agent = not agent_id
-
-        try:
-            agent = await self._get_or_create_agent(client, agent_id, interaction_mode=mode)
-        except CursorAgentError as exc:
-            log.error("[CURSOR_AGENT] Agent startup failed: %s", exc)
-            yield {
-                "type": "error",
-                "phase": "startup",
-                "message": exc.message,
-                "retryable": exc.is_retryable,
-            }
-            return
-        except Exception as exc:
-            log.exception("[CURSOR_AGENT] Unexpected agent startup failure")
-            yield {"type": "error", "phase": "startup", "message": str(exc)}
-            return
-
-        message = _wrap_prompt(
+        wrapped_prompt = _wrap_prompt(
             user_prompt,
-            new_agent=created_new_agent,
+            new_agent=not agent_id,
             interaction_mode=mode,
             web_search_enabled=web_search_enabled,
             research_session_id=research_session_id,
         )
-        run = None
+        media_paths: list[str] = []
 
-        try:
-            from cursor_sdk import SendOptions
-
-            send_options = SendOptions(mode=sdk_mode)
-            mcp_servers = _control_plane_mcp_servers(mode)
-            if mcp_servers is not None:
-                send_options = SendOptions(mode=sdk_mode, mcp_servers=mcp_servers)
-            run = await agent.send(message, send_options)
-            if active_run is not None:
-                active_run["run"] = run
-            yield {
-                "type": "start",
-                "agent_id": agent.agent_id,
-                "run_id": run.id,
-                "model": self.model(),
-                "interaction_mode": mode,
-                "web_search_enabled": web_search_enabled,
-                "research_session_id": research_session_id,
-            }
-            if store and research_session_id:
-                store.set_cursor_agent_id(research_session_id, agent.agent_id)
-
-            assistant_chunks: list[str] = []
-            media_paths: list[str] = []
-
-            async for message_event in run.stream():
-                if cancel_event is not None and cancel_event.is_set():
-                    if run.supports("cancel"):
-                        await run.cancel()
-                    yield {
-                        "type": "stopped",
-                        "agent_id": agent.agent_id,
-                        "run_id": run.id,
-                    }
-                    return
-
-                if ws is not None and ws.client_state.name != "CONNECTED":
-                    if run.supports("cancel"):
-                        await run.cancel()
-                    return
-
-                payload = _sdk_message_payload(message_event)
-                if not payload:
-                    continue
-
-                message_type = payload.get("message_type")
-                if message_type == "assistant":
-                    if payload.get("text"):
-                        assistant_chunks.append(payload["text"])
-                        yield {"type": "text_delta", "text": payload["text"]}
-                    for path in payload.get("media_paths") or ():
-                        if path not in media_paths:
-                            media_paths.append(path)
-                    new_attachments = attachments_from_paths(payload.get("media_paths") or ())
-                    if new_attachments:
-                        yield {"type": "media", "attachments": new_attachments}
-                elif message_type == "tool_call":
-                    if store and research_session_id:
-                        store.append_message(
-                            research_session_id,
-                            role="tool",
-                            content=str(payload.get("tool_name") or "tool"),
-                            run_id=run.id,
-                            tool_name=payload.get("tool_name"),
-                            tool_status=payload.get("tool_status"),
-                            tool_detail=_tool_call_text(payload),
-                        )
-                        _maybe_tag_research_execution_from_tool(research_session_id, payload)
-                    blocked, reason = _tool_call_blocked(
-                        payload,
-                        interaction_mode=mode,
-                        web_search_enabled=web_search_enabled,
-                    )
-                    if blocked:
-                        if run.supports("cancel"):
-                            await run.cancel()
-                        yield {
-                            "type": "error",
-                            "phase": "guardrail",
-                            "agent_id": agent.agent_id,
-                            "run_id": run.id,
-                            "message": reason,
-                        }
-                        return
-                    tool_attachments = extract_media_attachments(_tool_call_text(payload))
-                    if tool_attachments:
-                        for row in tool_attachments:
-                            path = row.get("path")
-                            if path and path not in media_paths:
-                                media_paths.append(path)
-                        yield {"type": "media", "attachments": tool_attachments}
-                    yield {"type": "tool_call", **payload}
-                elif message_type == "status":
-                    yield {"type": "status", **payload}
-                else:
-                    yield {"type": "message", **payload}
-
-            result = await run.wait()
-            if result.status == "error":
-                yield {
-                    "type": "error",
-                    "phase": "run",
-                    "agent_id": agent.agent_id,
-                    "run_id": run.id,
-                    "status": result.status,
-                    "message": "Cursor agent run failed",
-                }
+        async for event in self._bridge.stream_run(
+            session_name=STRATEGY_AI_SESSION,
+            prompt=wrapped_prompt,
+            agent_id=agent_id,
+            mcp_servers=control_plane_mcp_servers(),
+            cancel_event=cancel_event,
+            active_run=active_run,
+        ):
+            if ws is not None and ws.client_state.name != "CONNECTED":
+                if cancel_event is not None:
+                    cancel_event.set()
                 return
 
-            final_text = result.result or await run.text() or "".join(assistant_chunks)
-            display_text = strip_ai_action_blocks(strip_ai_summary_blocks(final_text))
-            reply_summary = extract_reply_summary(final_text)
-            for path in extract_media_attachments(final_text):
-                rel = path.get("path")
-                if rel and rel not in media_paths:
-                    media_paths.append(rel)
-            final_attachments = attachments_from_paths(media_paths)
-            if final_attachments:
-                yield {"type": "media", "attachments": final_attachments}
-            assistant_message_id: str | None = None
-            if store and research_session_id and final_text.strip():
-                metadata: dict[str, Any] | None = None
-                if final_attachments or reply_summary:
-                    metadata = {}
-                    if final_attachments:
-                        metadata["attachments"] = final_attachments
-                    if reply_summary:
-                        metadata["reply_summary"] = reply_summary
-                saved = store.append_message(
-                    research_session_id,
-                    role="assistant",
-                    content=display_text,
-                    run_id=run.id,
-                    metadata=metadata,
+            event_type = event.get("type")
+            if event_type == "start":
+                if store and research_session_id:
+                    store.set_cursor_agent_id(research_session_id, event.get("agent_id"))
+                yield {
+                    **event,
+                    "interaction_mode": mode,
+                    "web_search_enabled": web_search_enabled,
+                    "research_session_id": research_session_id,
+                }
+                continue
+
+            if event_type == "text_delta":
+                yield event
+                continue
+
+            if event_type == "media":
+                for path in event.get("media_paths") or ():
+                    if path not in media_paths:
+                        media_paths.append(path)
+                attachments = attachments_from_paths(event.get("media_paths") or ())
+                if attachments:
+                    yield {"type": "media", "attachments": attachments}
+                continue
+
+            if event_type == "tool_call":
+                if store and research_session_id:
+                    store.append_message(
+                        research_session_id,
+                        role="tool",
+                        content=str(event.get("tool_name") or "tool"),
+                        run_id=event.get("run_id"),
+                        tool_name=event.get("tool_name"),
+                        tool_status=event.get("tool_status"),
+                        tool_detail=_tool_call_text(event),
+                    )
+                    _maybe_tag_research_execution_from_tool(research_session_id, event)
+                blocked, reason = _tool_call_blocked(
+                    event,
+                    interaction_mode=mode,
+                    web_search_enabled=web_search_enabled,
                 )
-                assistant_message_id = saved.get("id") if saved else None
-                merge_extracted_actions(
-                    research_session_id,
-                    final_text,
-                    message_id=assistant_message_id,
-                )
-                summary = derive_research_summary(final_text)
-                if summary:
-                    store.update_session(research_session_id, {"summary": summary})
+                if blocked:
+                    yield {
+                        "type": "error",
+                        "phase": "guardrail",
+                        "agent_id": event.get("agent_id"),
+                        "run_id": event.get("run_id"),
+                        "message": reason,
+                    }
+                    return
+                tool_attachments = extract_media_attachments(_tool_call_text(event))
+                if tool_attachments:
+                    for row in tool_attachments:
+                        path = row.get("path")
+                        if path and path not in media_paths:
+                            media_paths.append(path)
+                    yield {"type": "media", "attachments": tool_attachments}
+                yield event
+                continue
 
-            yield {
-                "type": "done",
-                "agent_id": agent.agent_id,
-                "run_id": run.id,
-                "status": result.status,
-                "text": display_text,
-                "research_session_id": research_session_id,
-                "attachments": final_attachments,
-            }
-        except CursorAgentError as exc:
-            log.error("[CURSOR_AGENT] Run startup failed agent=%s: %s", agent.agent_id, exc)
-            yield {
-                "type": "error",
-                "phase": "startup",
-                "agent_id": agent.agent_id,
-                "run_id": getattr(run, "id", None),
-                "message": exc.message,
-                "retryable": exc.is_retryable,
-            }
-        except asyncio.CancelledError:
-            if run is not None and run.supports("cancel"):
-                with contextlib.suppress(Exception):
-                    await run.cancel()
-            raise
-        except Exception as exc:
-            log.exception("[CURSOR_AGENT] Streaming failure agent=%s", agent.agent_id)
-            yield {
-                "type": "error",
-                "phase": "stream",
-                "agent_id": agent.agent_id,
-                "run_id": getattr(run, "id", None),
-                "message": str(exc),
-            }
-        finally:
-            if active_run is not None:
-                active_run["run"] = None
+            if event_type == "done":
+                final_text = str(event.get("text") or "")
+                display_text = strip_ai_action_blocks(strip_ai_summary_blocks(final_text))
+                reply_summary = extract_reply_summary(final_text)
+                for path in extract_media_attachments(final_text):
+                    rel = path.get("path")
+                    if rel and rel not in media_paths:
+                        media_paths.append(rel)
+                final_attachments = attachments_from_paths(media_paths)
+                if final_attachments:
+                    yield {"type": "media", "attachments": final_attachments}
+                assistant_message_id: str | None = None
+                if store and research_session_id and final_text.strip():
+                    metadata: dict[str, Any] | None = None
+                    if final_attachments or reply_summary:
+                        metadata = {}
+                        if final_attachments:
+                            metadata["attachments"] = final_attachments
+                        if reply_summary:
+                            metadata["reply_summary"] = reply_summary
+                    saved = store.append_message(
+                        research_session_id,
+                        role="assistant",
+                        content=display_text,
+                        run_id=event.get("run_id"),
+                        metadata=metadata,
+                    )
+                    assistant_message_id = saved.get("id") if saved else None
+                    merge_extracted_actions(
+                        research_session_id,
+                        final_text,
+                        message_id=assistant_message_id,
+                    )
+                    summary = derive_research_summary(final_text)
+                    if summary:
+                        store.update_session(research_session_id, {"summary": summary})
+                yield {
+                    **event,
+                    "text": display_text,
+                    "research_session_id": research_session_id,
+                    "attachments": final_attachments,
+                }
+                continue
 
-    async def _require_client(self) -> AsyncClient:
-        if self._client is None:
-            await self.startup()
-        if self._client is None:
-            raise RuntimeError(f"{CURSOR_API_KEY_ENV} is not configured")
-        return self._client
-
-    async def _get_or_create_agent(
-        self,
-        client: AsyncClient,
-        agent_id: Optional[str],
-        *,
-        interaction_mode: str = "ask",
-    ):
-        from cursor_sdk import AgentOptions
-
-        api_key = os.environ[CURSOR_API_KEY_ENV].strip()
-        sdk_mode = _sdk_agent_mode(interaction_mode)
-        mcp_servers = _control_plane_mcp_servers(interaction_mode)
-        options = AgentOptions(
-            api_key=api_key,
-            model=self.model(),
-            local=LocalAgentOptions(cwd=self.workspace()),
-            mode=sdk_mode,
-            mcp_servers=mcp_servers,
-        )
-
-        if agent_id:
-            cached = self._agents.get(agent_id)
-            if cached is not None:
-                self._agents.move_to_end(agent_id)
-                return cached
-
-            agent = await client.agents.resume(agent_id, options)
-            await self._remember_agent(agent)
-            return agent
-
-        agent = await client.agents.create(options)
-        await self._remember_agent(agent)
-        return agent
-
-    async def _remember_agent(self, agent) -> None:
-        async with self._agents_lock:
-            self._agents[agent.agent_id] = agent
-            self._agents.move_to_end(agent.agent_id)
-            while len(self._agents) > self.max_sessions():
-                old_id, old_agent = self._agents.popitem(last=False)
-                await self._close_agent_instance(old_agent, old_id, reason="evicted")
-
-    async def _close_agent(self, agent_id: str, *, reason: str) -> None:
-        async with self._agents_lock:
-            agent = self._agents.pop(agent_id, None)
-        if agent is not None:
-            await self._close_agent_instance(agent, agent_id, reason=reason)
-
-    async def _close_agent_instance(self, agent, agent_id: str, *, reason: str) -> None:
-        try:
-            await agent.close()
-        except Exception as exc:
-            log.warning("[CURSOR_AGENT] Failed to close agent=%s (%s): %s", agent_id, reason, exc)
+            yield event
 
 
 cursor_agent_service = CursorAgentService()
@@ -774,12 +537,6 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
             await ws.send_json({"type": "error", "phase": "session", "message": str(exc)})
 
 
-def _sdk_agent_mode(interaction_mode: str) -> str:
-    """Cursor SDK mode: always agent so repo/MCP/shell tools are not blocked by the SDK."""
-    _ = interaction_mode
-    return "agent"
-
-
 def _strict_ask_guardrails_enabled() -> bool:
     return os.getenv("CURSOR_AGENT_STRICT_ASK_GUARDRAILS", "").strip().lower() in {
         "1",
@@ -858,73 +615,6 @@ def _maybe_tag_research_execution_from_tool(
             execution_id,
             exc,
         )
-
-
-def _control_plane_mcp_servers(interaction_mode: str) -> dict[str, Any] | None:
-    """Attach control-plane MCP tools in Ask and Execute modes."""
-    _ = interaction_mode
-    from cursor_sdk import HttpMcpServerConfig
-
-    from api.control_plane_mcp import CONTROL_PLANE_MCP_PATH
-
-    control_plane_url = os.getenv("CONTROL_PLANE_URL", "http://127.0.0.1:8000").strip().rstrip("/")
-    return {
-        CONTROL_PLANE_MCP_SERVER: HttpMcpServerConfig(
-            url=f"{control_plane_url}{CONTROL_PLANE_MCP_PATH}",
-        )
-    }
-
-
-def _sdk_message_payload(message: Any) -> dict[str, Any] | None:
-    message_type = getattr(message, "type", None)
-    if not message_type:
-        return None
-
-    payload: dict[str, Any] = {"message_type": message_type}
-    if message_type == "assistant":
-        blocks = getattr(getattr(message, "message", None), "content", ()) or ()
-        text_parts: list[str] = []
-        media_paths: list[str] = []
-        for block in blocks:
-            block_type = getattr(block, "type", None)
-            if block_type == "image":
-                for attr in ("path", "file_path", "url", "source", "image_url"):
-                    value = getattr(block, attr, None)
-                    if isinstance(value, str) and value.strip():
-                        media_paths.append(value.strip())
-                        break
-                continue
-            text_parts.append(getattr(block, "text", ""))
-        payload["text"] = "".join(text_parts)
-        combined_paths = extract_media_paths_from_text(payload["text"]) + media_paths
-        payload["media_paths"] = [
-            row["path"]
-            for row in attachments_from_paths(combined_paths)
-        ]
-    elif message_type == "tool_call":
-        payload["tool_name"] = getattr(message, "name", None)
-        payload["tool_status"] = getattr(message, "status", None)
-        _enrich_tool_payload(message, payload)
-    elif message_type == "status":
-        payload["status"] = getattr(message, "status", None)
-        payload["message"] = getattr(message, "message", None)
-    return payload
-
-
-def _enrich_tool_payload(message: Any, payload: dict[str, Any]) -> None:
-    for attr in ("args", "input", "arguments", "command", "parameters", "path", "content"):
-        if not hasattr(message, attr):
-            continue
-        value = getattr(message, attr)
-        if value is None:
-            continue
-        if isinstance(value, str):
-            payload[attr] = value
-        else:
-            with contextlib.suppress(TypeError, ValueError):
-                payload[attr] = json.dumps(value)
-            if attr not in payload:
-                payload[attr] = str(value)
 
 
 def _tool_call_text(payload: dict[str, Any]) -> str:

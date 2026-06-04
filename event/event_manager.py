@@ -89,8 +89,4 @@ def create_event_manager(db_logger: DbEventWriter) -> EventManager:
 
     load_telegram_env()
     listener = maybe_telegram_listener()
-    if listener is not None:
-        from .telegram_inbound import maybe_telegram_inbound_logger
-
-        maybe_telegram_inbound_logger()
     return EventManager(db_logger, telegram_listener=listener)

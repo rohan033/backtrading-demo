@@ -43,7 +43,7 @@ from control_plane.trading_schedule import default_schedule, resolve_schedule, t
 from event.db_event_consumer import DbEventWriter
 from event.platform_notifier import emit_strategy_event, shutdown_platform_notifier
 from event.telegram_env import load_telegram_env
-from event.telegram_inbound import maybe_telegram_inbound_logger
+from event.telegram_inbound import start_telegram_inbound_services, stop_telegram_inbound_services
 from event.strategy_events import (
     STRATEGY_CANCELLED,
     STRATEGY_CREATED,
@@ -54,16 +54,7 @@ from event.strategy_events import (
 )
 
 load_dotenv()
-if load_telegram_env():
-    from event.telegram_config import load_telegram_config
-
-    if load_telegram_config() is not None:
-        maybe_telegram_inbound_logger()
-    else:
-        log_pre = logging.getLogger("backtrading")
-        log_pre.warning(
-            "[TELEGRAM] .telegram.env loaded but TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing"
-        )
+load_telegram_env()
 _cursor_api_env_path = REPO_ROOT / ".cursor-api.env"
 if _cursor_api_env_path.is_file():
     load_dotenv(_cursor_api_env_path, override=True)
@@ -274,9 +265,11 @@ async def control_plane_lifespan(_app: FastAPI):
     execution_scheduler.poll_once()
     _scheduled_executions_task = asyncio.create_task(_scheduled_executions_loop())
     await cursor_agent_service.startup()
+    await start_telegram_inbound_services()
     try:
         yield
     finally:
+        await stop_telegram_inbound_services()
         await cursor_agent_service.shutdown()
         if _scheduled_executions_task:
             _scheduled_executions_task.cancel()

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from utils import order_quantity_from_capital
@@ -169,6 +172,87 @@ def _escape_html(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+
+TELEGRAM_CHANNEL_SKILL_PATH = ".cursor/skills/telegram-channel-html/SKILL.md"
+TELEGRAM_CHANNEL_SKILL_NAME = "telegram-channel-html"
+
+TELEGRAM_AGENT_REPLY_HINT = """Telegram delivery (critical): return ONLY the HTML message body — no markdown fences, no preamble. Replies use parse_mode=HTML on mobile."""
+
+_SKILL_BODY_RE = re.compile(r"^```(?:html)?\s*\n(.*)\n```\s*$", re.DOTALL | re.IGNORECASE)
+
+
+@lru_cache(maxsize=1)
+def load_telegram_channel_skill_body() -> str:
+    """Load telegram-channel-html skill text (body only, no YAML frontmatter)."""
+    repo_root = Path(__file__).resolve().parents[1]
+    path = repo_root / TELEGRAM_CHANNEL_SKILL_PATH
+    text = path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        end = text.find("---", 3)
+        if end != -1:
+            text = text[end + 3 :]
+    return text.strip()
+
+
+def telegram_channel_skill_instructions() -> str:
+    """Instructions for Cursor agent Telegram replies using the project skill."""
+    return (
+        "You will be responding to the Telegram channel.\n\n"
+        f"Follow the `{TELEGRAM_CHANNEL_SKILL_NAME}` skill:\n\n"
+        f"{load_telegram_channel_skill_body()}\n\n"
+        f"{TELEGRAM_AGENT_REPLY_HINT}"
+    )
+
+
+def wrap_telegram_agent_prompt(user_prompt: str) -> str:
+    """Build a full Telegram agent prompt (skill + user question)."""
+    return f"{telegram_channel_skill_instructions()}\n\nUser question:\n{user_prompt.strip()}"
+
+
+def normalize_telegram_agent_reply(text: str) -> str:
+    """Strip optional markdown fences from agent HTML replies."""
+    body = text.strip()
+    match = _SKILL_BODY_RE.match(body)
+    if match:
+        return match.group(1).strip()
+    if body.startswith("```") and body.endswith("```"):
+        inner = body[3:-3].strip()
+        if inner.lower().startswith("html"):
+            inner = inner[4:].lstrip("\n")
+        return inner.strip()
+    return body
+
+
+def format_telegram_html_table(
+    headers: list[str],
+    rows: list[list[str]],
+    *,
+    title: str | None = None,
+) -> str:
+    """Build Telegram-safe HTML with a monospace table inside <pre>."""
+    if not headers:
+        raise ValueError("headers must not be empty")
+
+    col_count = len(headers)
+    normalized_rows = [list(row) + [""] * (col_count - len(row)) for row in rows]
+    widths = [len(headers[i]) for i in range(col_count)]
+    for row in normalized_rows:
+        for i, cell in enumerate(row[:col_count]):
+            widths[i] = max(widths[i], len(str(cell)))
+
+    def _row(cells: list[str]) -> str:
+        parts = [str(cells[i]).ljust(widths[i]) for i in range(col_count)]
+        return "  ".join(parts)
+
+    separator = "─" * (sum(widths) + 2 * (col_count - 1))
+    lines = [_row(headers), separator]
+    lines.extend(_row(row) for row in normalized_rows)
+    table = f"<pre>{_escape_html(chr(10).join(lines))}</pre>"
+
+    if title:
+        return f"<b>{_escape_html(title)}</b>\n\n{table}"
+    return table
 
 
 def _format_two_column_table(rows: list[tuple[str, str]], *, label_width: int = 15) -> str:

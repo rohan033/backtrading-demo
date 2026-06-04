@@ -6,6 +6,9 @@
 live.read.env
 .cursor-api.env
 .telegram.env
+.cursor/*
+!.cursor/skills/
+!.cursor/skills/**
 .claude/    
 # Python cache files
 __pycache__/

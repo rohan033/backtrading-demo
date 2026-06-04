@@ -8,9 +8,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONTROL_LOG_DIR = REPO_ROOT / "logs" / "control-plane"
 DEFAULT_LIVE_LOG_DIR = REPO_ROOT / "logs" / "executions"
 
-# Frontend poll endpoints (list refreshes) — noisy at INFO in uvicorn access logs.
+# Frontend poll endpoints — noisy at INFO in uvicorn access logs.
 _QUIET_POLL_GET_RE = re.compile(
-    r'"GET /api/control/(?:engines/[^/]+/logs/stream|engines|executions)(?:\?[^ ]*)? HTTP/',
+    r'"GET /api/control/',
     re.IGNORECASE,
 )
 
@@ -29,6 +29,12 @@ def quiet_uvicorn_poll_access_logs() -> None:
     if any(isinstance(item, UvicornAccessPollFilter) for item in access_logger.filters):
         return
     access_logger.addFilter(UvicornAccessPollFilter())
+
+
+def quiet_http_client_logs() -> None:
+    """Drop httpx/httpcore per-request INFO lines (e.g. Telegram long-poll)."""
+    for name in ("httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def quiet_uvicorn_live_engine_access_logs() -> None:
@@ -86,6 +92,7 @@ def configure_control_plane_logging(
         root.addHandler(file_handler)
 
     quiet_uvicorn_poll_access_logs()
+    quiet_http_client_logs()
 
     logging.getLogger("backtrading").info("[CONTROL] File logging enabled path=%s", log_path)
     return log_path

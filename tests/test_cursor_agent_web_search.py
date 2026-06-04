@@ -1,15 +1,9 @@
 from api.cursor_agent import (
     WEB_SEARCH_DISABLED_HINT,
     WEB_SEARCH_ENABLED_HINT,
-    _sdk_agent_mode,
     _tool_call_blocked,
     _wrap_prompt,
 )
-
-
-def test_sdk_agent_mode_always_agent():
-    assert _sdk_agent_mode("ask") == "agent"
-    assert _sdk_agent_mode("execute") == "agent"
 
 
 def test_wrap_prompt_includes_web_search_enabled_hint():

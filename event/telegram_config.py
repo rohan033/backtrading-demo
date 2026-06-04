@@ -29,6 +29,7 @@ class TelegramConfig:
     parse_mode: str | None = None
     disable_notification: bool = False
     inbound_log: bool = False
+    cursor_agent: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -70,4 +71,5 @@ def load_telegram_config() -> TelegramConfig | None:
         parse_mode=parse_mode,
         disable_notification=_parse_bool(os.getenv("TELEGRAM_SILENT"), default=False),
         inbound_log=_parse_bool(os.getenv("TELEGRAM_INBOUND_LOG"), default=True),
+        cursor_agent=_parse_bool(os.getenv("TELEGRAM_CURSOR_AGENT"), default=True),
     )
