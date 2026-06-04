@@ -8,11 +8,13 @@ import { useWatchlistTicks } from '../../hooks/useWatchlistTicks'
 import type { WatchlistBroker } from '../../lib/watchlistBrokers'
 import { defaultAccountEnv } from '../../lib/watchlistBrokers'
 import {
-  defaultLayout,
+  canvasMinSize,
+  layoutForNewWatchlist,
   loadWatchlistLayouts,
   mergeLayouts,
   saveWatchlistLayouts,
   type WatchlistCardLayout,
+  type WatchlistCardMetrics,
   type WatchlistLayoutMap,
 } from '../../lib/watchlistLayout'
 import { errorMessage } from '../../lib/apiError'
@@ -32,6 +34,7 @@ export default function WatchlistPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [cardMetrics, setCardMetrics] = useState<Record<string, WatchlistCardMetrics>>({})
 
   const hasSymbols = watchlists.some(wl => wl.symbols.length > 0)
   const { ticks, connected } = useWatchlistTicks(watchlists, hasSymbols)
@@ -76,11 +79,12 @@ export default function WatchlistPage() {
       const created = await createWatchlist(`Watchlist ${watchlists.length + 1}`, {
         broker: 'angel',
       })
-      setWatchlists(prev => [...prev, created])
-      persistLayouts({
+      const nextLayouts = {
         ...layouts,
-        [created.id]: defaultLayout(watchlists.length),
-      })
+        [created.id]: layoutForNewWatchlist(layouts, cardMetrics, created.id),
+      }
+      setWatchlists(prev => [...prev, created])
+      persistLayouts(nextLayouts)
     })
 
   const handleRename = (id: string, name: string) =>
@@ -102,6 +106,11 @@ export default function WatchlistPage() {
       const next = { ...layouts }
       delete next[id]
       persistLayouts(next)
+      setCardMetrics(prev => {
+        const metrics = { ...prev }
+        delete metrics[id]
+        return metrics
+      })
     })
 
   const handleAddSymbol = (
@@ -129,7 +138,7 @@ export default function WatchlistPage() {
         <div>
           <h1 className="text-sm font-semibold">Watchlists</h1>
           <p className="mt-0.5 text-[11px] text-text-secondary">
-            Drag cards anywhere · resize right/bottom edges or corner (2–12 row heights)
+            Cards grow with your symbols · drag to rearrange · resize width on the right edge
             {hasSymbols && (
               <span className="ml-2">{connected ? '· Live' : '· Connecting…'}</span>
             )}
@@ -166,13 +175,25 @@ export default function WatchlistPage() {
             </Button>
           </div>
         ) : (
-          <div className="relative min-h-[32rem] w-full min-w-[48rem] p-4">
+          <div
+            className="relative p-5"
+            style={{
+              minWidth: canvasMinSize(layouts, cardMetrics).width,
+              minHeight: Math.max(480, canvasMinSize(layouts, cardMetrics).height),
+            }}
+          >
             {watchlists.map(wl => {
-              const layout = layouts[wl.id] ?? mergeLayouts([wl.id], {})[wl.id]
+              const layout = layouts[wl.id] ?? mergeLayouts([wl.id], layouts)[wl.id]
+              const metrics = cardMetrics[wl.id] ?? {
+                symbolCount: wl.symbols.length,
+                searchOpen: false,
+              }
               return (
                 <DraggableWatchlistCard
                   key={wl.id}
                   layout={layout}
+                  symbolCount={metrics.symbolCount}
+                  searchOpen={metrics.searchOpen}
                   onLayoutChange={next => handleLayoutChange(wl.id, next)}
                 >
                   <WatchlistColumn
@@ -181,13 +202,15 @@ export default function WatchlistPage() {
                       broker: (wl.broker || 'angel') as WatchlistBroker,
                       account_env: wl.account_env || defaultAccountEnv((wl.broker || 'angel') as WatchlistBroker),
                     }}
-                    layout={layout}
                     ticks={ticks}
                     onRename={handleRename}
                     onDelete={handleDelete}
                     onBrokerChange={handleBrokerChange}
                     onAddSymbol={handleAddSymbol}
                     onRemoveSymbol={handleRemoveSymbol}
+                    onMetricsChange={next =>
+                      setCardMetrics(prev => ({ ...prev, [wl.id]: next }))
+                    }
                   />
                 </DraggableWatchlistCard>
               )

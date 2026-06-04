@@ -1,28 +1,31 @@
 import { useCallback, useRef, type ReactNode } from 'react'
 
 import type { WatchlistCardLayout } from '../../lib/watchlistLayout'
-import {
-  CARD_CHROME_PX,
-  CARD_HEADER_PX,
-  clampBodyHeight,
-  clampWidth,
-} from '../../lib/watchlistLayout'
-
-type ResizeMode = 'move' | 'resize-e' | 'resize-s' | 'resize-se'
+import { cardHeightForContent, clampWidth } from '../../lib/watchlistLayout'
 
 type Props = {
   layout: WatchlistCardLayout
+  symbolCount: number
+  searchOpen: boolean
   onLayoutChange: (next: WatchlistCardLayout) => void
   children: ReactNode
 }
 
-export default function DraggableWatchlistCard({ layout, onLayoutChange, children }: Props) {
+export default function DraggableWatchlistCard({
+  layout,
+  symbolCount,
+  searchOpen,
+  onLayoutChange,
+  children,
+}: Props) {
   const dragRef = useRef<{
-    mode: ResizeMode
+    mode: 'move' | 'resize-e'
     startX: number
     startY: number
     origin: WatchlistCardLayout
   } | null>(null)
+
+  const cardHeight = cardHeightForContent(symbolCount, searchOpen)
 
   const onPointerMove = useCallback(
     (event: PointerEvent) => {
@@ -40,14 +43,10 @@ export default function DraggableWatchlistCard({ layout, onLayoutChange, childre
         return
       }
 
-      const next = { ...drag.origin }
-      if (drag.mode === 'resize-e' || drag.mode === 'resize-se') {
-        next.width = clampWidth(drag.origin.width + dx)
-      }
-      if (drag.mode === 'resize-s' || drag.mode === 'resize-se') {
-        next.bodyHeight = clampBodyHeight(drag.origin.bodyHeight + dy)
-      }
-      onLayoutChange(next)
+      onLayoutChange({
+        ...drag.origin,
+        width: clampWidth(drag.origin.width + dx),
+      })
     },
     [onLayoutChange],
   )
@@ -58,7 +57,7 @@ export default function DraggableWatchlistCard({ layout, onLayoutChange, childre
     window.removeEventListener('pointerup', endDrag)
   }, [onPointerMove])
 
-  const startDrag = (mode: ResizeMode) => (event: React.PointerEvent) => {
+  const startDrag = (mode: 'move' | 'resize-e') => (event: React.PointerEvent) => {
     if (mode === 'move' && (event.target as HTMLElement).closest('[data-no-drag]')) {
       return
     }
@@ -69,16 +68,13 @@ export default function DraggableWatchlistCard({ layout, onLayoutChange, childre
     window.addEventListener('pointerup', endDrag)
   }
 
-  const cardHeight = CARD_HEADER_PX + layout.bodyHeight + CARD_CHROME_PX
-
   return (
     <div
-      className="absolute z-10 flex flex-col overflow-hidden rounded-lg border border-border bg-card shadow-md"
+      className="absolute z-10 flex flex-col rounded-lg border border-border bg-card shadow-lg shadow-black/20 transition-[height] duration-150 ease-out"
       style={{
         left: layout.x,
         top: layout.y,
         width: layout.width,
-        height: cardHeight,
         minHeight: cardHeight,
       }}
       onPointerDown={event => {
@@ -90,31 +86,13 @@ export default function DraggableWatchlistCard({ layout, onLayoutChange, childre
         }
       }}
     >
-      <div className="min-h-0 flex-1 flex flex-col">{children}</div>
-
-      {/* Right edge — horizontal resize */}
+      {children}
       <button
         type="button"
         aria-label="Resize width"
         data-resize-handle
-        className="absolute bottom-6 right-0 top-8 z-20 w-1.5 cursor-ew-resize hover:bg-accent/30"
+        className="absolute bottom-3 right-0 top-10 z-20 w-1.5 cursor-ew-resize rounded-full hover:bg-accent/40"
         onPointerDown={startDrag('resize-e')}
-      />
-      {/* Bottom edge — vertical resize */}
-      <button
-        type="button"
-        aria-label="Resize height"
-        data-resize-handle
-        className="absolute bottom-0 left-2 right-2 z-20 h-1.5 cursor-ns-resize hover:bg-accent/30"
-        onPointerDown={startDrag('resize-s')}
-      />
-      {/* Corner — width + height */}
-      <button
-        type="button"
-        aria-label="Resize width and height"
-        data-resize-handle
-        className="absolute bottom-0 right-0 z-30 h-3 w-3 cursor-nwse-resize rounded-tl bg-border/90 hover:bg-accent/40"
-        onPointerDown={startDrag('resize-se')}
       />
     </div>
   )

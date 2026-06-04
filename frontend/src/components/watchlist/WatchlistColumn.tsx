@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { Pencil, Plus, Trash2, X } from 'lucide-react'
+import { Pencil, Plus, Trash2, TrendingDown, TrendingUp, X } from 'lucide-react'
 
 import { Button } from '../ui/button'
 import { formatBrokerMoney } from '../../lib/currency'
-import type { WatchlistCardLayout } from '../../lib/watchlistLayout'
+import {
+  EMPTY_TABLE_PX,
+  ROW_HEIGHT_PX,
+  WATCHLIST_TABLE_GRID,
+} from '../../lib/watchlistLayout'
 import {
   defaultAccountEnv,
   searchWatchlistSymbol,
@@ -21,39 +25,46 @@ type SearchHit = {
 
 type Props = {
   watchlist: Watchlist
-  layout: WatchlistCardLayout
   ticks: Record<string, WatchlistTick>
   onRename: (id: string, name: string) => void
   onDelete: (id: string) => void
   onBrokerChange: (id: string, broker: WatchlistBroker, accountEnv: string) => void
   onAddSymbol: (watchlistId: string, hit: SearchHit) => void
   onRemoveSymbol: (watchlistId: string, symboltoken: string) => void
+  onMetricsChange?: (metrics: { symbolCount: number; searchOpen: boolean }) => void
 }
 
-const ROW_GRID =
-  'grid grid-cols-[minmax(0,1fr)_4.25rem_1.1rem_3rem] items-center gap-1'
-
-function pctClass(direction: WatchlistTick['direction'] | undefined) {
-  if (direction === 'up') return 'text-green'
-  if (direction === 'down') return 'text-red'
-  return 'text-text-secondary'
-}
-
-function directionGlyph(direction: WatchlistTick['direction'] | undefined) {
-  if (direction === 'up') return '▲'
-  if (direction === 'down') return '▼'
-  return '—'
+function directionStyles(direction: WatchlistTick['direction'] | undefined) {
+  if (direction === 'up') {
+    return {
+      icon: TrendingUp,
+      pill: 'bg-green/15 text-green ring-1 ring-green/25',
+      text: 'text-green',
+    }
+  }
+  if (direction === 'down') {
+    return {
+      icon: TrendingDown,
+      pill: 'bg-red/15 text-red ring-1 ring-red/25',
+      text: 'text-red',
+    }
+  }
+  return {
+    icon: null,
+    pill: 'bg-muted/40 text-text-secondary',
+    text: 'text-text-secondary',
+  }
 }
 
 export default function WatchlistColumn({
   watchlist,
-  layout,
   ticks,
   onRename,
   onDelete,
   onBrokerChange,
   onAddSymbol,
   onRemoveSymbol,
+  onMetricsChange,
 }: Props) {
   const broker = (watchlist.broker || 'angel') as WatchlistBroker
   const accountEnv = watchlist.account_env || defaultAccountEnv(broker)
@@ -73,6 +84,10 @@ export default function WatchlistColumn({
   useEffect(() => {
     if (editingName) nameInputRef.current?.focus()
   }, [editingName])
+
+  useEffect(() => {
+    onMetricsChange?.({ symbolCount: watchlist.symbols.length, searchOpen: adding })
+  }, [watchlist.symbols.length, adding, onMetricsChange])
 
   const commitRename = () => {
     const trimmed = nameDraft.trim()
@@ -96,22 +111,21 @@ export default function WatchlistColumn({
   }
 
   const existingTokens = new Set(watchlist.symbols.map(s => s.symboltoken))
-  const listHeight = layout.bodyHeight
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex flex-col">
       <header
-        className="grid shrink-0 cursor-grab grid-cols-[auto_auto_1fr_auto_auto] items-center gap-0.5 border-b border-border px-1.5 py-1 active:cursor-grabbing"
+        className="grid shrink-0 cursor-grab grid-cols-[auto_auto_1fr_auto_auto] items-center gap-1.5 border-b border-border bg-secondary/40 px-2.5 py-2 active:cursor-grabbing"
         data-watchlist-drag
       >
         <button
           type="button"
           data-no-drag
           onClick={() => setAdding(true)}
-          className="rounded p-1 text-accent hover:bg-accent/10"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-accent ring-1 ring-accent/30 hover:bg-accent/10"
           title="Add symbol"
         >
-          <Plus className="h-3.5 w-3.5" />
+          <Plus className="h-4 w-4" />
         </button>
         <select
           data-no-drag
@@ -120,7 +134,7 @@ export default function WatchlistColumn({
             const next = e.target.value as WatchlistBroker
             onBrokerChange(watchlist.id, next, defaultAccountEnv(next))
           }}
-          className="w-[4.75rem] rounded border border-border bg-primary px-0.5 py-0.5 text-[9px] outline-none focus:border-accent/60"
+          className="h-7 rounded-md border border-border bg-primary px-1.5 text-xs outline-none focus:border-accent/50"
           title="Broker"
         >
           {WATCHLIST_BROKER_OPTIONS.map(opt => (
@@ -142,12 +156,12 @@ export default function WatchlistColumn({
                 setEditingName(false)
               }
             }}
-            className="min-w-0 rounded border border-accent/50 bg-primary px-1 py-0.5 text-[10px] font-semibold outline-none"
+            className="min-w-0 rounded-md border border-accent/40 bg-primary px-2 py-1 text-sm font-medium outline-none"
             data-no-drag
           />
         ) : (
           <h3
-            className="min-w-0 truncate px-0.5 text-[10px] font-semibold"
+            className="min-w-0 truncate px-0.5 text-sm font-semibold text-text-primary"
             title={watchlist.name}
             data-watchlist-drag
           >
@@ -158,38 +172,38 @@ export default function WatchlistColumn({
           type="button"
           data-no-drag
           onClick={() => setEditingName(true)}
-          className="rounded p-1 text-text-secondary hover:bg-accent/10 hover:text-text-primary"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary hover:bg-card hover:text-text-primary"
           title="Rename"
         >
-          <Pencil className="h-3 w-3" />
+          <Pencil className="h-3.5 w-3.5" />
         </button>
         <button
           type="button"
           data-no-drag
           onClick={() => onDelete(watchlist.id)}
-          className="rounded p-1 text-text-secondary hover:bg-red/10 hover:text-red"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary hover:bg-red/10 hover:text-red"
           title="Delete watchlist"
         >
-          <Trash2 className="h-3 w-3" />
+          <Trash2 className="h-3.5 w-3.5" />
         </button>
       </header>
 
       {adding && (
-        <div className="space-y-1 border-b border-border px-2 pb-2" data-no-drag>
-          <div className="flex gap-1">
+        <div className="shrink-0 space-y-2 border-b border-border bg-primary/50 px-2.5 py-2" data-no-drag>
+          <div className="flex gap-2">
             <input
               value={query}
               onChange={e => setQuery(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && runSearch()}
-              placeholder={broker === 'etoro' ? 'Symbol…' : 'NSE…'}
-              className="min-w-0 flex-1 rounded border border-border bg-primary px-2 py-1 text-[10px] outline-none focus:border-accent/60"
+              placeholder={broker === 'etoro' ? 'Search symbol…' : 'Search NSE…'}
+              className="min-w-0 flex-1 rounded-md border border-border bg-primary px-2.5 py-1.5 text-sm outline-none focus:border-accent/50"
             />
-            <Button type="button" size="xs" onClick={runSearch} disabled={searching}>
-              {searching ? '…' : 'Go'}
+            <Button type="button" size="sm" onClick={runSearch} disabled={searching}>
+              {searching ? '…' : 'Search'}
             </Button>
           </div>
           {results.length > 0 && (
-            <div className="max-h-24 overflow-y-auto rounded border border-border bg-primary">
+            <div className="max-h-24 overflow-y-auto rounded-md border border-border bg-primary text-sm">
               {results.map(hit => (
                 <button
                   key={`${hit.exchange}-${hit.symboltoken}`}
@@ -201,10 +215,10 @@ export default function WatchlistColumn({
                     setResults([])
                     setAdding(false)
                   }}
-                  className="block w-full border-b border-border/40 px-2 py-1 text-left text-[10px] last:border-0 hover:bg-accent/5 disabled:opacity-40"
+                  className="block w-full border-b border-border/40 px-2.5 py-1.5 text-left last:border-0 hover:bg-accent/5 disabled:opacity-40"
                 >
                   <span className="font-medium">{hit.tradingsymbol}</span>
-                  <span className="text-text-secondary"> · {hit.exchange}</span>
+                  <span className="ml-1 text-text-secondary">{hit.exchange}</span>
                 </button>
               ))}
             </div>
@@ -216,72 +230,104 @@ export default function WatchlistColumn({
               setQuery('')
               setResults([])
             }}
-            className="text-[9px] text-text-secondary hover:text-text-primary"
+            className="text-xs text-text-secondary hover:text-text-primary"
           >
             Cancel
           </button>
         </div>
       )}
 
-      <div
-        className={`${ROW_GRID} shrink-0 border-b border-border/50 px-1.5 py-0.5 text-[8px] font-medium uppercase tracking-wide text-text-secondary`}
-      >
-        <span>Symbol</span>
-        <span className="text-right">Price</span>
-        <span className="text-center">Sig</span>
-        <span className="text-right">Chg</span>
-      </div>
+      <div className="px-2.5 pb-2.5 pt-2">
+        <div className="overflow-hidden rounded-lg border border-border bg-secondary/20 text-sm">
+          <div
+            className="grid items-center border-b border-border bg-secondary/80 text-xs font-semibold uppercase tracking-wide text-text-secondary"
+            style={{ gridTemplateColumns: WATCHLIST_TABLE_GRID }}
+          >
+            <div className="truncate px-3 py-2">Symbol</div>
+            <div className="px-2 py-2 text-right">Last</div>
+            <div className="px-1 py-2 text-center">Trend</div>
+            <div className="px-2 py-2 text-right">Chg%</div>
+            <div className="px-0.5 py-2" aria-hidden />
+          </div>
 
-      <ul
-        className="min-h-0 flex-1 overflow-y-auto px-1.5 py-0.5"
-        style={{ height: listHeight, maxHeight: listHeight }}
-      >
-        {watchlist.symbols.length === 0 && (
-          <li className="flex h-full items-center justify-center text-[9px] text-text-secondary">
-            Add symbols with +
-          </li>
-        )}
-        {watchlist.symbols.map((symbol: WatchlistSymbol) => {
-          const tickKey = watchlistTickKey(broker, accountEnv, symbol.symboltoken)
-          const tick = ticks[tickKey]
-          const pct = tick?.change_pct
-          const pctLabel =
-            pct === undefined || Number.isNaN(pct)
-              ? '—'
-              : `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`
-          const dir = tick?.direction
-          return (
-            <li
-              key={symbol.symboltoken}
-              className={`group relative ${ROW_GRID} h-7 rounded px-1 hover:bg-accent/5`}
+          {watchlist.symbols.length === 0 && (
+            <div
+              className="px-3 text-center text-sm text-text-secondary"
+              style={{ height: EMPTY_TABLE_PX, lineHeight: `${EMPTY_TABLE_PX}px` }}
             >
-              <span className="truncate text-[10px] font-semibold" title={symbol.tradingsymbol}>
-                {symbol.tradingsymbol}
-              </span>
-              <span className="text-right text-[10px] tabular-nums text-text-primary">
-                {tick ? formatBrokerMoney(broker, tick.ltp, 2) : '—'}
-              </span>
-              <span
-                className={`text-center text-[10px] font-bold leading-none ${pctClass(dir)}`}
-                title={dir === 'up' ? 'Up' : dir === 'down' ? 'Down' : 'Unchanged'}
+              Add symbols with the + button above
+            </div>
+          )}
+
+          {watchlist.symbols.map((symbol: WatchlistSymbol) => {
+            const tickKey = watchlistTickKey(broker, accountEnv, symbol.symboltoken)
+            const tick = ticks[tickKey]
+            const pct = tick?.change_pct
+            const pctLabel =
+              pct === undefined || Number.isNaN(pct)
+                ? '—'
+                : `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`
+            const dir = tick?.direction
+            const styles = directionStyles(dir)
+            const DirIcon = styles.icon
+
+            return (
+              <div
+                key={symbol.symboltoken}
+                className="group grid items-center border-t border-border/40 transition-colors hover:bg-accent/[0.04]"
+                style={{ gridTemplateColumns: WATCHLIST_TABLE_GRID, height: ROW_HEIGHT_PX }}
               >
-                {directionGlyph(dir)}
-              </span>
-              <span className={`text-right text-[10px] font-semibold tabular-nums ${pctClass(dir)}`}>
-                {pctLabel}
-              </span>
-              <button
-                type="button"
-                onClick={() => onRemoveSymbol(watchlist.id, symbol.symboltoken)}
-                className="absolute -right-0.5 top-1/2 -translate-y-1/2 rounded bg-card/90 p-0.5 text-text-secondary opacity-0 shadow-sm group-hover:opacity-100 hover:text-red"
-                title="Remove"
-              >
-                <X className="h-3 w-3" />
-              </button>
-            </li>
-          )
-        })}
-      </ul>
+                <div
+                  className="min-w-0 truncate px-3 font-semibold text-text-primary"
+                  title={symbol.tradingsymbol}
+                >
+                  {symbol.tradingsymbol}
+                </div>
+                <div className="flex justify-end px-2 font-mono tabular-nums text-text-primary">
+                  {tick ? (
+                    formatBrokerMoney(broker, tick.ltp, 2)
+                  ) : (
+                    <span className="text-text-secondary/60">…</span>
+                  )}
+                </div>
+                <div className="flex justify-center px-1">
+                  <span
+                    className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${styles.pill}`}
+                    title={dir === 'up' ? 'Up' : dir === 'down' ? 'Down' : 'Waiting'}
+                  >
+                    {DirIcon ? (
+                      <DirIcon className="h-4 w-4" strokeWidth={2.5} />
+                    ) : (
+                      <span className="text-xs text-text-secondary/50">·</span>
+                    )}
+                  </span>
+                </div>
+                <div className="flex justify-end px-2">
+                  <span
+                    className={`rounded-md px-2 py-0.5 font-mono text-sm font-semibold tabular-nums ${styles.text} ${
+                      dir === 'up' ? 'bg-green/12' : dir === 'down' ? 'bg-red/12' : 'bg-muted/25'
+                    }`}
+                  >
+                    {tick ? pctLabel : (
+                      <span className="font-normal text-text-secondary/60">…</span>
+                    )}
+                  </span>
+                </div>
+                <div className="flex justify-center px-0.5">
+                  <button
+                    type="button"
+                    onClick={() => onRemoveSymbol(watchlist.id, symbol.symboltoken)}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-secondary opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red/10 hover:text-red"
+                    title="Remove"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
     </div>
   )
 }
