@@ -46,8 +46,7 @@ wheels/
 # Logs
 logs/
 
-# Local test scripts (may contain credentials)
-scripts/
+
 
 # Node.js
 node_modules/
