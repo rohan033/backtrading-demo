@@ -35,7 +35,7 @@ from control_plane.ops_logging import live_engine_log_path, quiet_uvicorn_live_e
 from brokers.interfaces import TickData
 from brokers.etoro.env import load_etoro_env
 from event.db_event_consumer import DbEventWriter
-from event.event_manager import create_event_manager
+from event.event_manager import EventManager, create_event_manager
 from managers.strategy_executor import StrategyExecutor
 from managers.order_manager import OrderManager
 from managers.tick_provider import TickProvider

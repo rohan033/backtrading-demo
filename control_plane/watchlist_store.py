@@ -62,6 +62,11 @@ class WatchlistStore:
         conn.close()
 
     def _ensure_watchlist_columns(self, conn: sqlite3.Connection) -> None:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='watchlists'"
+        ).fetchone()
+        if not table:
+            return
         columns = {row[1] for row in conn.execute("PRAGMA table_info(watchlists)")}
         if "broker" not in columns:
             conn.execute(

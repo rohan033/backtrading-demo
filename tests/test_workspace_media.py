@@ -10,13 +10,14 @@ from control_plane.engine_process_manager import REPO_ROOT
 
 
 def test_resolve_workspace_media_path_relative(tmp_path, monkeypatch):
-    monkeypatch.setattr("api.workspace_media.REPO_ROOT", tmp_path)
-    chart = tmp_path / "charts" / "sample.png"
+    root = tmp_path.resolve()
+    monkeypatch.setattr("api.workspace_media.REPO_ROOT", root)
+    chart = root / "charts" / "sample.png"
     chart.parent.mkdir(parents=True)
     chart.write_bytes(b"\x89PNG\r\n")
 
     resolved = resolve_workspace_media_path("charts/sample.png")
-    assert resolved == chart.resolve()
+    assert resolved == chart
 
 
 def test_resolve_workspace_media_path_blocks_traversal(tmp_path, monkeypatch):
@@ -37,8 +38,9 @@ def test_extract_media_paths_from_markdown(tmp_path, monkeypatch):
 
 
 def test_attachments_from_paths(tmp_path, monkeypatch):
-    monkeypatch.setattr("api.workspace_media.REPO_ROOT", tmp_path)
-    gif = tmp_path / "loop.gif"
+    root = tmp_path.resolve()
+    monkeypatch.setattr("api.workspace_media.REPO_ROOT", root)
+    gif = root / "loop.gif"
     gif.write_bytes(b"GIF89a")
 
     rows = attachments_from_paths(["loop.gif"])

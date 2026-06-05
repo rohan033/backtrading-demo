@@ -129,8 +129,8 @@ def test_wrap_prompt_ask_mode_mentions_read_mcp_tools():
 
 
 def test_control_plane_mcp_attached_in_ask_mode():
-    from api.cursor_agent import _control_plane_mcp_servers
+    from api.cursor_sdk_bridge import control_plane_mcp_servers
 
-    servers = _control_plane_mcp_servers("ask")
+    servers = control_plane_mcp_servers()
     assert servers is not None
     assert "backtrading-control-plane" in servers
