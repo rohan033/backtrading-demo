@@ -1,15 +1,16 @@
 # Publish MkDocs to GitHub Pages (project site).
 # URL: https://rohan033.github.io/backtrading-demo/
 #
-# One-time setup (required or deploy job returns 404):
-#   Settings → Pages → Build and deployment → Source: GitHub Actions
+# REQUIRED once (or deploy returns 404 Not Found):
 #   https://github.com/rohan033/backtrading-demo/settings/pages
+#   Build and deployment → Source → "GitHub Actions" (not "Deploy from a branch")
+#   Save, then re-run this workflow.
 
 name: docs
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, tvstack]
     paths:
       - "documentation/**"
       - "architecture/**"
@@ -44,7 +45,11 @@ jobs:
 
       - run: mkdocs build
 
-      - uses: actions/upload-pages-artifact@v3
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
           path: site
 
@@ -55,5 +60,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - id: deployment
+      - name: Deploy to GitHub Pages
+        id: deployment
         uses: actions/deploy-pages@v4

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import re
@@ -33,6 +34,11 @@ from api.control_plane_mcp_tools import (
     MCP_MUTATION_TOOL_NAMES,
     READ_MCP_TOOL_NAMES,
     is_read_mcp_tool_name,
+)
+from control_plane.execution_source_links import (
+    apply_research_source_to_engine,
+    extract_execution_id_from_tool_payload,
+    tool_call_links_research_execution,
 )
 
 from api.cursor_sdk_bridge import (
