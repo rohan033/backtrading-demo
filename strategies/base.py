@@ -14,6 +14,7 @@ class TradeSignal:
     threshold: float = 0.0
     ref_price: float = 0.0
     reason: str = ""
+    instrument_class: str = "equity"
 
 
 class BaseStrategy(ABC):

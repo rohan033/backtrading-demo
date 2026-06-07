@@ -272,6 +272,7 @@ function RegisterForm({ symbol, token, exchange, onClose, onRegistered }) {
     executor_id: `${symbol.toLowerCase().replace(/[^a-z0-9]/g, '-')}-1`,
     long_percent: '1.0',
     short_percent: '10.0',
+    stop_loss_amount: '',
     initial_threshold: '0.2',
     max_available_capital: '100000',
     close_price: '',
@@ -292,6 +293,7 @@ function RegisterForm({ symbol, token, exchange, onClose, onRegistered }) {
         initial_threshold: parseFloat(form.initial_threshold) || 0.2,
         long_percent: parseFloat(form.long_percent) || 1.0,
         short_percent: parseFloat(form.short_percent) || 10.0,
+        stop_loss_amount: parseFloat(form.stop_loss_amount) > 0 ? parseFloat(form.stop_loss_amount) : null,
         symbol, token, exchange,
       }
       const res = await fetch(`${LIVE_API}/executors`, {
@@ -345,9 +347,16 @@ function RegisterForm({ symbol, token, exchange, onClose, onRegistered }) {
             className="bg-primary border border-border rounded px-2 py-1 text-xs text-text focus:border-accent outline-none" />
         </div>
         <div className="flex flex-col gap-1">
+          <label className="text-[9px] text-text-secondary uppercase tracking-wider">Stop Loss Amount</label>
+          <input type="number" step="1" value={form.stop_loss_amount} onChange={e => updateField('stop_loss_amount', e.target.value)}
+            placeholder="Optional (USD)"
+            className="bg-primary border border-border rounded px-2 py-1 text-xs text-text focus:border-accent outline-none" />
+        </div>
+        <div className="flex flex-col gap-1">
           <label className="text-[9px] text-text-secondary uppercase tracking-wider">Stop Loss %</label>
           <input type="number" step="0.1" value={form.short_percent} onChange={e => updateField('short_percent', e.target.value)}
-            className="bg-primary border border-border rounded px-2 py-1 text-xs text-text focus:border-accent outline-none" />
+            disabled={parseFloat(form.stop_loss_amount) > 0}
+            className="bg-primary border border-border rounded px-2 py-1 text-xs text-text focus:border-accent outline-none disabled:opacity-50" />
         </div>
       </div>
       {error && <p className="text-red text-xs mb-2">{error}</p>}

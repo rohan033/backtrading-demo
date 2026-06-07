@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import LiveLogPanel from '../../components/LiveLogPanel'
@@ -119,13 +119,263 @@ function RuntimePills({ port, apiBaseUrl, wsUrl, logFile, pending }) {
   )
 }
 
-function ActivityFeed({ executorId, realtimeEvents }) {
+function PositionsPanel({ executorId, execution }) {
+  const [positions, setPositions] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [unitInputs, setUnitInputs] = useState({})
+  const [closing, setClosing] = useState({})
+  const [closeErrors, setCloseErrors] = useState({})
+  const [closedIds, setClosedIds] = useState(new Set())
+
+  const broker = execution?.broker
+  const accountEnv = execution?.account_env || 'demo'
+
+  const fetchPositions = useCallback(async () => {
+    if (!executorId) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/control/executions/${encodeURIComponent(executorId)}/positions`)
+      const data = await res.json()
+      if (data.status) setPositions(data.data || [])
+      else setError(data.message || 'Failed to load positions')
+    } catch (e) {
+      setError('Network error loading positions')
+    } finally {
+      setLoading(false)
+    }
+  }, [executorId])
+
+  useEffect(() => { fetchPositions() }, [fetchPositions])
+
+  const handleClose = useCallback(async (positionId, maxUnits) => {
+    const raw = unitInputs[positionId]
+    const units = raw !== '' && raw != null ? parseFloat(raw) : null
+
+    if (units !== null && (isNaN(units) || units <= 0 || units > maxUnits)) {
+      setCloseErrors(prev => ({ ...prev, [positionId]: `Units must be between 0 and ${maxUnits}` }))
+      return
+    }
+
+    setClosing(prev => ({ ...prev, [positionId]: true }))
+    setCloseErrors(prev => ({ ...prev, [positionId]: null }))
+
+    try {
+      const res = await fetch(
+        `/api/control/executions/${encodeURIComponent(executorId)}/positions/${encodeURIComponent(positionId)}/close`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ units: units || null }),
+        },
+      )
+      const data = await res.json()
+      if (res.ok && data.status) {
+        setClosedIds(prev => new Set([...prev, positionId]))
+        fetchPositions()
+      } else {
+        setCloseErrors(prev => ({
+          ...prev,
+          [positionId]: data.detail || data.message || 'Close failed',
+        }))
+      }
+    } catch (e) {
+      setCloseErrors(prev => ({ ...prev, [positionId]: 'Network error' }))
+    } finally {
+      setClosing(prev => ({ ...prev, [positionId]: false }))
+    }
+  }, [executorId, unitInputs, fetchPositions])
+
+  if (!executorId) return (
+    <div className="py-8 text-center text-sm" style={{ color: 'var(--sd-text-muted)' }}>
+      No execution selected.
+    </div>
+  )
+
+  if (loading && !positions.length) return (
+    <div className="py-8 text-center text-sm" style={{ color: 'var(--sd-text-muted)' }}>
+      Loading positions…
+    </div>
+  )
+
+  if (error) return (
+    <div className="py-4 text-center text-sm" style={{ color: 'var(--sd-red)' }}>
+      {error}
+      <button type="button" className="ml-2 underline" onClick={fetchPositions}>Retry</button>
+    </div>
+  )
+
+  const open = positions.filter(p => (p.state || p.position?.state) !== 'closed' && !closedIds.has(p.position_id))
+  const closed = positions.filter(p => (p.state || p.position?.state) === 'closed' || closedIds.has(p.position_id))
+
+  if (!positions.length) return (
+    <div className="py-8 text-center text-sm" style={{ color: 'var(--sd-text-muted)' }}>
+      No positions tracked for this execution yet.
+    </div>
+  )
+
+  const formatPrice = (v) => v != null ? `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}` : '—'
+
+  const renderRow = (p) => {
+    const pos = p.position || {}
+    const posId = p.position_id
+    const state = p.state || pos.state || '?'
+    const isOpen = state !== 'closed' && !closedIds.has(posId)
+    const remaining = p.remaining_units ?? pos.remainingUnits ?? null
+    const opening = pos.openingData || {}
+    const avgPrice = opening.avgPrice ?? pos.openRate ?? null
+    const sl = pos.stopLossRate ?? null
+    const tp = pos.takeProfitRate ?? null
+    const isBusy = closing[posId]
+
+    return (
+      <div
+        key={posId}
+        className="rounded-lg border p-3"
+        style={{
+          borderColor: isOpen ? 'var(--sd-border)' : 'rgba(139,156,176,0.25)',
+          background: isOpen ? 'var(--sd-bg-elevated)' : 'transparent',
+          opacity: isOpen ? 1 : 0.55,
+        }}
+      >
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="font-mono text-[11px]" style={{ color: 'var(--sd-text-muted)' }}>
+            #{posId}
+          </span>
+          <span
+            className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest"
+            style={
+              isOpen
+                ? { background: 'var(--sd-green-soft)', color: 'var(--sd-green)' }
+                : { background: 'rgba(139,156,176,0.15)', color: 'var(--sd-text-muted)' }
+            }
+          >
+            {isOpen ? 'Open' : 'Closed'}
+          </span>
+        </div>
+
+        <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] sm:grid-cols-4">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>Units</div>
+            <div className="font-mono font-semibold">{remaining != null ? Number(remaining).toFixed(6) : '—'}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>Avg price</div>
+            <div className="font-mono font-semibold">{formatPrice(avgPrice)}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>Stop loss</div>
+            <div className="font-mono" style={{ color: 'var(--sd-red)' }}>{formatPrice(sl)}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>Take profit</div>
+            <div className="font-mono" style={{ color: 'var(--sd-green)' }}>{formatPrice(tp)}</div>
+          </div>
+        </div>
+
+        {isOpen && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              type="number"
+              min="0.000001"
+              max={remaining ?? undefined}
+              step="0.001"
+              placeholder={`Units (max ${remaining != null ? Number(remaining).toFixed(4) : '?'})`}
+              value={unitInputs[posId] ?? ''}
+              onChange={e => setUnitInputs(prev => ({ ...prev, [posId]: e.target.value }))}
+              className="h-8 w-44 rounded-md border bg-transparent px-2 text-[12px] font-mono outline-none focus:border-[var(--sd-accent)]"
+              style={{ borderColor: 'var(--sd-border)', color: 'var(--sd-text)' }}
+              disabled={isBusy}
+            />
+            <button
+              type="button"
+              className="sd-btn h-8 px-3 text-[12px]"
+              style={isBusy ? {} : { borderColor: 'var(--sd-red)', color: 'var(--sd-red)' }}
+              disabled={isBusy}
+              onClick={() => handleClose(posId, remaining ?? Infinity)}
+            >
+              {isBusy ? 'Closing…' : 'Close position'}
+            </button>
+            {closeErrors[posId] && (
+              <span className="text-[11px]" style={{ color: 'var(--sd-red)' }}>{closeErrors[posId]}</span>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
-    <TradingActivityFeed
+    <div className="space-y-2">
+      {open.length > 0 && (
+        <div className="space-y-2">
+          {open.map(renderRow)}
+        </div>
+      )}
+      {closed.length > 0 && (
+        <details className="mt-1">
+          <summary
+            className="cursor-pointer text-[11px] uppercase tracking-wider"
+            style={{ color: 'var(--sd-text-muted)' }}
+          >
+            {closed.length} closed position{closed.length !== 1 ? 's' : ''}
+          </summary>
+          <div className="mt-2 space-y-2">{closed.map(renderRow)}</div>
+        </details>
+      )}
+    </div>
+  )
+}
+
+const PANEL_TABS = ['Activity', 'Positions']
+
+function ActivityAndPositionsPanel({ executorId, execution, realtimeEvents }) {
+  const [tab, setTab] = useState('Activity')
+  return (
+    <div
+      className="sd-card flex h-full min-h-[360px] flex-col overflow-hidden"
+      style={{ borderColor: 'var(--sd-border)', background: 'var(--sd-bg-card)' }}
+    >
+      <div className="flex items-center gap-0 border-b" style={{ borderColor: 'var(--sd-border)' }}>
+        {PANEL_TABS.map(t => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className="px-4 py-3 text-[13px] font-semibold transition-colors"
+            style={
+              tab === t
+                ? { color: 'var(--sd-accent)', borderBottom: '2px solid var(--sd-accent)', marginBottom: -1 }
+                : { color: 'var(--sd-text-muted)', borderBottom: '2px solid transparent', marginBottom: -1 }
+            }
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-auto px-4 py-3">
+        {tab === 'Activity' ? (
+          <TradingActivityFeed
+            executorId={executorId}
+            realtimeEvents={realtimeEvents}
+            viewAllHref="/trade/activity"
+            className="!border-0 !bg-transparent !rounded-none !shadow-none -mx-4 -my-3"
+          />
+        ) : (
+          <PositionsPanel executorId={executorId} execution={execution} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ActivityFeed({ executorId, execution, realtimeEvents }) {
+  return (
+    <ActivityAndPositionsPanel
       executorId={executorId}
+      execution={execution}
       realtimeEvents={realtimeEvents}
-      viewAllHref="/trade/activity"
-      className="sd-card h-full min-h-[360px] border-[var(--sd-border)] bg-[var(--sd-bg-card)]"
     />
   )
 }
@@ -358,7 +608,7 @@ export default function StrategyDetailView({
             planeStreams={planeStreams}
             selectedTick={selectedTick}
           />
-          <ActivityFeed executorId={executionId} realtimeEvents={strategyActivityEvents} />
+          <ActivityFeed executorId={executionId} execution={execution} realtimeEvents={strategyActivityEvents} />
         </div>
 
         <div className="space-y-3">
@@ -391,7 +641,9 @@ export default function StrategyDetailView({
                 ['Close price', levels.closePrice != null ? formatBrokerPrice(broker, levels.closePrice) : '—'],
                 ['Entry threshold', execution?.initial_threshold != null ? `${execution.initial_threshold}%` : '—'],
                 ['Take profit %', execution?.long_percent != null ? `${execution.long_percent}%` : '—'],
-                ['Stop loss %', execution?.short_percent != null ? `${execution.short_percent}%` : '—'],
+                ['Stop loss', levels.stopLossUsesAmount
+                  ? `${formatBrokerCompactMoney(broker, levels.stopLossAmount)} max loss`
+                  : execution?.short_percent != null ? `${execution.short_percent}%` : '—'],
                 ['Client mode', execution?.is_bracket_order_client ? 'Bracket orders' : 'Feed TP/SL'],
                 ['Partial stocks', execution?.allow_partial_stocks ? 'Yes (2 dp)' : 'No (whole shares)'],
                 ['Tick sampling', execution?.tick_sample_every != null ? `Every ${execution.tick_sample_every} tick(s)` : 'Every tick'],

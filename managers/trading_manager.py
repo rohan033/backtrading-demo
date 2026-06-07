@@ -122,6 +122,13 @@ class TradingManager:
             signal.take_profit_price,
             signal.stop_loss_price,
         )
+        instrument_class = getattr(signal, "instrument_class", "equity")
+        logger.info(
+            "%s[TM]%s BUY settlement instrument_class=%s",
+            MAGENTA,
+            RESET,
+            instrument_class,
+        )
         if use_bracket_order:
             buy_result = await self.client.abuy_with_take_profit_stop_loss(
                 ltp=signal.entry_price,
@@ -131,6 +138,7 @@ class TradingManager:
                 exchange=getattr(signal, 'exchange', 'NSE'),
                 take_profit_rate=signal.take_profit_price,
                 stop_loss_rate=signal.stop_loss_price,
+                instrument_class=instrument_class,
             )
         else:
             buy_result = await self.client.abuy(
@@ -138,7 +146,8 @@ class TradingManager:
                 available_capital=available_capital,
                 symbol=getattr(signal, 'symbol', ''),
                 token=getattr(signal, 'token', ''),
-                exchange=getattr(signal, 'exchange', 'NSE')
+                exchange=getattr(signal, 'exchange', 'NSE'),
+                instrument_class=instrument_class,
             )
         
         if buy_result and buy_result.get('order_id'):
@@ -284,6 +293,7 @@ class TradingManager:
                 token=token,
                 exchange=exchange,
                 orderType="MARKET",
+                instrument_class=getattr(signal, "instrument_class", "equity"),
             )
         else:
             logger.error("[TM] Client cannot close TP/SL trigger for executor=%s", executor_id)

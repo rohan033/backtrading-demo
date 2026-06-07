@@ -34,7 +34,7 @@ from control_plane.client_mode import normalize_client_mode
 from control_plane.ops_logging import live_engine_log_path, quiet_uvicorn_live_engine_access_logs
 from brokers.interfaces import TickData
 from brokers.etoro.env import load_etoro_env
-from event.db_event_consumer import DbEventWriter
+from event.db_event_consumer import DbEventWriter, resolve_live_events_db_path
 from event.event_manager import EventManager, create_event_manager
 from managers.strategy_executor import StrategyExecutor
 from managers.order_manager import OrderManager
@@ -111,6 +111,7 @@ class LiveEngine:
         self.event_manager: Optional[EventManager] = None
         self.trading_manager: Optional[TradingManager] = None
         self.order_manager: Optional[OrderManager] = None
+        self.order_status_poller = None
         self.tick_provider: Optional[TickProvider] = None
         self.angel_feed = None
         self.executors: dict[str, StrategyExecutor] = {}
@@ -131,8 +132,8 @@ class LiveEngine:
             self.client = FakeTradingClient(tick_gen)
             logger.info("[ENGINE] Using FakeTradingClient (test mode)")
         elif self.broker == "etoro":
-            from brokers.etoro.trading_client import EtoroBracketTradingClient, EtoroTradingClient
-            client_cls = EtoroBracketTradingClient if self.client_mode == "bracket" else EtoroTradingClient
+            from brokers.etoro.order_client import EtoroV2BracketOrderClient, EtoroV2OrderClient
+            client_cls = EtoroV2BracketOrderClient if self.client_mode == "bracket" else EtoroV2OrderClient
             self.client = client_cls(account_env=self.account_env)
             self.client.generate_session()
             logger.info("[ENGINE] %s session established env=%s", client_cls.__name__, self.account_env)
@@ -144,7 +145,9 @@ class LiveEngine:
             self.client.generate_session()
             logger.info("[ENGINE] AngelOneTradingClient session established")
 
-        self.db_writer = DbEventWriter(db_path="live_events.db")
+        db_path = resolve_live_events_db_path()
+        self.db_writer = DbEventWriter(db_path=db_path)
+        logger.info("[ENGINE] Event DB path=%s", db_path)
         self.event_manager = create_event_manager(self.db_writer)
         status_client = self._create_status_client()
         self.order_manager = OrderManager(client=status_client)
@@ -154,6 +157,15 @@ class LiveEngine:
             order_manager=self.order_manager,
         )
         self.order_manager.register_listener("trading_manager", self.trading_manager)
+        if self.broker == "etoro" and not self.use_fake_client:
+            from brokers.etoro.ws_order_lookup_listener import EtoroWsOrderLookupListener
+
+            self.order_lookup_listener = EtoroWsOrderLookupListener(
+                lookup_client=self.client,
+                store=self.db_writer,
+                account_env=self.account_env,
+            )
+            self.order_manager.register_listener("etoro_order_lookup", self.order_lookup_listener)
         if status_client is not None:
             logger.info("[ENGINE] Portfolio status client wired (%s)", type(status_client).__name__)
 
@@ -181,6 +193,16 @@ class LiveEngine:
         await self.trading_manager.start()
         await self.order_manager.start()
         await self.tick_provider.start()
+
+        if self.broker == "etoro" and not self.use_fake_client:
+            from managers.order_status_poller import LiveOrderStatusPoller
+
+            poll_interval = float(os.getenv("ORDER_STATUS_POLL_SECONDS", "5"))
+            self.order_status_poller = LiveOrderStatusPoller(
+                self,
+                poll_interval_seconds=poll_interval,
+            )
+            await self.order_status_poller.start()
 
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
         if self.engine_id and self.control_url:
@@ -239,6 +261,9 @@ class LiveEngine:
                 await self._heartbeat_task
             except asyncio.CancelledError:
                 pass
+        if self.order_status_poller is not None:
+            await self.order_status_poller.stop()
+            self.order_status_poller = None
         if self.tick_provider:
             await self.tick_provider.stop()
         if self.angel_feed is not None:
@@ -298,6 +323,22 @@ class LiveEngine:
             pass
 
     def _on_engine_event(self, event: dict):
+        if (
+            self.broker == "etoro"
+            and not self.use_fake_client
+            and event.get("action") == "BUY_ORDER_PLACED"
+            and event.get("order_id")
+            and event.get("executor_id")
+            and self.db_writer is not None
+        ):
+            self.db_writer.upsert_order_poll_job(
+                executor_id=str(event["executor_id"]),
+                order_id=str(event["order_id"]),
+                broker="etoro",
+                account_env=self.account_env,
+                engine_id=self.engine_id,
+                status="RUNNING",
+            )
         try:
             self._broadcast_queue.put_nowait(event)
         except asyncio.QueueFull:
@@ -417,6 +458,7 @@ class LiveEngine:
         config = StrategyConfig(
             long_percent=req.long_percent,
             short_percent=req.short_percent,
+            stop_loss_amount=req.stop_loss_amount,
             initial_threshold=req.initial_threshold,
             symbol=req.symbol,
             token=req.token,
@@ -429,6 +471,7 @@ class LiveEngine:
             bb_period=req.bb_period,
             bb_std=req.bb_std,
             rsi_oversold=req.rsi_oversold,
+            instrument_class=req.instrument_class,
         )
 
         executor = StrategyExecutor(
@@ -447,6 +490,94 @@ class LiveEngine:
 
         self._on_executor_status(req.executor_id, "RUNNING", False)
         logger.info("[ENGINE] Registered executor: %s for %s", req.executor_id, req.symbol)
+        return self._executor_state(executor)
+
+    async def close_position(
+        self,
+        executor_id: str,
+        position_id: str,
+        *,
+        units: float | None = None,
+        instrument_id: int | None = None,
+        max_positions: int | None = None,
+    ) -> dict:
+        if executor_id not in self.executors:
+            raise ValueError(f"Executor '{executor_id}' not found")
+        if self.client is None or not hasattr(self.client, "aclose_position"):
+            raise ValueError("Broker client cannot close positions")
+
+        poll_job = self.db_writer.get_order_poll_job(executor_id) if self.db_writer else None
+        order_id = str(poll_job.get("order_id")) if poll_job else None
+        request_details = {
+            "executor_id": executor_id,
+            "position_id": str(position_id),
+            "units": units,
+            "instrument_id": instrument_id,
+            "max_positions": max_positions,
+            "source": "control_plane",
+        }
+        if self.db_writer:
+            self.db_writer.log_event(order_id, "POSITION_CLOSE_REQUESTED", request_details)
+        self._on_engine_event({
+            "type": "position_status_update",
+            "action": "POSITION_CLOSE_REQUESTED",
+            "executor_id": executor_id,
+            "order_id": order_id,
+            "position_id": str(position_id),
+            "details": request_details,
+        })
+
+        closed = await self.client.aclose_position(
+            position_id,
+            units=units,
+            instrument_id=instrument_id,
+        )
+        action = "POSITION_CLOSED" if closed else "POSITION_CLOSE_FAILED"
+        result_details = {
+            **request_details,
+            "success": closed,
+        }
+        if self.db_writer:
+            self.db_writer.log_event(order_id, action, result_details)
+        self._on_engine_event({
+            "type": "position_status_update",
+            "action": action,
+            "executor_id": executor_id,
+            "order_id": order_id,
+            "position_id": str(position_id),
+            "details": result_details,
+        })
+        if not closed:
+            raise ValueError(f"Failed to close position '{position_id}'")
+        return result_details
+
+    async def stop_executor(self, executor_id: str, *, reason: str = "manual") -> dict:
+        executor = self.executors.get(executor_id)
+        if not executor:
+            raise ValueError(f"Executor '{executor_id}' not found")
+
+        executor.is_active = False
+        # Keep the tick listener registered so price streaming continues for the
+        # chart/UI even when the strategy stops trading (order filled/rejected/etc).
+
+        if reason == "order_fulfilled":
+            status = "ORDER_FULFILLED"
+            action = "ORDER_FULFILLED"
+        elif reason == "order_rejected":
+            status = "ORDER_REJECTED"
+            action = "ORDER_REJECTED"
+        else:
+            status = "STOPPED"
+            action = "EXECUTOR_STOPPED"
+        executor._set_status(status)
+        self._on_executor_status(executor_id, status, executor.is_in_position)
+        self._on_engine_event({
+            "type": "order",
+            "action": action,
+            "executor_id": executor_id,
+            "reason": reason,
+        })
+        logger.info("[ENGINE] Stopped executor: %s reason=%s", executor_id, reason)
         return self._executor_state(executor)
 
     async def remove_executor(self, executor_id: str):
@@ -494,6 +625,12 @@ class LiveEngine:
 
 # ─── Request Models ───────────────────────────────────────────────────────────
 
+class ClosePositionRequest(BaseModel):
+    units: Optional[float] = None
+    instrument_id: Optional[int] = None
+    max_positions: Optional[int] = None
+
+
 class RegisterExecutorRequest(BaseModel):
     executor_id: str
     symbol: str
@@ -501,6 +638,7 @@ class RegisterExecutorRequest(BaseModel):
     exchange: str = "NSE"
     long_percent: float = 1.0
     short_percent: float = 10.0
+    stop_loss_amount: float | None = None
     initial_threshold: float = 0.2
     max_available_capital: float = 100000
     allow_partial_stocks: bool = False
@@ -512,6 +650,7 @@ class RegisterExecutorRequest(BaseModel):
     bb_period: int = Field(default=20, ge=2, le=200)
     bb_std: float = Field(default=2.0, ge=0.5, le=5.0)
     rsi_oversold: float = Field(default=30.0, ge=5.0, le=50.0)
+    instrument_class: str = "equity"
 
 
 # ─── App Setup ────────────────────────────────────────────────────────────────
@@ -729,6 +868,36 @@ async def register_executor(req: RegisterExecutorRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error("[ENGINE] Register executor failed id=%s: %s", req.executor_id, e, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/live/executors/{executor_id}/stop")
+async def stop_executor(executor_id: str):
+    eng = get_engine()
+    try:
+        state = await eng.stop_executor(executor_id, reason="order_fulfilled")
+        return {"status": True, "data": state}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/live/executors/{executor_id}/positions/{position_id}/close")
+async def close_position(executor_id: str, position_id: str, req: ClosePositionRequest):
+    eng = get_engine()
+    try:
+        result = await eng.close_position(
+            executor_id,
+            position_id,
+            units=req.units,
+            instrument_id=req.instrument_id,
+            max_positions=req.max_positions,
+        )
+        return {"status": True, "data": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 

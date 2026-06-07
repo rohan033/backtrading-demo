@@ -10,7 +10,7 @@ from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketD
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import asyncio
@@ -32,6 +32,7 @@ from api.watchlist_feed import get_watchlist_feed_hub
 from control_plane.client_mode import normalize_client_mode
 from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
+from control_plane.live_engine_proxy import forward_live_json
 from control_plane.ops_logging import configure_control_plane_logging, quiet_uvicorn_poll_access_logs
 from control_plane.log_stream import (
     resolve_engine_log_path,
@@ -53,7 +54,7 @@ from brokers.etoro.adapters.portfolio import (
     mock_search_rows as _mock_search_rows,
 )
 from brokers.fake.adapters.portfolio import fake_portfolio_rows
-from event.db_event_consumer import DbEventWriter
+from event.db_event_consumer import DbEventWriter, resolve_live_events_db_path
 from event.platform_notifier import emit_strategy_event, shutdown_platform_notifier
 from event.telegram_env import load_telegram_env
 from event.telegram_inbound import start_telegram_inbound_services, stop_telegram_inbound_services
@@ -121,8 +122,7 @@ _live_events_db: Optional[DbEventWriter] = None
 def get_live_events_db() -> DbEventWriter:
     global _live_events_db
     if _live_events_db is None:
-        db_path = os.getenv("LIVE_EVENTS_DB") or str(REPO_ROOT / "live_events.db")
-        _live_events_db = DbEventWriter(db_path=db_path)
+        _live_events_db = DbEventWriter(db_path=resolve_live_events_db_path())
     return _live_events_db
 
 # ── Global client ──
@@ -236,6 +236,7 @@ class DataPlaneEngineUpdate(BaseModel):
 
 
 ExecutionSourceId = Literal["user", "ai_research", "ai_chatbot_panel"]
+InstrumentClass = Literal["equity", "crypto"]
 
 
 class ControlPlaneExecutionRequest(BaseModel):
@@ -251,6 +252,7 @@ class ControlPlaneExecutionRequest(BaseModel):
     close_price: float
     long_percent: float = 1.0
     short_percent: float = 10.0
+    stop_loss_amount: Optional[float] = None
     initial_threshold: float = 0.2
     max_available_capital: float = 100000
     allow_partial_stocks: bool = False
@@ -261,6 +263,7 @@ class ControlPlaneExecutionRequest(BaseModel):
     schedule_enabled: bool = False
     scheduled_date: Optional[str] = None
     start_immediately: bool = False
+    instrument_class: InstrumentClass = "equity"
 
     @model_validator(mode="after")
     def normalize_source_meta_id(self):
@@ -272,6 +275,10 @@ class ControlPlaneExecutionRequest(BaseModel):
         else:
             self.source_meta_id = None
         self.client_mode = normalize_client_mode(self.broker, self.client_mode)
+        if self.broker != "etoro":
+            self.instrument_class = "equity"
+        elif self.instrument_class not in {"equity", "crypto"}:
+            self.instrument_class = "equity"
         return self
 
 
@@ -608,11 +615,13 @@ def _controlled_execution_payload(req: ControlPlaneExecutionRequest) -> tuple[st
         "close_price": req.close_price,
         "long_percent": req.long_percent,
         "short_percent": req.short_percent,
+        "stop_loss_amount": req.stop_loss_amount,
         "initial_threshold": req.initial_threshold,
         "max_available_capital": req.max_available_capital,
         "allow_partial_stocks": req.allow_partial_stocks,
         "tick_sample_every": max(1, int(req.tick_sample_every or 1)),
         "strategy_type": req.strategy_name,
+        "instrument_class": req.instrument_class,
     }
     broker = "fake" if req.use_fake_client else req.broker
     label = f"{req.broker}-{req.symbol}-strategy-{req.strategy_name}"
@@ -941,10 +950,14 @@ def duplicate_execution_template(execution_id: str):
             "close_price": executor_payload.get("close_price"),
             "long_percent": executor_payload.get("long_percent"),
             "short_percent": executor_payload.get("short_percent"),
+            "stop_loss_amount": executor_payload.get("stop_loss_amount"),
             "initial_threshold": executor_payload.get("initial_threshold"),
             "max_available_capital": executor_payload.get("max_available_capital"),
             "allow_partial_stocks": executor_payload.get("allow_partial_stocks", False),
             "tick_sample_every": executor_payload.get("tick_sample_every", 1),
+            "instrument_class": config.get("instrument_class")
+            or executor_payload.get("instrument_class")
+            or "equity",
         }
     broker = config.get("broker") or engine.get("broker") or "angel"
     symbol = config.get("symbol") or engine.get("symbol") or "symbol"
@@ -1085,6 +1098,185 @@ def get_control_trades(
 def get_control_orders(executor_id: Optional[str] = None, limit: int = 100):
     orders = get_live_events_db().query_orders_snapshot(executor_id=executor_id, limit=limit)
     return {"status": True, "data": orders}
+
+
+def _resolve_execution_order_poll_job(execution_id: str) -> dict[str, Any] | None:
+    db = get_live_events_db()
+    job = db.get_order_poll_job(execution_id)
+    if job:
+        return job
+    orders = db.query_orders_snapshot(executor_id=execution_id, limit=5)
+    for order in orders.values():
+        order_id = order.get("order_id")
+        if order_id:
+            return {
+                "executor_id": execution_id,
+                "order_id": str(order_id),
+                "status": "STOPPED",
+            }
+    return None
+
+
+class ClosePositionRequest(BaseModel):
+    units: Optional[float] = None
+    instrument_id: Optional[int] = None
+    max_positions: Optional[int] = None
+
+
+def _execution_engine(execution_id: str) -> dict[str, Any]:
+    engine = engine_registry.get_engine(execution_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    return engine
+
+
+@app.get(
+    "/api/control/executions/{execution_id}/positions",
+    operation_id="get_execution_positions",
+    summary="List persisted open and closed positions for an execution",
+)
+def get_execution_positions(execution_id: str):
+    positions = get_live_events_db().get_executor_positions(execution_id)
+    return {"status": True, "data": positions}
+
+
+@app.post(
+    "/api/control/executions/{execution_id}/positions/{position_id}/close",
+    operation_id="close_execution_position",
+    summary="Close a position directly via eToro (works even when the live engine is stopped)",
+)
+async def close_execution_position(
+    execution_id: str,
+    position_id: str,
+    req: ClosePositionRequest,
+):
+    db = get_live_events_db()
+    poll_job = db.get_order_poll_job(execution_id)
+    order_id = str(poll_job.get("order_id")) if poll_job else None
+
+    # Resolve account_env: prefer what the live engine registered, fall back to DB poll job.
+    engine = engine_registry.get_engine(execution_id)
+    account_env = (
+        (engine or {}).get("account_env")
+        or (poll_job or {}).get("account_env")
+        or "demo"
+    )
+
+    request_details = {
+        "executor_id": execution_id,
+        "position_id": str(position_id),
+        "units": req.units,
+        "instrument_id": req.instrument_id,
+        "source": "control_plane_direct",
+        "account_env": account_env,
+    }
+    db.log_event(order_id, "POSITION_CLOSE_REQUESTED", request_details)
+
+    try:
+        client = await _etoro_trading_client(account_env)
+        closed = await client.aclose_position(
+            position_id,
+            units=req.units,
+            instrument_id=req.instrument_id,
+        )
+    except Exception as exc:
+        log.error(
+            "[CONTROL_ETORO] close_position failed execution=%s position=%s env=%s: %s",
+            execution_id, position_id, account_env, exc, exc_info=True,
+        )
+        db.log_event(
+            order_id,
+            "POSITION_CLOSE_FAILED",
+            {**request_details, "error": str(exc)},
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if not closed:
+        db.log_event(
+            order_id,
+            "POSITION_CLOSE_FAILED",
+            {**request_details, "error": "eToro returned failure without exception"},
+        )
+        raise HTTPException(status_code=502, detail="eToro did not confirm position close")
+
+    db.log_event(order_id, "POSITION_CLOSED", {**request_details, "source": "control_plane_direct"})
+    log.info(
+        "[CONTROL_ETORO] close_position OK execution=%s position=%s env=%s units=%s",
+        execution_id, position_id, account_env, req.units,
+    )
+    return {"status": True, "position_id": position_id, "closed": True}
+
+
+@app.get(
+    "/api/control/executions/{execution_id}/order-poll",
+    operation_id="get_execution_order_poll",
+    summary="Read persisted order-status poll job state for the orders UI",
+)
+def get_execution_order_poll(execution_id: str):
+    job = _resolve_execution_order_poll_job(execution_id)
+    if not job:
+        return {"status": True, "data": None}
+    return {"status": True, "data": job}
+
+
+@app.post(
+    "/api/control/executions/{execution_id}/order-poll/start",
+    operation_id="start_execution_order_poll",
+    summary="Mark order-status polling RUNNING in SQLite for the live engine poller",
+)
+def start_execution_order_poll(execution_id: str):
+    db = get_live_events_db()
+    job = _resolve_execution_order_poll_job(execution_id)
+    if not job or not job.get("order_id"):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No order found to poll for execution '{execution_id}'",
+        )
+
+    engine = engine_registry.get_engine(execution_id)
+    account_env = (engine or {}).get("account_env") or "live"
+    db.upsert_order_poll_job(
+        executor_id=execution_id,
+        order_id=str(job["order_id"]),
+        broker="etoro",
+        account_env=account_env,
+        engine_id=execution_id,
+        status="RUNNING",
+    )
+    return {"status": True, "data": db.get_order_poll_job(execution_id, job["order_id"])}
+
+
+@app.post(
+    "/api/control/executions/{execution_id}/order-poll/stop",
+    operation_id="stop_execution_order_poll",
+    summary="Mark order-status polling STOPPED in SQLite for the live engine poller",
+)
+def stop_execution_order_poll(execution_id: str):
+    db = get_live_events_db()
+    job = db.get_order_poll_job(execution_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"No poll job for execution '{execution_id}'")
+    db.set_order_poll_job_status(execution_id, job["order_id"], "STOPPED")
+    return {"status": True, "data": db.get_order_poll_job(execution_id, job["order_id"])}
+
+
+@app.get("/api/control/orders/{order_id}", operation_id="get_control_order_detail", summary="Get v2 order lookup and positions")
+def get_control_order_detail(order_id: str):
+    db = get_live_events_db()
+    lookup_row = db.get_order_lookup(order_id)
+    positions = db.get_order_positions(order_id)
+    if not lookup_row and not positions:
+        raise HTTPException(status_code=404, detail=f"No v2 lookup data for order '{order_id}'")
+    return {
+        "status": True,
+        "data": {
+            "order_id": order_id,
+            "lookup": lookup_row.get("lookup") if lookup_row else None,
+            "lookup_updated_at": lookup_row.get("updated_at") if lookup_row else None,
+            "account_env": lookup_row.get("account_env") if lookup_row else None,
+            "positions": positions,
+        },
+    }
 
 
 @app.get("/api/control/event-sessions", operation_id="get_event_sessions", summary="List live event sessions")

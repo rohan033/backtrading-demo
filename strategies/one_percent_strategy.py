@@ -1,3 +1,4 @@
+from brokers.etoro.order_helpers import compute_stop_loss_price
 from brokers.interfaces import TickData
 from utils import order_quantity_from_capital, round_off
 from .base import BaseStrategy, TradeSignal
@@ -15,6 +16,7 @@ class OnePercentStrategy(BaseStrategy):
         super().__init__(strategy_config)
         self.long_percent = getattr(strategy_config, 'long_percent', 1.0)
         self.short_percent = getattr(strategy_config, 'short_percent', 10.0)
+        self.stop_loss_amount = getattr(strategy_config, 'stop_loss_amount', None)
         self.initial_threshold = getattr(strategy_config, 'initial_threshold', 0.1)
         self.last_close_price = None
         
@@ -41,12 +43,16 @@ class OnePercentStrategy(BaseStrategy):
         if change_percentage >= self.initial_threshold:
             entry_price = tick.ltp
             take_profit_price = round(entry_price * (1 + self.long_percent / 100), 2)
-            stop_loss_price = round(entry_price * (1 - self.short_percent / 100), 2)
-            # Apply max_available_capital limit if configured
             capital_to_use = available_capital
             if available_capital and hasattr(self.strategy_config, 'max_available_capital') and self.strategy_config.max_available_capital:
                 capital_to_use = min(available_capital, self.strategy_config.max_available_capital)
-            
+            stop_loss_price = compute_stop_loss_price(
+                entry_price,
+                capital_to_use,
+                stop_loss_amount=self.stop_loss_amount,
+                short_percent=self.short_percent,
+            )
+
             allow_partial = bool(getattr(self.strategy_config, 'allow_partial_stocks', False))
             quantity = order_quantity_from_capital(capital_to_use, entry_price, allow_partial=allow_partial)
             

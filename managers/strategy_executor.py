@@ -74,6 +74,7 @@ class StrategyExecutor(TickListener):
             'exchange': getattr(cfg, 'exchange', None) if cfg else None,
             'long_percent': getattr(cfg, 'long_percent', None) if cfg else None,
             'short_percent': getattr(cfg, 'short_percent', None) if cfg else None,
+            'stop_loss_amount': getattr(cfg, 'stop_loss_amount', None) if cfg else None,
             'initial_threshold': getattr(cfg, 'initial_threshold', None) if cfg else None,
             'max_available_capital': getattr(cfg, 'max_available_capital', None) if cfg else None,
             'allow_partial_stocks': getattr(cfg, 'allow_partial_stocks', False) if cfg else False,
@@ -180,6 +181,9 @@ class StrategyExecutor(TickListener):
                 trade_signal.symbol = tick.symbol
                 trade_signal.token = tick.token
                 trade_signal.exchange = tick.exchange
+                trade_signal.instrument_class = getattr(
+                    self.strategy_config, "instrument_class", "equity"
+                )
                 logger.info(
                     "%s[%s]%s %sSIGNAL  BUY%s  %s  ltp=%.2f  chg=%+.3f%%  threshold=%.2f%%",
                     CYAN, self.executor_id, RESET,
