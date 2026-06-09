@@ -524,10 +524,7 @@ async def control_plane_search(
             return {"status": True, "data": rows}
 
         if broker_name == "etoro":
-            from brokers.etoro.trading_client import EtoroTradingClient
-
-            client = EtoroTradingClient(account_env=account_env)
-            client.generate_session()
+            client = await _etoro_trading_client(account_env)
             instruments = await client.asearch_instruments(q)
             rows = [_etoro_instrument_to_search_row(item) for item in instruments]
             if rows:
@@ -1147,6 +1144,77 @@ def get_execution_positions(execution_id: str):
     return {"status": True, "data": positions}
 
 
+@app.get(
+    "/api/control/executions/{execution_id}/candles",
+    operation_id="get_execution_candles",
+    summary="Fetch 1-minute OHLCV candles for an execution chart (eToro)",
+)
+async def get_execution_candles(execution_id: str, count: int = 100):
+    engine = _execution_engine(execution_id)
+    broker = str(engine.get("broker") or "").lower()
+    if broker != "etoro":
+        raise HTTPException(status_code=400, detail="Candles endpoint is only available for eToro executions")
+
+    metadata = engine.get("metadata") or {}
+    executor_payload = metadata.get("executor_payload") or {}
+    symbol = engine.get("symbol") or executor_payload.get("symbol")
+    token = engine.get("token") or executor_payload.get("token")
+    account_env = engine.get("account_env") or "demo"
+    if not symbol or not token:
+        raise HTTPException(status_code=400, detail="Execution is missing symbol or token")
+
+    from brokers.etoro.candles import (
+        BOOTSTRAP_CANDLE_COUNT,
+        CANDLE_INTERVAL_ONE_MINUTE,
+        aget_historical_candles,
+    )
+
+    safe_count = max(1, min(int(count or BOOTSTRAP_CANDLE_COUNT), BOOTSTRAP_CANDLE_COUNT))
+    try:
+        client = await _etoro_trading_client(account_env)
+        instrument_id = await client._instrument_id(symbol, str(token))
+        if instrument_id is None:
+            raise HTTPException(status_code=404, detail="Could not resolve eToro instrument id")
+
+        candles = await aget_historical_candles(
+            client,
+            instrument_id,
+            interval=CANDLE_INTERVAL_ONE_MINUTE,
+            count=safe_count,
+            direction="desc",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error(
+            "[CONTROL_ETORO] candles failed execution=%s symbol=%s token=%s: %s",
+            execution_id,
+            symbol,
+            token,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    from managers.candle_store import CandleStore
+
+    store = CandleStore()
+    store.bootstrap(candles)
+    # Skip LTP here — live engine WS owns the forming bar; avoids a second rates API call and 429s.
+
+    return {
+        "status": True,
+        "data": store.bars(),
+        "meta": {
+            "interval": CANDLE_INTERVAL_ONE_MINUTE,
+            "count": safe_count,
+            "broker": broker,
+            "symbol": symbol,
+            "token": str(token),
+        },
+    }
+
+
 @app.post(
     "/api/control/executions/{execution_id}/positions/{position_id}/close",
     operation_id="close_execution_position",
@@ -1363,10 +1431,7 @@ async def control_plane_portfolio(
             return {"status": True, "broker": broker_name, "account_env": account_env, "data": rows}
 
         if broker_name == "etoro":
-            from brokers.etoro.trading_client import EtoroTradingClient
-
-            client = EtoroTradingClient(account_env=account_env)
-            client.generate_session()
+            client = await _etoro_trading_client(account_env)
             positions = await client.aget_positions()
             symbol_map = await _etoro_symbol_map_for_records(client, positions)
             rows = [_etoro_position_to_portfolio_row(item, symbol_map) for item in positions]
@@ -1402,11 +1467,24 @@ async def control_plane_portfolio(
         return {"status": False, "broker": broker_name, "account_env": account_env, "message": str(e), "data": []}
 
 
+_etoro_trading_clients: dict[str, Any] = {}
+
+
+def _normalize_etoro_account_env(account_env: str | None) -> str:
+    return "demo" if (account_env or "demo").lower() == "demo" else "live"
+
+
 async def _etoro_trading_client(account_env: str):
     from brokers.etoro.trading_client import EtoroTradingClient
 
-    client = EtoroTradingClient(account_env=account_env)
+    env = _normalize_etoro_account_env(account_env)
+    cached = _etoro_trading_clients.get(env)
+    if cached is not None:
+        return cached
+
+    client = EtoroTradingClient(account_env=env)
     client.generate_session()
+    _etoro_trading_clients[env] = client
     return client
 
 

@@ -23,7 +23,7 @@ sys.path.insert(0, _repo_root)
 sys.path.insert(0, os.path.join(_repo_root, "src"))
 
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +36,8 @@ from brokers.interfaces import TickData
 from brokers.etoro.env import load_etoro_env
 from event.db_event_consumer import DbEventWriter, resolve_live_events_db_path
 from event.event_manager import EventManager, create_event_manager
+from managers.candle_store import CandleStore
+from managers.market_candle_provider import MarketCandleProvider
 from managers.strategy_executor import StrategyExecutor
 from managers.order_manager import OrderManager
 from managers.tick_provider import TickProvider
@@ -131,6 +133,9 @@ class LiveEngine:
         self._tick_stats = {"generated": 0, "broadcast": 0, "dropped_no_clients": 0}
         self._last_flow_log_at = 0.0
         self._last_no_client_warn_at = 0.0
+        self._candle_stores: dict[str, CandleStore] = {}
+        self._candle_token_meta: dict[str, dict[str, str]] = {}
+        self._market_candle_provider: MarketCandleProvider | None = None
 
     async def start(self):
         if self.use_fake_client:
@@ -231,6 +236,14 @@ class LiveEngine:
             await self.order_status_poller.start()
 
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+        if self.broker == "etoro" and not self.use_fake_client:
+            self._market_candle_provider = MarketCandleProvider(
+                fetch_candles=self._fetch_etoro_candles,
+                get_tokens=self._tracked_candle_tokens,
+                on_sync=self._on_candle_sync,
+                interval_seconds=60.0,
+            )
+            await self._market_candle_provider.start()
         if self.engine_id and self.control_url:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         logger.info(
@@ -310,6 +323,9 @@ class LiveEngine:
         if self.etoro_feed is not None:
             await self.etoro_feed.stop()
             self.etoro_feed = None
+        if self._market_candle_provider is not None:
+            await self._market_candle_provider.stop()
+            self._market_candle_provider = None
         if self.order_manager:
             await self.order_manager.stop()
         if self.trading_manager:
@@ -363,6 +379,265 @@ class LiveEngine:
         except asyncio.QueueFull:
             pass
 
+        candle_msg = self._apply_tick_to_candles(tick)
+        if candle_msg is not None:
+            try:
+                self._broadcast_queue.put_nowait(candle_msg)
+            except asyncio.QueueFull:
+                pass
+
+    def _tracked_candle_tokens(self) -> list[tuple[str, str, str]]:
+        tokens: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for executor in self.executors.values():
+            cfg = executor.strategy_config
+            if not cfg:
+                continue
+            token = str(cfg.token)
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            tokens.append((cfg.exchange, cfg.symbol, token))
+        return tokens
+
+    def _candle_store_for(self, token: str) -> CandleStore:
+        key = str(token)
+        if key not in self._candle_stores:
+            self._candle_stores[key] = CandleStore()
+        return self._candle_stores[key]
+
+    async def _fetch_etoro_candles(self, exchange: str, symbol: str, token: str) -> list[dict]:
+        from brokers.etoro.candles import (
+            CANDLE_INTERVAL_ONE_MINUTE,
+            SYNC_CANDLE_COUNT,
+            aget_historical_candles,
+        )
+
+        instrument_id = await self.client._instrument_id(symbol, token)
+        if instrument_id is None:
+            return []
+        return await aget_historical_candles(
+            self.client,
+            instrument_id,
+            interval=CANDLE_INTERVAL_ONE_MINUTE,
+            count=SYNC_CANDLE_COUNT,
+            direction="desc",
+        )
+
+    def _apply_candle_snapshot(
+        self,
+        *,
+        token_key: str,
+        symbol: str,
+        exchange: str,
+        candles: list[dict],
+    ) -> list[dict]:
+        store = self._candle_store_for(token_key)
+        store.bootstrap(candles)
+        bars = store.bars()
+        self._queue_candle_message(
+            msg_type="candle_bootstrap",
+            token=token_key,
+            symbol=symbol,
+            exchange=exchange,
+            candles=bars,
+        )
+        return bars
+
+    async def _bootstrap_candles(self, *, exchange: str, symbol: str, token: str) -> None:
+        if self.broker != "etoro" or self.use_fake_client:
+            return
+
+        token_key = str(token)
+        self._candle_token_meta[token_key] = {
+            "exchange": exchange,
+            "symbol": symbol,
+        }
+        try:
+            candles = await self._fetch_etoro_candles(exchange, symbol, token)
+        except Exception as exc:
+            logger.warning(
+                "[CandleProvider] Bootstrap candles failed symbol=%s token=%s: %s",
+                symbol,
+                token,
+                exc,
+            )
+            return
+        if not candles:
+            return
+
+        instrument_id = await self.client._instrument_id(symbol, token)
+        ltp = None
+        if instrument_id is not None:
+            try:
+                rates = await self.client.aget_rates([instrument_id])
+                if rates:
+                    ltp = self.client._rate_ltp(rates[0])
+            except Exception as exc:
+                logger.warning(
+                    "[CandleProvider] Bootstrap LTP skipped symbol=%s token=%s: %s",
+                    symbol,
+                    token,
+                    exc,
+                )
+
+        store = self._candle_store_for(token_key)
+        store.bootstrap(candles)
+        if ltp is not None:
+            try:
+                store.apply_tick(float(ltp))
+            except ValueError:
+                pass
+        bars = store.bars()
+        self._queue_candle_message(
+            msg_type="candle_bootstrap",
+            token=token_key,
+            symbol=symbol,
+            exchange=exchange,
+            candles=bars,
+        )
+
+    def _apply_tick_to_candles(self, tick: TickData) -> dict | None:
+        token_key = str(tick.token)
+        self._candle_token_meta[token_key] = {
+            "exchange": tick.exchange,
+            "symbol": tick.symbol,
+        }
+        store = self._candle_store_for(token_key)
+
+        try:
+            candle = store.apply_tick(float(tick.ltp))
+        except ValueError:
+            return None
+
+        return {
+            "type": "candle_tick",
+            "symbol": tick.symbol,
+            "token": token_key,
+            "exchange": tick.exchange,
+            "candle": candle,
+        }
+
+    async def _on_candle_sync(
+        self,
+        exchange: str,
+        symbol: str,
+        token: str,
+        candles: list[dict],
+    ) -> None:
+        if not candles:
+            return
+        token_key = str(token)
+        self._candle_token_meta[token_key] = {
+            "exchange": exchange,
+            "symbol": symbol,
+        }
+        bars = self._apply_candle_snapshot(
+            token_key=token_key,
+            symbol=symbol,
+            exchange=exchange,
+            candles=candles,
+        )
+        logger.info(
+            "[CandleProvider] Synced snapshot symbol=%s token=%s bars=%d",
+            symbol,
+            token_key,
+            len(bars),
+        )
+
+    def _queue_candle_message(
+        self,
+        *,
+        msg_type: str,
+        token: str,
+        symbol: str,
+        exchange: str,
+        candles: list[dict],
+    ) -> None:
+        try:
+            self._broadcast_queue.put_nowait({
+                "type": msg_type,
+                "symbol": symbol,
+                "token": token,
+                "exchange": exchange,
+                "candles": candles,
+            })
+        except asyncio.QueueFull:
+            logger.warning("[CandleProvider] Broadcast queue full; dropping %s", msg_type)
+
+    def candles_by_token(self) -> dict[str, list[dict]]:
+        return {token: store.bars() for token, store in self._candle_stores.items()}
+
+    async def load_candle_history(
+        self,
+        token: str,
+        before: int,
+        *,
+        minutes: int = 120,
+    ) -> dict[str, Any]:
+        if self.broker != "etoro" or self.use_fake_client:
+            raise HTTPException(
+                status_code=400,
+                detail="Candle history is only available for eToro live engines",
+            )
+
+        from brokers.etoro.candles import (
+            CANDLE_HISTORY_2H_MINUTES,
+            aget_historical_candles_before,
+        )
+
+        token_key = str(token)
+        before_time = (int(before) // 60) * 60
+        safe_minutes = max(1, min(int(minutes or CANDLE_HISTORY_2H_MINUTES), 1000))
+
+        meta = self._candle_token_meta.get(token_key, {})
+        symbol = meta.get("symbol") or self.symbol
+        exchange = meta.get("exchange") or "US"
+        if not symbol:
+            raise HTTPException(status_code=400, detail="Unknown symbol for token")
+
+        instrument_id = await self.client._instrument_id(symbol, token_key)
+        if instrument_id is None:
+            raise HTTPException(status_code=404, detail="Could not resolve instrument id")
+
+        older_candles = await aget_historical_candles_before(
+            self.client,
+            instrument_id,
+            before_time=before_time,
+            minutes=safe_minutes,
+        )
+
+        store = self._candle_store_for(token_key)
+        loaded_count = store.prepend_older(older_candles)
+        all_bars = store.bars()
+
+        if loaded_count:
+            self._queue_candle_message(
+                msg_type="candle_history",
+                token=token_key,
+                symbol=symbol,
+                exchange=exchange,
+                candles=all_bars,
+            )
+
+        logger.info(
+            "[CandleProvider] Loaded history token=%s before=%d minutes=%d added=%d total=%d",
+            token_key,
+            before_time,
+            safe_minutes,
+            loaded_count,
+            len(all_bars),
+        )
+
+        return {
+            "loaded_count": loaded_count,
+            "oldest_time": store.oldest_time(),
+            "before_time": before_time,
+            "minutes": safe_minutes,
+            "candles": older_candles,
+            "all_candles": all_bars,
+        }
+
     def _on_engine_event(self, event: dict):
         if (
             self.broker == "etoro"
@@ -387,7 +662,7 @@ class LiveEngine:
 
     def _log_broadcast(self, msg: dict) -> None:
         msg_type = msg.get("type")
-        if msg_type == "tick":
+        if msg_type in {"tick", "candle_tick"}:
             return
         logger.info(
             "[WS] Broadcasting type=%s action=%s executor=%s order=%s event=%s clients=%d",
@@ -420,7 +695,7 @@ class LiveEngine:
         while True:
             msg = await self._broadcast_queue.get()
             client_count = len(self.ws_manager.active_connections)
-            if msg.get("type") != "tick":
+            if msg.get("type") not in {"tick", "candle_tick"}:
                 self._log_broadcast(msg)
                 if client_count:
                     await self.ws_manager.broadcast(msg)
@@ -529,6 +804,11 @@ class LiveEngine:
         await executor.start()
         self.tick_provider.register_listener(req.token, executor)
         self.executors[req.executor_id] = executor
+        await self._bootstrap_candles(
+            exchange=req.exchange,
+            symbol=req.symbol,
+            token=str(req.token),
+        )
 
         self._on_executor_status(req.executor_id, "RUNNING", False)
         logger.info("[ENGINE] Registered executor: %s for %s", req.executor_id, req.symbol)
@@ -1008,6 +1288,30 @@ async def get_summary():
     return {"status": True, "data": summary}
 
 
+@app.get("/api/live/candles/history")
+async def load_candle_history(
+    token: str,
+    before: int,
+    minutes: int = 120,
+):
+    """Load older 1-minute candles ending just before `before` (oldest bar unix time)."""
+    eng = get_engine()
+    try:
+        payload = await eng.load_candle_history(token, before, minutes=minutes)
+        return {"status": True, "data": payload}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "[CandleProvider] History load failed token=%s before=%s: %s",
+            token,
+            before,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 # ─── WebSocket ────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/live")
@@ -1020,6 +1324,7 @@ async def websocket_live(ws: WebSocket):
         'type': 'snapshot',
         'engine': eng.engine_info(),
         'executors': [eng._executor_state(ex) for ex in eng.executors.values()],
+        'candles_by_token': eng.candles_by_token(),
     }
     await ws.send_json(snapshot)
 

@@ -87,9 +87,19 @@ const EMPTY_PLANE_STREAM = {
   connectExhausted: false,
   ticks: {},
   tickHistory: {},
+  candleHistory: {},
   lastTickAt: {},
   realtimeEvents: [],
 }
+
+const CANDLE_UP_COLOR = '#00e676'
+const CANDLE_DOWN_COLOR = '#ff5252'
+const CANDLE_NEUTRAL_UP = '#00c853'
+const CANDLE_NEUTRAL_DOWN = '#ff1744'
+const CANDLE_VISIBLE_BARS = 55
+const CANDLE_PREFETCH_COUNT = 1000
+const CANDLE_HISTORY_MAX_BARS = 1100
+const CANDLE_HISTORY_2H_MINUTES = 120
 
 const PRICE_STREAM_STALE_MS = 15000
 const PRICE_STREAM_FIRST_TICK_MS = 10000
@@ -420,6 +430,17 @@ export function ExecutionProvider({ children }) {
             const nextKey = JSON.stringify(next.map(ex => [ex.executor_id, ex.status, ex.data_plane_id]))
             return prevKey === nextKey ? prev : next
           })
+          const candlesByToken = msg.candles_by_token || {}
+          if (Object.keys(candlesByToken).length) {
+            persistPlaneStream(current => {
+              const nextCandleHistory = { ...current.candleHistory }
+              for (const [token, candles] of Object.entries(candlesByToken)) {
+                const streamKey = planeTickKey(planeId, token)
+                nextCandleHistory[streamKey] = sanitizeCandleSeries(candles)
+              }
+              return { ...current, candleHistory: nextCandleHistory }
+            })
+          }
           return
         }
 
@@ -455,6 +476,33 @@ export function ExecutionProvider({ children }) {
               ticks: nextTicks,
               tickHistory: nextHistory,
               lastTickAt: { ...current.lastTickAt, [streamKey]: now },
+            }
+          })
+          return
+        }
+
+        if (['candle_bootstrap', 'candle_sync', 'candle_history', 'candle_tick'].includes(msg.type)) {
+          const tokenKey = normalizeTokenKey(msg.token)
+          if (!tokenKey) return
+          const streamKey = planeTickKey(planeId, tokenKey)
+          persistPlaneStream(current => {
+            const existing = current.candleHistory[streamKey] || []
+            let nextHistory = existing
+            if (msg.type === 'candle_bootstrap') {
+              nextHistory = sanitizeCandleSeries(msg.candles || [])
+            } else if (msg.type === 'candle_sync') {
+              nextHistory = mergeCandleSync(existing, msg.candles || [])
+            } else if (msg.type === 'candle_history') {
+              nextHistory = sanitizeCandleSeries(msg.candles || [])
+            } else if (msg.candle) {
+              nextHistory = applyCandleTick(existing, msg.candle)
+            }
+            return {
+              ...current,
+              candleHistory: {
+                ...current.candleHistory,
+                [streamKey]: nextHistory,
+              },
             }
           })
           return
@@ -876,9 +924,15 @@ function TabBar({ activeTab, setActiveTab }) {
 }
 
 export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
+  const [chartMode, setChartMode] = useState('line')
+  const [prefetchCandles, setPrefetchCandles] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyMessage, setHistoryMessage] = useState('')
   const stream = getPlaneStream(planeStreams, execution?.data_plane_id)
   const resolvedStream = useMemo(
-    () => (execution ? resolveExecutionStream(stream, execution) : { tickHistory: [], tick: null, streamKey: '' }),
+    () => (execution
+      ? resolveExecutionStream(stream, execution)
+      : { tickHistory: [], candleHistory: [], tick: null, streamKey: '' }),
     [stream, execution],
   )
   const ltp = selectedTick?.ltp ?? resolvedStream.tick?.ltp ?? null
@@ -886,8 +940,61 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
     () => (execution ? buildChartSeries(resolvedStream.tickHistory, execution, ltp) : []),
     [resolvedStream.tickHistory, execution, ltp],
   )
+  const streamCandles = useMemo(
+    () => (execution ? buildCandleSeries(resolvedStream.candleHistory, execution, ltp) : []),
+    [resolvedStream.candleHistory, execution, ltp],
+  )
+  const candleSeries = useMemo(() => {
+    if (!prefetchCandles.length) return streamCandles
+    if (!streamCandles.length || streamCandles.length <= 1) return prefetchCandles
+    return mergeCandleSync(prefetchCandles, streamCandles)
+  }, [prefetchCandles, streamCandles])
   const isStreaming = Boolean(execution?.ws_url)
     && ['running', 'starting'].includes(String(execution?.data_plane_status || '').toLowerCase())
+  const isEtoro = String(execution?.broker || '').toLowerCase() === 'etoro'
+  const canShowChart = isStreaming || candleSeries.length > 0
+  const oldestCandleTime = candleSeries[0]?.time ?? null
+  const canLoadHistory = (
+    chartMode === 'candles'
+    && isEtoro
+    && isStreaming
+    && Boolean(execution?.api_base_url)
+    && oldestCandleTime != null
+  )
+
+  const loadOlderCandleHistory = async () => {
+    if (!canLoadHistory || historyLoading) return
+    setHistoryLoading(true)
+    setHistoryMessage('')
+    try {
+      const params = new URLSearchParams({
+        token: String(execution.token),
+        before: String(oldestCandleTime),
+        minutes: String(CANDLE_HISTORY_2H_MINUTES),
+      })
+      const res = await fetch(`${execution.api_base_url}/candles/history?${params}`)
+      const data = await res.json()
+      if (!res.ok || !data.status) {
+        throw new Error(data.detail || data.message || `HTTP ${res.status}`)
+      }
+      const payload = data.data || {}
+      const merged = sanitizeCandleSeries(payload.all_candles || payload.candles || [])
+      if (merged.length) {
+        setPrefetchCandles(merged)
+      }
+      const loaded = Number(payload.loaded_count || 0)
+      setHistoryMessage(
+        loaded > 0
+          ? `Loaded ${loaded} older candles`
+          : 'No older candles available for this range',
+      )
+    } catch (error) {
+      console.warn('[StrategyChart] Candle history load failed', error)
+      setHistoryMessage(error?.message || 'Failed to load older candles')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
   const nowMs = useNow(isStreaming ? PRICE_STREAM_STATUS_POLL_MS : null)
   const priceStreamStatus = useMemo(
     () => resolveExecutionPriceStreamStatus({
@@ -898,6 +1005,33 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
     }),
     [isStreaming, stream, resolvedStream.streamKey, nowMs],
   )
+
+  useEffect(() => {
+    if (!execution?.executor_id || String(execution?.broker || '').toLowerCase() !== 'etoro') {
+      setPrefetchCandles([])
+      return undefined
+    }
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(
+          `/api/control/executions/${encodeURIComponent(execution.executor_id)}/candles?count=${CANDLE_PREFETCH_COUNT}`,
+        )
+        const data = await res.json()
+        if (cancelled || !data.status) return
+        setPrefetchCandles(sanitizeCandleSeries(data.data || []))
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('[StrategyChart] Candle prefetch failed', error)
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [execution?.executor_id, execution?.broker, execution?.token])
 
   useEffect(() => {
     if (!execution?.executor_id) return
@@ -940,6 +1074,22 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
         <div>
           <h3 className="text-[13px] font-semibold">Live chart</h3>
           <PriceStreamStatusLine status={priceStreamStatus} />
+          <div className="mt-2 inline-flex rounded border border-border/70 bg-secondary/40 p-0.5 text-[10px]">
+            <button
+              type="button"
+              onClick={() => setChartMode('line')}
+              className={`rounded px-2 py-1 font-semibold ${chartMode === 'line' ? 'bg-accent/20 text-accent' : 'text-text-secondary'}`}
+            >
+              Line
+            </button>
+            <button
+              type="button"
+              onClick={() => setChartMode('candles')}
+              className={`rounded px-2 py-1 font-semibold ${chartMode === 'candles' ? 'bg-accent/20 text-accent' : 'text-text-secondary'}`}
+            >
+              Candles
+            </button>
+          </div>
         </div>
         <div className="text-right">
           <div className="text-sm font-bold">{execution.symbol || '—'}</div>
@@ -953,17 +1103,40 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
         </div>
       </div>
       <div className="p-4 min-w-0">
-        {isStreaming ? (
+        {canShowChart && canLoadHistory ? (
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={loadOlderCandleHistory}
+              disabled={historyLoading}
+              className="rounded border border-border/70 bg-secondary/50 px-2.5 py-1 text-[11px] font-semibold text-text-primary transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {historyLoading ? 'Loading 2h…' : 'Load 2h older'}
+            </button>
+            {historyMessage ? (
+              <span className="text-[10px] text-text-secondary">{historyMessage}</span>
+            ) : (
+              <span className="text-[10px] text-text-secondary">
+                Extends chart 2 hours before oldest bar
+              </span>
+            )}
+          </div>
+        ) : null}
+        {canShowChart ? (
           <LiveExecutionChart
             execution={execution}
+            mode={chartMode}
             data={chartSeries}
+            candleData={candleSeries}
             realtimeEvents={realtimeEvents}
           />
         ) : (
           <div className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-border bg-secondary/20 px-6 text-center">
             <p className="text-sm font-semibold">Chart unavailable</p>
             <p className="mt-2 max-w-sm text-xs text-text-secondary">
-              Deploy this strategy to start live price streaming.
+              {isStreaming
+                ? 'Loading candle history…'
+                : 'Deploy this strategy to start live price streaming.'}
             </p>
           </div>
         )}
@@ -996,9 +1169,10 @@ export function ChartTab({ executions, planeStreams, selectedExecutionId }) {
       {liveExecutions.map(execution => {
         const stream = getPlaneStream(planeStreams, execution.data_plane_id)
         const resolvedStream = resolveExecutionStream(stream, execution)
-        const { tickHistory, tick: streamTick, streamKey } = resolvedStream
+        const { tickHistory, candleHistory, tick: streamTick, streamKey } = resolvedStream
         const liveLtp = streamTick?.ltp ?? null
         const chartSeries = buildChartSeries(tickHistory, execution, liveLtp)
+        const candleSeries = buildCandleSeries(candleHistory, execution, liveLtp)
         const priceStreamStatus = resolveExecutionPriceStreamStatus({
           isStreaming: true,
           stream,
@@ -1032,7 +1206,9 @@ export function ChartTab({ executions, planeStreams, selectedExecutionId }) {
             <div className="p-4 space-y-4">
               <LiveExecutionChart
                 execution={execution}
+                mode="line"
                 data={chartSeries}
+                candleData={candleSeries}
                 realtimeEvents={realtimeEvents}
               />
               <ExecutionLevels execution={execution} />
@@ -1044,24 +1220,87 @@ export function ChartTab({ executions, planeStreams, selectedExecutionId }) {
   )
 }
 
-function LiveExecutionChart({ execution, data, realtimeEvents }) {
+function formatCandleVolume(value) {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '—'
+  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`
+  if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`
+  return String(Math.round(num))
+}
+
+function CandleOhlcReadout({ broker, ohlc }) {
+  if (!ohlc) {
+    return <div className="mb-1 min-h-[18px]" aria-hidden />
+  }
+
+  const bullish = Number(ohlc.close) >= Number(ohlc.open)
+  const items = [
+    { label: 'O', value: ohlc.open, format: 'price' },
+    { label: 'H', value: ohlc.high, format: 'price' },
+    { label: 'L', value: ohlc.low, format: 'price' },
+    { label: 'C', value: ohlc.close, format: 'price', tone: bullish ? 'text-green' : 'text-red' },
+    { label: 'V', value: ohlc.volume, format: 'volume' },
+  ]
+
+  return (
+    <div className="mb-1 flex min-h-[18px] flex-wrap items-center gap-x-3 gap-y-0.5 px-0.5 text-[11px] leading-tight text-text-secondary">
+      {items.map(item => (
+        <span key={item.label} className="inline-flex items-center gap-1">
+          <span className="font-semibold uppercase tracking-wide">{item.label}</span>
+          <span className={`font-mono ${item.tone || 'text-text-primary'}`}>
+            {item.format === 'volume'
+              ? formatCandleVolume(item.value)
+              : formatBrokerPrice(broker, item.value)}
+          </span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function LiveExecutionChart({ execution, mode = 'line', data, candleData = [], realtimeEvents }) {
   const containerRef = useRef(null)
   const chartRef = useRef(null)
   const seriesRef = useRef(null)
+  const volumeSeriesRef = useRef(null)
   const priceLinesRef = useRef([])
   const lastPointRef = useRef(null)
   const viewportInitializedRef = useRef(false)
+  const lastViewportBarCountRef = useRef(0)
+  const [hoveredOhlc, setHoveredOhlc] = useState(null)
+  const candlesRef = useRef([])
   const chartData = useMemo(() => sanitizeChartSeries(data), [data])
+  const candles = useMemo(() => sanitizeCandleSeries(candleData), [candleData])
+  const isCandleMode = mode === 'candles'
+  const currentCandle = useMemo(() => {
+    if (!candles.length) return null
+    const last = candles[candles.length - 1]
+    return {
+      open: last.open,
+      high: last.high,
+      low: last.low,
+      close: last.close,
+      volume: last.volume ?? 0,
+    }
+  }, [candles])
+  const displayOhlc = hoveredOhlc ?? currentCandle
+
+  useEffect(() => {
+    candlesRef.current = candles
+  }, [candles])
 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return undefined
 
     viewportInitializedRef.current = false
+    lastViewportBarCountRef.current = 0
     lastPointRef.current = null
+    setHoveredOhlc(null)
 
     let chart = null
     let resizeObserver = null
+    let crosshairHandler = null
     let cancelled = false
 
     const mountChart = () => {
@@ -1077,13 +1316,70 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
         height: 420,
         layout: { background: { color: '#111d28' }, textColor: '#8899a6' },
         grid: { vertLines: { color: '#1a2733' }, horzLines: { color: '#1a2733' } },
-        timeScale: { timeVisible: true, secondsVisible: true, borderColor: '#2a3f52' },
+        timeScale: {
+          timeVisible: true,
+          secondsVisible: !isCandleMode,
+          borderColor: '#2a3f52',
+          barSpacing: isCandleMode ? 7 : undefined,
+          minBarSpacing: isCandleMode ? 3 : undefined,
+          rightOffset: isCandleMode ? 4 : undefined,
+        },
         rightPriceScale: { borderColor: '#2a3f52', autoScale: true },
       })
-      const series = chart.addLineSeries({ color: '#1da1f2', lineWidth: 2, priceLineVisible: false })
+      let series
+      if (isCandleMode) {
+        chart.priceScale('right').applyOptions({
+          scaleMargins: { top: 0.05, bottom: 0.28 },
+        })
+        series = chart.addCandlestickSeries({
+          upColor: CANDLE_UP_COLOR,
+          downColor: CANDLE_DOWN_COLOR,
+          borderUpColor: CANDLE_UP_COLOR,
+          borderDownColor: CANDLE_DOWN_COLOR,
+          wickUpColor: CANDLE_UP_COLOR,
+          wickDownColor: CANDLE_DOWN_COLOR,
+        })
+        const volumeSeries = chart.addHistogramSeries({
+          priceFormat: { type: 'volume' },
+          priceScaleId: 'volume',
+        })
+        chart.priceScale('volume').applyOptions({
+          scaleMargins: { top: 0.78, bottom: 0 },
+        })
+        volumeSeriesRef.current = volumeSeries
+      } else {
+        series = chart.addLineSeries({ color: '#1da1f2', lineWidth: 2, priceLineVisible: false })
+        volumeSeriesRef.current = null
+      }
       chartRef.current = chart
       seriesRef.current = series
       lastPointRef.current = null
+
+      if (isCandleMode) {
+        crosshairHandler = (param) => {
+          if (cancelled) return
+          if (!param?.time || param.point == null) {
+            setHoveredOhlc(null)
+            return
+          }
+          const hoveredTime = Math.floor(Number(param.time) / 60) * 60
+          const candle = candlesRef.current.find(item => item.time === hoveredTime)
+          const bar = param.seriesData?.get(series)
+          const source = candle || bar
+          if (!source || source.open == null) {
+            setHoveredOhlc(null)
+            return
+          }
+          setHoveredOhlc({
+            open: source.open,
+            high: source.high,
+            low: source.low,
+            close: source.close,
+            volume: candle?.volume ?? source.volume ?? 0,
+          })
+        }
+        chart.subscribeCrosshairMove(crosshairHandler)
+      }
 
       resizeObserver = new ResizeObserver(() => {
         if (!containerRef.current || !chartRef.current) return
@@ -1097,18 +1393,66 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
 
     return () => {
       cancelled = true
+      if (chart && crosshairHandler) {
+        chart.unsubscribeCrosshairMove(crosshairHandler)
+      }
       resizeObserver?.disconnect()
       chart?.remove()
       chartRef.current = null
       seriesRef.current = null
+      volumeSeriesRef.current = null
       lastPointRef.current = null
+      priceLinesRef.current = []
+      setHoveredOhlc(null)
     }
-  }, [execution.executor_id])
+  }, [execution.executor_id, isCandleMode])
 
   useEffect(() => {
     if (!seriesRef.current || !chartRef.current) return
     const series = seriesRef.current
     const chart = chartRef.current
+
+    if (isCandleMode) {
+      const volumeSeries = volumeSeriesRef.current
+      if (!candles.length) {
+        series.setData([])
+        volumeSeries?.setData([])
+        lastPointRef.current = null
+        return
+      }
+      const lastCandle = candles[candles.length - 1]
+      const previous = lastPointRef.current
+      const volumeData = candlesToVolumeData(candles)
+      const lastVolume = volumeData[volumeData.length - 1]
+      if (previous && lastCandle.time === previous.time) {
+        series.update(lastCandle)
+        volumeSeries?.update(lastVolume)
+      } else if (
+        previous
+        && lastCandle.time > previous.time
+        && candles[candles.length - 2]?.time === previous.time
+      ) {
+        series.update(lastCandle)
+        volumeSeries?.update(lastVolume)
+      } else {
+        series.setData(candles)
+        volumeSeries?.setData(volumeData)
+      }
+      applyDynamicCandleColors(series, lastCandle)
+      lastPointRef.current = lastCandle
+      const shouldResetViewport = (
+        !viewportInitializedRef.current
+        || (lastViewportBarCountRef.current < 20 && candles.length >= 20)
+        || (candles.length >= 10 && lastViewportBarCountRef.current <= 5)
+      )
+      if (shouldResetViewport) {
+        applyCandleViewport(chart, candles.length)
+        viewportInitializedRef.current = true
+        lastViewportBarCountRef.current = candles.length
+      }
+      return
+    }
+
     if (!chartData.length) {
       series.setData([])
       lastPointRef.current = null
@@ -1133,26 +1477,35 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
       chart.timeScale().fitContent()
       viewportInitializedRef.current = true
     }
-  }, [chartData])
+  }, [chartData, candles, isCandleMode])
 
   useEffect(() => {
     if (!seriesRef.current) return
     const series = seriesRef.current
     priceLinesRef.current.forEach(line => series.removePriceLine(line))
     priceLinesRef.current = getPriceLines(execution).map(line => series.createPriceLine(line))
-  }, [execution, chartData.length])
+  }, [execution, chartData.length, candles.length, isCandleMode])
 
   useEffect(() => {
-    if (!seriesRef.current || !chartData.length) return
-    const markers = buildTradeMarkers(realtimeEvents, execution.executor_id, chartData)
+    if (!seriesRef.current) return
+    const markerSource = isCandleMode ? candles : chartData
+    if (!markerSource.length) return
+    const markers = buildTradeMarkers(realtimeEvents, execution.executor_id, markerSource)
     try {
       seriesRef.current.setMarkers(markers)
     } catch (error) {
       console.warn('[LiveExecutionChart] Failed to set markers', error)
     }
-  }, [chartData, execution.executor_id, realtimeEvents])
+  }, [chartData, candles, execution.executor_id, realtimeEvents, isCandleMode])
 
-  return <div ref={containerRef} className="w-full min-w-0 h-[420px]" />
+  return (
+    <div className="w-full min-w-0">
+      {isCandleMode ? (
+        <CandleOhlcReadout broker={execution?.broker} ohlc={displayOhlc} />
+      ) : null}
+      <div ref={containerRef} className="h-[420px]" />
+    </div>
+  )
 }
 
 function PortfolioTab({ ticks, liveApi, execution }) {
@@ -3262,6 +3615,7 @@ function resolveExecutionStream(stream, execution) {
   const primaryKey = planeTickKey(planeId, token)
 
   let tickHistory = stream.tickHistory[primaryKey] || []
+  let candleHistory = stream.candleHistory[primaryKey] || []
   let tick = stream.ticks[primaryKey]
   let streamKey = primaryKey
 
@@ -3271,12 +3625,13 @@ function resolveExecutionStream(stream, execution) {
       if (String(entry?.symbol || '').trim().toUpperCase() !== symbol) continue
       tick = entry
       tickHistory = stream.tickHistory[key] || tickHistory
+      candleHistory = stream.candleHistory[key] || candleHistory
       streamKey = key
       break
     }
   }
 
-  return { tickHistory, tick, streamKey }
+  return { tickHistory, candleHistory, tick, streamKey }
 }
 
 export function resolveExecutionPriceStreamStatus({
@@ -3408,6 +3763,99 @@ function planeTickKey(planeId, token) {
   const tokenKey = normalizeTokenKey(token)
   if (!planeId || !tokenKey) return tokenKey
   return `${planeId}:${tokenKey}`
+}
+
+function minuteBucket(ts = Date.now()) {
+  const sec = Math.floor(ts / 1000)
+  return Math.floor(sec / 60) * 60
+}
+
+function sanitizeCandleSeries(candles) {
+  if (!candles?.length) return []
+
+  const sanitized = []
+  for (const candle of candles) {
+    const time = Number(candle.time)
+    const open = Number(candle.open)
+    const high = Number(candle.high)
+    const low = Number(candle.low)
+    const close = Number(candle.close)
+    if (![time, open, high, low, close].every(Number.isFinite)) continue
+    if (Math.min(open, high, low, close) <= 0) continue
+
+    const normalized = {
+      time: Math.floor(time / 60) * 60,
+      open,
+      high: Math.max(high, open, low, close),
+      low: Math.min(low, open, high, close),
+      close,
+      volume: Number.isFinite(Number(candle.volume)) ? Number(candle.volume) : 0,
+    }
+    const last = sanitized[sanitized.length - 1]
+    if (last && normalized.time <= last.time) {
+      sanitized[sanitized.length - 1] = normalized
+    } else {
+      sanitized.push(normalized)
+    }
+  }
+  return sanitized
+}
+
+function applyCandleTick(history, candle) {
+  const next = sanitizeCandleSeries([...(history || []), candle])
+  return next.slice(-CANDLE_HISTORY_MAX_BARS)
+}
+
+function mergeCandleSync(history, candles) {
+  const merged = new Map((history || []).map(item => [item.time, item]))
+  for (const candle of sanitizeCandleSeries(candles)) {
+    merged.set(candle.time, candle)
+  }
+  return [...merged.values()].sort((a, b) => a.time - b.time).slice(-CANDLE_HISTORY_MAX_BARS)
+}
+
+function buildCandleSeries(history, execution, liveLtp) {
+  return sanitizeCandleSeries(history)
+}
+
+function candlesToVolumeData(candles) {
+  return candles.map(candle => ({
+    time: candle.time,
+    value: Number.isFinite(Number(candle.volume)) ? Number(candle.volume) : 0,
+    color: Number(candle.close) >= Number(candle.open)
+      ? 'rgba(0, 230, 118, 0.45)'
+      : 'rgba(255, 82, 82, 0.45)',
+  }))
+}
+
+function applyCandleViewport(chart, barCount) {
+  if (!chart || barCount <= 0) return
+  const to = Math.max(barCount - 1, 0)
+  const from = to - CANDLE_VISIBLE_BARS + 1
+  chart.timeScale().applyOptions({
+    barSpacing: 6,
+    minBarSpacing: 2,
+    rightOffset: 6,
+  })
+  chart.timeScale().setVisibleLogicalRange({
+    from,
+    to: to + 6,
+  })
+}
+
+function applyDynamicCandleColors(series, candle) {
+  if (!series || !candle) return
+  const bullish = Number(candle.close) >= Number(candle.open)
+  const upColor = bullish ? CANDLE_UP_COLOR : CANDLE_NEUTRAL_UP
+  const downColor = bullish ? CANDLE_NEUTRAL_DOWN : CANDLE_DOWN_COLOR
+  series.applyOptions({
+    upColor,
+    downColor,
+    borderUpColor: upColor,
+    borderDownColor: downColor,
+    wickUpColor: upColor,
+    wickDownColor: downColor,
+  })
 }
 
 function appendTickPoint(history, ltp) {

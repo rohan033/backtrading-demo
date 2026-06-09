@@ -63,3 +63,6 @@ live_events.db
 
 # UX simulation prototype (HTML/JS mock — not the React app)
 ux-prototype/
+
+# Local eToro OpenAPI spec dump (not part of the app)
+openapi.json
