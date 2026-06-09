@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from logzero import logger
 
+from managers.bgp_log import bgp_info, bgp_warning, summarize_v2_order_lookup
 from brokers.etoro.order_helpers import (
     classify_order_poll_outcome,
     diff_position_executions,
@@ -99,6 +100,12 @@ class LiveOrderStatusPoller:
 
         lookup = await client.aget_order_status(order_id)
         if not isinstance(lookup, dict) or not lookup:
+            bgp_warning(
+                "live_order_status_poller",
+                "lookup_empty",
+                executor_id=str(executor_id),
+                order_id=str(order_id),
+            )
             return
 
         current_last_update = lookup_last_update(lookup)
@@ -119,6 +126,16 @@ class LiveOrderStatusPoller:
             or bool(position_changes)
         )
         if order_changed:
+            bgp_info(
+                "live_order_status_poller",
+                "order_lookup_changed",
+                executor_id=str(executor_id),
+                order_id=str(order_id),
+                previous_last_update=previous_last_update,
+                current_last_update=current_last_update,
+                position_changes=position_changes,
+                lookup=summarize_v2_order_lookup(str(order_id), lookup),
+            )
             await self._emit_lookup_update(
                 job=job,
                 lookup=lookup,
@@ -129,8 +146,22 @@ class LiveOrderStatusPoller:
 
         outcome = classify_order_poll_outcome(lookup)
         if outcome == "fulfilled":
+            bgp_info(
+                "live_order_status_poller",
+                "order_terminal_fulfilled",
+                executor_id=str(executor_id),
+                order_id=str(order_id),
+                lookup=summarize_v2_order_lookup(str(order_id), lookup),
+            )
             await self._handle_fulfilled(job, lookup)
         elif outcome == "rejected":
+            bgp_warning(
+                "live_order_status_poller",
+                "order_terminal_rejected",
+                executor_id=str(executor_id),
+                order_id=str(order_id),
+                lookup=summarize_v2_order_lookup(str(order_id), lookup),
+            )
             await self._handle_rejected(job, lookup)
 
     async def _emit_lookup_update(
@@ -170,6 +201,16 @@ class LiveOrderStatusPoller:
 
         for change in position_changes:
             action = change["change_type"]
+            bgp_info(
+                "live_order_status_poller",
+                "position_execution_changed",
+                executor_id=executor_id,
+                order_id=order_id,
+                action=action,
+                position_id=change.get("position_id"),
+                previous=change.get("previous"),
+                current=change.get("position"),
+            )
             position = change.get("position") or {}
             details = {
                 "executor_id": executor_id,

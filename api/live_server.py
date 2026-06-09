@@ -92,6 +92,7 @@ class LiveEngine:
         strategy_name: str = "default",
         client_mode: str = "standard",
         feed_mode: str = "websocket",
+        feed_tick_sample_every: int = 0,
     ):
         self.use_fake_client = use_fake_client or broker == "fake"
         self.account_env = "demo" if account_env == "demo" else "live"
@@ -104,8 +105,13 @@ class LiveEngine:
         self.strategy_name = strategy_name
         self.client_mode = normalize_client_mode(self.broker, client_mode)
         from brokers.angel.feed_config import normalize_angel_feed_mode
+        from brokers.etoro.feed_config import normalize_etoro_feed_mode, normalize_feed_tick_sample_every
 
-        self.feed_mode = normalize_angel_feed_mode(feed_mode)
+        if self.broker == "etoro":
+            self.feed_mode = normalize_etoro_feed_mode(feed_mode)
+        else:
+            self.feed_mode = normalize_angel_feed_mode(feed_mode)
+        self.feed_tick_sample_every = normalize_feed_tick_sample_every(feed_tick_sample_every)
         self.client = None
         self.db_writer: Optional[DbEventWriter] = None
         self.event_manager: Optional[EventManager] = None
@@ -114,6 +120,7 @@ class LiveEngine:
         self.order_status_poller = None
         self.tick_provider: Optional[TickProvider] = None
         self.angel_feed = None
+        self.etoro_feed = None
         self.executors: dict[str, StrategyExecutor] = {}
         self.ws_manager = ConnectionManager()
         self.ws_manager.engine_id = self.engine_id
@@ -170,17 +177,24 @@ class LiveEngine:
             logger.info("[ENGINE] Portfolio status client wired (%s)", type(status_client).__name__)
 
         from brokers.angel.feed_config import angel_uses_websocket_feed
+        from brokers.etoro.feed_config import etoro_uses_websocket_feed
 
         use_angel_ws_feed = (
             self.broker == "angel"
             and not self.use_fake_client
             and angel_uses_websocket_feed(self.feed_mode)
         )
+        use_etoro_ws_feed = (
+            self.broker == "etoro"
+            and not self.use_fake_client
+            and etoro_uses_websocket_feed(self.feed_mode)
+        )
+        use_external_ws_feed = use_angel_ws_feed or use_etoro_ws_feed
         self.tick_provider = TickProvider(
             self.client,
             interval_seconds=1.0,
             on_tick=self._on_tick,
-            polling_enabled=not use_angel_ws_feed,
+            polling_enabled=not use_external_ws_feed,
         )
         if use_angel_ws_feed:
             from brokers.angel.feed_client import AngelWebsocketFeedClient
@@ -189,6 +203,18 @@ class LiveEngine:
             self.angel_feed.add_tick_callback(self._forward_angel_tick)
             self.tick_provider.set_subscription_listener(self._schedule_angel_feed_sync)
             await self.angel_feed.start()
+        elif use_etoro_ws_feed:
+            from brokers.etoro.feed_client import EtoroWebsocketFeedClient
+
+            self.etoro_feed = EtoroWebsocketFeedClient(
+                account_env=self.account_env,
+                sample_every=self.feed_tick_sample_every,
+            )
+            self.etoro_feed.api_key = self.client.api_key
+            self.etoro_feed.user_key = self.client.user_key
+            self.etoro_feed.add_tick_callback(self._forward_etoro_tick)
+            self.tick_provider.set_subscription_listener(self._schedule_etoro_feed_sync)
+            await self.etoro_feed.start()
 
         await self.trading_manager.start()
         await self.order_manager.start()
@@ -208,12 +234,14 @@ class LiveEngine:
         if self.engine_id and self.control_url:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         logger.info(
-            "[ENGINE] Live engine started engine_id=%s broker=%s env=%s client_mode=%s feed_mode=%s fake=%s",
+            "[ENGINE] Live engine started engine_id=%s broker=%s env=%s client_mode=%s "
+            "feed_mode=%s feed_tick_sample_every=%s fake=%s",
             self.engine_id or "-",
             self.broker,
             self.account_env,
             self.client_mode,
             self.feed_mode,
+            self.feed_tick_sample_every,
             self.use_fake_client,
         )
 
@@ -248,7 +276,17 @@ class LiveEngine:
             return
         asyncio.create_task(self.angel_feed.sync_subscriptions(subscriptions))
 
+    def _schedule_etoro_feed_sync(self, subscriptions) -> None:
+        if self.etoro_feed is None:
+            return
+        asyncio.create_task(self.etoro_feed.sync_subscriptions(subscriptions))
+
     async def _forward_angel_tick(self, tick) -> None:
+        self._on_tick(tick)
+        if self.tick_provider is not None:
+            self.tick_provider.ingest_tick(tick)
+
+    async def _forward_etoro_tick(self, tick) -> None:
         self._on_tick(tick)
         if self.tick_provider is not None:
             self.tick_provider.ingest_tick(tick)
@@ -269,6 +307,9 @@ class LiveEngine:
         if self.angel_feed is not None:
             await self.angel_feed.stop()
             self.angel_feed = None
+        if self.etoro_feed is not None:
+            await self.etoro_feed.stop()
+            self.etoro_feed = None
         if self.order_manager:
             await self.order_manager.stop()
         if self.trading_manager:
@@ -441,6 +482,7 @@ class LiveEngine:
                 "use_fake_client": self.use_fake_client,
                 "client_mode": self.client_mode,
                 "feed_mode": self.feed_mode,
+                "feed_tick_sample_every": self.feed_tick_sample_every,
                 "is_bracket_order_client": self.is_bo_client(),
                 "ws_connections": len(self.ws_manager.active_connections),
             },
@@ -602,6 +644,7 @@ class LiveEngine:
             "use_fake_client": self.use_fake_client,
             "client_mode": self.client_mode,
             "feed_mode": self.feed_mode,
+            "feed_tick_sample_every": self.feed_tick_sample_every,
             "is_bracket_order_client": self.is_bo_client(),
             "executor_count": len(self.executors),
             "symbol": self.symbol,
@@ -682,6 +725,7 @@ async def lifespan(app: FastAPI):
         strategy_name=_arg_value("--strategy-name", "default"),
         client_mode=_arg_value("--client-mode", normalize_client_mode(broker)),
         feed_mode=_arg_value("--feed-mode", "websocket"),
+        feed_tick_sample_every=int(_arg_value("--feed-tick-sample-every", "0") or 0),
     )
     await engine.start()
     yield
@@ -1007,7 +1051,13 @@ if __name__ == "__main__":
         "--feed-mode",
         choices=["websocket", "rest"],
         default="websocket",
-        help="Angel price feed: SmartAPI websocket stream or REST polling",
+        help="Price feed: websocket stream or REST polling (Angel and eToro)",
+    )
+    parser.add_argument(
+        "--feed-tick-sample-every",
+        type=int,
+        default=0,
+        help="Websocket tick sampling: 0=forward every tick, N=forward every Nth tick",
     )
     parser.add_argument("--heartbeat-interval", type=float, default=5.0, help="Seconds between control-plane heartbeats")
     args = parser.parse_args()

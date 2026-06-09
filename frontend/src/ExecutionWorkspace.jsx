@@ -50,6 +50,14 @@ const ANGEL_FEED_OPTIONS = [
   { value: 'websocket', label: 'WebSocket (SmartAPI stream)' },
   { value: 'rest', label: 'REST poll (1s)' },
 ]
+const ETORO_FEED_OPTIONS = [
+  { value: 'websocket', label: 'WebSocket (eToro stream)' },
+  { value: 'rest', label: 'REST poll (1s)' },
+]
+
+function feedOptionsForBroker(broker) {
+  return broker === 'etoro' ? ETORO_FEED_OPTIONS : ANGEL_FEED_OPTIONS
+}
 const DEFAULT_DATA_PLANE = {
   id: 'local-live-engine',
   label: 'angel-local-live-strategy-default',
@@ -1042,11 +1050,15 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
   const seriesRef = useRef(null)
   const priceLinesRef = useRef([])
   const lastPointRef = useRef(null)
+  const viewportInitializedRef = useRef(false)
   const chartData = useMemo(() => sanitizeChartSeries(data), [data])
 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return undefined
+
+    viewportInitializedRef.current = false
+    lastPointRef.current = null
 
     let chart = null
     let resizeObserver = null
@@ -1117,7 +1129,10 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
       series.setData(chartData)
     }
     lastPointRef.current = lastPoint
-    chart.timeScale().fitContent()
+    if (!viewportInitializedRef.current && chartData.length > 0) {
+      chart.timeScale().fitContent()
+      viewportInitializedRef.current = true
+    }
   }, [chartData])
 
   useEffect(() => {
@@ -1125,7 +1140,6 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
     const series = seriesRef.current
     priceLinesRef.current.forEach(line => series.removePriceLine(line))
     priceLinesRef.current = getPriceLines(execution).map(line => series.createPriceLine(line))
-    chartRef.current?.timeScale().fitContent()
   }, [execution, chartData.length])
 
   useEffect(() => {
@@ -2144,7 +2158,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     allow_partial_stocks: Boolean(form.allow_partial_stocks),
     use_fake_client: form.use_fake_client,
     client_mode: form.broker === 'etoro' ? form.client_mode : 'standard',
-    feed_mode: form.broker === 'angel' ? form.feed_mode : 'websocket',
+    feed_mode: ['angel', 'etoro'].includes(form.broker) ? form.feed_mode : 'websocket',
     tick_sample_every: Math.max(1, Math.min(300, parseInt(form.tick_sample_every, 10) || 1)),
     schedule_enabled: !startImmediately && scheduleEnabled,
     scheduled_date: !startImmediately && scheduleEnabled ? (scheduledDate || null) : null,
@@ -2338,7 +2352,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
               </p>
             </div>
           ) : null}
-          {form.broker === 'angel' && !form.use_fake_client ? (
+          {['angel', 'etoro'].includes(form.broker) && !form.use_fake_client ? (
             <div>
               <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Price Feed</label>
               <select
@@ -2346,7 +2360,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
                 onChange={e => setForm(prev => ({ ...prev, feed_mode: e.target.value }))}
                 className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent"
               >
-                {ANGEL_FEED_OPTIONS.map(option => (
+                {feedOptionsForBroker(form.broker).map(option => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
@@ -2855,7 +2869,7 @@ function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fa
         exchange: exchange || 'NSE',
         account_env,
         use_fake_client,
-        feed_mode: broker === 'angel' ? feed_mode || 'websocket' : 'websocket',
+        feed_mode: ['angel', 'etoro'].includes(broker) ? feed_mode || 'websocket' : 'websocket',
       }))
     }
 
@@ -2920,6 +2934,7 @@ export function computeExecutionLevels(source) {
       takeProfit: null,
       stopLoss: null,
       orderQuantity: null,
+      potentialProfitAbsolute: null,
       stopLossUsesAmount: false,
     }
   }
@@ -2937,6 +2952,10 @@ export function computeExecutionLevels(source) {
     buyTrigger,
     Boolean(source.allow_partial_stocks),
   )
+  const potentialProfitAbsolute =
+    orderQuantity != null && buyTrigger != null && takeProfit != null
+      ? Math.round(orderQuantity * (takeProfit - buyTrigger) * 100) / 100
+      : null
 
   return {
     closePrice,
@@ -2944,9 +2963,16 @@ export function computeExecutionLevels(source) {
     takeProfit,
     stopLoss,
     orderQuantity,
+    potentialProfitAbsolute,
     stopLossUsesAmount,
     stopLossAmount,
   }
+}
+
+export function formatOrderQuantity(source, orderQuantity) {
+  if (orderQuantity == null || !Number.isFinite(orderQuantity)) return '—'
+  const decimals = source?.allow_partial_stocks ? 2 : 0
+  return orderQuantity.toFixed(decimals)
 }
 
 export function computeOrderQuantity(capital, price, allowPartial = false) {

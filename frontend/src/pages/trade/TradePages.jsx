@@ -404,11 +404,16 @@ export function StrategyDetailPage() {
 
     if (!base && !engine) return null
 
+    const executorPayload = queuedItem?.executor || engine?.metadata?.executor_payload || {}
+
     if (!engine) {
-      return base ? { ...base, source_id: sourceId, source_meta_id: sourceMetaId } : null
+      return base
+        ? { ...executorPayload, ...base, source_id: sourceId, source_meta_id: sourceMetaId }
+        : null
     }
 
     return {
+      ...executorPayload,
       ...(base || {}),
       source_id: sourceId,
       source_meta_id: sourceMetaId,

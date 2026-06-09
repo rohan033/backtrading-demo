@@ -90,7 +90,9 @@ export function useControlMarketStream(subscribe: ControlMarketSubscribe | null,
           exchange: subscribe.exchange || (subscribe.broker === 'us' ? 'US' : 'NSE'),
           account_env: subscribe.account_env || 'live',
           use_fake_client: Boolean(subscribe.use_fake_client),
-          feed_mode: subscribe.broker === 'angel' ? subscribe.feed_mode || 'websocket' : 'websocket',
+          feed_mode: ['angel', 'etoro'].includes(subscribe.broker || '')
+            ? subscribe.feed_mode || 'websocket'
+            : 'websocket',
         }),
       )
     }

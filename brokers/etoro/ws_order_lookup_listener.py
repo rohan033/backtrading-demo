@@ -7,7 +7,9 @@ from typing import Any
 
 from logzero import logger
 
+from brokers.etoro.order_helpers import diff_position_executions, lookup_last_update
 from brokers.etoro.status_client import _is_order_websocket_event
+from managers.bgp_log import bgp_info, bgp_warning, summarize_v2_order_lookup
 from brokers.interfaces import OrderActivity
 from event.db_event_consumer import DbEventWriter
 
@@ -52,10 +54,32 @@ class EtoroWsOrderLookupListener:
 
         self._inflight.add(order_id)
         try:
+            previous_lookup_row = self.store.get_order_lookup(order_id)
+            previous_lookup = (previous_lookup_row or {}).get("lookup")
+
             lookup = await self.lookup_client.aget_order_status(order_id)
             if not isinstance(lookup, dict) or not lookup:
-                logger.debug("[eToro] v2 order lookup returned no data for order=%s", order_id)
+                bgp_warning("ws_order_lookup_listener", "lookup_empty", order_id=order_id)
                 return
+
+            position_changes = diff_position_executions(previous_lookup, lookup)
+            current_last_update = lookup_last_update(lookup)
+            previous_last_update = lookup_last_update(previous_lookup)
+            order_changed = (
+                previous_lookup is None
+                or (current_last_update and current_last_update != previous_last_update)
+                or bool(position_changes)
+            )
+            if order_changed:
+                bgp_info(
+                    "ws_order_lookup_listener",
+                    "order_lookup_changed",
+                    order_id=order_id,
+                    previous_last_update=previous_last_update,
+                    current_last_update=current_last_update,
+                    position_changes=position_changes,
+                    lookup=summarize_v2_order_lookup(order_id, lookup),
+                )
 
             self.store.upsert_order_lookup(
                 order_id,

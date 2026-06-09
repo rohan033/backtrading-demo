@@ -6,6 +6,7 @@ import {
   EmptyState,
   StrategyChartPanel,
   computeExecutionLevels,
+  formatOrderQuantity,
 } from '../../ExecutionWorkspace'
 import {
   formatBrokerCompactMoney,
@@ -401,10 +402,47 @@ export default function StrategyDetailView({
   actionError,
 }) {
   const [logOpen, setLogOpen] = useState(false)
+  const [filledQty, setFilledQty] = useState(null)
   const levels = useMemo(() => computeExecutionLevels(execution || {}), [execution])
   const broker = execution?.broker
   const port = execution?.data_plane_port || queuedItem?.engine?.port
   const pnl = 0
+  const qtyDecimals = execution?.allow_partial_stocks ? 2 : 0
+  const displayQty = filledQty ?? levels.orderQuantity
+  const qtyLabel = filledQty != null || execution?.is_in_position ? 'Qty bought' : 'Order qty'
+
+  useEffect(() => {
+    if (!executionId) return
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const res = await fetch(`/api/control/executions/${encodeURIComponent(executionId)}/positions`)
+        const data = await res.json()
+        if (cancelled || !data.status) return
+
+        const totalUnits = (data.data || []).reduce((sum, row) => {
+          const position = row.position || {}
+          const units = Number(
+            row.remaining_units
+            ?? position.remainingUnits
+            ?? position.units
+            ?? position.Units
+            ?? 0,
+          )
+          return Number.isFinite(units) && units > 0 ? sum + units : sum
+        }, 0)
+
+        setFilledQty(totalUnits > 0 ? totalUnits : null)
+      } catch {
+        if (!cancelled) setFilledQty(null)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [executionId, execution?.is_in_position, strategyActivityEvents?.length])
   const runtimePending = !execution?.log_file && !execution?.data_plane_port && !port
   const env = String(execution?.account_env || 'live').toLowerCase()
   const badgeTone = statusBadgeTone(isLive, engineStatus)
@@ -574,7 +612,7 @@ export default function StrategyDetailView({
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-5">
-        <div className="mb-4 grid grid-cols-2 gap-2.5 xl:grid-cols-5">
+        <div className="mb-4 grid grid-cols-2 gap-2.5 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7">
           <MetricTile
             label="Entry trigger"
             value={levels.buyTrigger != null ? formatBrokerPrice(broker, levels.buyTrigger) : '—'}
@@ -594,6 +632,21 @@ export default function StrategyDetailView({
             value={execution?.max_available_capital != null
               ? formatBrokerCompactMoney(broker, execution.max_available_capital)
               : '—'}
+          />
+          <MetricTile
+            label={qtyLabel}
+            value={displayQty != null
+              ? (filledQty != null
+                ? displayQty.toFixed(qtyDecimals)
+                : formatOrderQuantity(execution, displayQty))
+              : '—'}
+          />
+          <MetricTile
+            label="Potential profit"
+            value={levels.potentialProfitAbsolute != null
+              ? formatBrokerCompactMoney(broker, levels.potentialProfitAbsolute)
+              : '—'}
+            valueClass="text-[var(--sd-green)]"
           />
           <MetricTile
             label="P&L"
@@ -639,6 +692,14 @@ export default function StrategyDetailView({
                 ['Broker', execution?.broker || '—'],
                 ['Instrument ID', execution?.token || '—'],
                 ['Close price', levels.closePrice != null ? formatBrokerPrice(broker, levels.closePrice) : '—'],
+                ['Order qty', displayQty != null
+                  ? (filledQty != null
+                    ? displayQty.toFixed(qtyDecimals)
+                    : formatOrderQuantity(execution, displayQty))
+                  : '—'],
+                ['Potential profit', levels.potentialProfitAbsolute != null
+                  ? formatBrokerCompactMoney(broker, levels.potentialProfitAbsolute)
+                  : '—'],
                 ['Entry threshold', execution?.initial_threshold != null ? `${execution.initial_threshold}%` : '—'],
                 ['Take profit %', execution?.long_percent != null ? `${execution.long_percent}%` : '—'],
                 ['Stop loss', levels.stopLossUsesAmount

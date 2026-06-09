@@ -34,6 +34,7 @@ from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
 from control_plane.live_engine_proxy import forward_live_json
 from control_plane.ops_logging import configure_control_plane_logging, quiet_uvicorn_poll_access_logs
+from managers.bgp_log import bgp_error, bgp_info
 from control_plane.log_stream import (
     resolve_engine_log_path,
     sse_encode,
@@ -259,6 +260,7 @@ class ControlPlaneExecutionRequest(BaseModel):
     use_fake_client: bool = False
     client_mode: Optional[str] = None
     feed_mode: str = "websocket"
+    feed_tick_sample_every: int = Field(default=0, ge=0, le=300)
     tick_sample_every: int = Field(default=1, ge=1, le=300)
     schedule_enabled: bool = False
     scheduled_date: Optional[str] = None
@@ -856,6 +858,11 @@ def _start_controlled_execution(execution_id: str, *, trigger: str = "manual"):
                     metadata.get("client_mode") or config.get("client_mode"),
                 ),
                 "feed_mode": config.get("feed_mode") or metadata.get("feed_mode") or "websocket",
+                "feed_tick_sample_every": int(
+                    config.get("feed_tick_sample_every")
+                    if config.get("feed_tick_sample_every") is not None
+                    else metadata.get("feed_tick_sample_every", 0)
+                ),
                 "symbol": engine.get("symbol") or config.get("symbol"),
                 "token": engine.get("token") or config.get("token"),
                 "label": engine.get("label"),
@@ -1171,6 +1178,12 @@ async def close_execution_position(
         "account_env": account_env,
     }
     db.log_event(order_id, "POSITION_CLOSE_REQUESTED", request_details)
+    bgp_info(
+        "control_plane_position_close",
+        "close_requested",
+        **request_details,
+        order_id=order_id,
+    )
 
     try:
         client = await _etoro_trading_client(account_env)
@@ -1184,6 +1197,13 @@ async def close_execution_position(
             "[CONTROL_ETORO] close_position failed execution=%s position=%s env=%s: %s",
             execution_id, position_id, account_env, exc, exc_info=True,
         )
+        bgp_error(
+            "control_plane_position_close",
+            "close_failed",
+            **request_details,
+            order_id=order_id,
+            error=str(exc),
+        )
         db.log_event(
             order_id,
             "POSITION_CLOSE_FAILED",
@@ -1192,6 +1212,12 @@ async def close_execution_position(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     if not closed:
+        bgp_error(
+            "control_plane_position_close",
+            "close_not_confirmed",
+            **request_details,
+            order_id=order_id,
+        )
         db.log_event(
             order_id,
             "POSITION_CLOSE_FAILED",
@@ -1199,6 +1225,12 @@ async def close_execution_position(
         )
         raise HTTPException(status_code=502, detail="eToro did not confirm position close")
 
+    bgp_info(
+        "control_plane_position_close",
+        "close_confirmed",
+        **request_details,
+        order_id=order_id,
+    )
     db.log_event(order_id, "POSITION_CLOSED", {**request_details, "source": "control_plane_direct"})
     log.info(
         "[CONTROL_ETORO] close_position OK execution=%s position=%s env=%s units=%s",
