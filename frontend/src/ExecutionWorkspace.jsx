@@ -1163,6 +1163,7 @@ export function ChartTab({
   onSelectExecution,
   refreshControlledExecutions,
   refreshExecutions,
+  onExecutionStopped,
 }) {
   return (
     <ChartsGrid
@@ -1172,6 +1173,7 @@ export function ChartTab({
       onSelectExecution={onSelectExecution}
       refreshControlledExecutions={refreshControlledExecutions}
       refreshExecutions={refreshExecutions}
+      onExecutionStopped={onExecutionStopped}
     />
   )
 }
@@ -3450,6 +3452,17 @@ async function ensureExecutorRegistered(runningEngine, executor) {
     throw new Error(executorData.detail || 'Live server started, but executor registration failed')
   }
   return executorData.data
+}
+
+export async function stopControlledExecution(executionId) {
+  const res = await fetch(`${CONTROL_API}/executions/${encodeURIComponent(executionId)}/stop`, {
+    method: 'POST',
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || data.message || 'Failed to stop strategy')
+  }
+  return data.data
 }
 
 export async function startControlledExecution(executionId) {

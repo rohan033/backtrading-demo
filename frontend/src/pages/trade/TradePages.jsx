@@ -580,6 +580,7 @@ export function ChartsPage() {
     setSelectedExecutionId,
     refreshControlledExecutions,
     refreshExecutions,
+    onExecutionStopped,
   } = useExecution()
 
   return (
@@ -591,6 +592,7 @@ export function ChartsPage() {
         onSelectExecution={setSelectedExecutionId}
         refreshControlledExecutions={refreshControlledExecutions}
         refreshExecutions={refreshExecutions}
+        onExecutionStopped={onExecutionStopped}
       />
     </div>
   )

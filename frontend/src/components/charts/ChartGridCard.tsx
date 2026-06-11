@@ -44,6 +44,7 @@ type Props = {
   pnlSnapshot?: ExecutionPnlSnapshot
   selected?: boolean
   onSelect?: (executorId: string) => void
+  onExecutionStopped?: (executorId: string) => void | Promise<void>
 }
 
 function streamToneClass(tone: string): string {
@@ -62,6 +63,7 @@ export default function ChartGridCard({
   pnlSnapshot,
   selected = false,
   onSelect,
+  onExecutionStopped,
 }: Props) {
   const liveLtp = streamBundle.tick?.ltp ?? null
   const totalPnl = pnlSnapshot?.totalPnl
@@ -123,7 +125,11 @@ export default function ChartGridCard({
           />
         </div>
         <div className="w-[34%] min-w-[88px] max-w-[140px] shrink-0">
-          <CompactPositionsPanel executorId={execution.executor_id} livePrice={liveLtp} />
+          <CompactPositionsPanel
+            executorId={execution.executor_id}
+            livePrice={liveLtp}
+            onExecutionStopped={onExecutionStopped}
+          />
         </div>
       </div>
     </div>

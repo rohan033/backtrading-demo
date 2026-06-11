@@ -51,6 +51,7 @@ type Props = {
   onSelectExecution?: (executorId: string) => void
   refreshControlledExecutions?: () => Promise<void>
   refreshExecutions?: () => Promise<void>
+  onExecutionStopped?: (executorId: string) => void | Promise<void>
 }
 
 export default function ChartsGrid({
@@ -60,6 +61,7 @@ export default function ChartsGrid({
   onSelectExecution,
   refreshControlledExecutions,
   refreshExecutions,
+  onExecutionStopped,
 }: Props) {
   const [sortKey, setSortKey] = useState<ChartSortKey>('profit-desc')
   const [filterKey, setFilterKey] = useState<ChartFilterKey>('all')
@@ -214,6 +216,7 @@ export default function ChartsGrid({
                   pnlSnapshot={pnlByExecutor[execution.executor_id]}
                   selected={execution.executor_id === selectedExecutionId}
                   onSelect={onSelectExecution}
+                  onExecutionStopped={onExecutionStopped}
                 />
               )
             })}

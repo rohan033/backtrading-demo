@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 
+import { stopControlledExecution } from '../../ExecutionWorkspace'
 import { computeLivePnl, formatPnl, isOpenPosition } from '../../lib/positionPnl'
 
 type Props = {
   executorId: string
   livePrice?: number | null
+  onExecutionStopped?: (executorId: string) => void | Promise<void>
 }
 
 type PositionRow = {
@@ -29,7 +31,11 @@ async function closePosition(executorId: string, positionId: string | number) {
   }
 }
 
-export default function CompactPositionsPanel({ executorId, livePrice = null }: Props) {
+export default function CompactPositionsPanel({
+  executorId,
+  livePrice = null,
+  onExecutionStopped,
+}: Props) {
   const [positions, setPositions] = useState<PositionRow[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -67,13 +73,19 @@ export default function CompactPositionsPanel({ executorId, livePrice = null }: 
     setClosingAll(true)
     setCloseError(null)
     setConfirmClose(false)
+    let closedAll = false
     try {
       for (const position of open) {
         await closePosition(executorId, position.position_id)
       }
+      closedAll = true
+      await stopControlledExecution(executorId)
+      await onExecutionStopped?.(executorId)
       await fetchPositions()
     } catch (err) {
-      setCloseError(err instanceof Error ? err.message : 'Failed to close positions')
+      const message = err instanceof Error ? err.message : 'Request failed'
+      setCloseError(closedAll ? `Positions closed. ${message}` : message)
+      if (closedAll) await onExecutionStopped?.(executorId)
       await fetchPositions()
     } finally {
       setClosingAll(false)
@@ -151,7 +163,7 @@ export default function CompactPositionsPanel({ executorId, livePrice = null }: 
         {confirmClose ? (
           <div className="space-y-1">
             <p className="text-center text-[9px] text-text-secondary">
-              Close {open.length} position{open.length !== 1 ? 's' : ''}?
+              Close {open.length} position{open.length !== 1 ? 's' : ''} and stop?
             </p>
             <div className="flex gap-1">
               <button
