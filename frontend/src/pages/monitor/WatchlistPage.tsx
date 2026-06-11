@@ -7,18 +7,12 @@ import WatchlistColumnPicker from '../../components/watchlist/WatchlistColumnPic
 import WatchlistAutoSort from '../../components/watchlist/WatchlistAutoSort'
 import WatchlistMomentumSettings from '../../components/watchlist/WatchlistMomentumSettings'
 import { Button } from '../../components/ui/button'
-import {
-  useMomentumNotificationPermission,
-  useWatchlistMomentumAlerts,
-  type SymbolArchivedCallback,
-} from '../../hooks/useWatchlistMomentumAlerts'
+import { useWatchlistStream } from '../../context/WatchlistStreamContext'
+import { buildMomentumSymbolIndex } from '../../hooks/useWatchlistMomentumAlerts'
 import type { DeployAllContext } from '../../components/watchlist/WatchlistColumn'
 import { showPlatformToast } from '../../lib/platform-toast'
 import { createAndStartMomentumStrategy } from '../../lib/watchlistMomentumStrategy'
 import { watchlistTickKey } from '../../lib/watchlists'
-import { useWatchlistHistorySeeder } from '../../hooks/useWatchlistHistorySeeder'
-import { useWatchlistPriceHistory } from '../../hooks/useWatchlistPriceHistory'
-import { useWatchlistTicks } from '../../hooks/useWatchlistTicks'
 import {
   loadWatchlistAutoSortConfig,
   sortSymbolsByWindowChange,
@@ -49,7 +43,6 @@ import {
   addWatchlistSymbol,
   createWatchlist,
   deleteWatchlist,
-  fetchWatchlists,
   removeWatchlistSymbol,
   updateWatchlist,
   type Watchlist,
@@ -57,7 +50,6 @@ import {
 } from '../../lib/watchlists'
 import {
   applySymbolOrder,
-  archiveSymbol,
   clearArchivedSymbols,
   loadArchivedSymbols,
   loadMomentumLiveSymbolKeys,
@@ -65,16 +57,28 @@ import {
   loadMomentumSymbolKeys,
   loadMomentumWatchlistIds,
   loadSymbolOrder,
+  notifyMomentumStateChanged,
   removeArchivedSymbol,
   saveSymbolOrder,
   setMomentumSymbolMode,
   toggleMomentumLiveSymbolKey,
   toggleMomentumWatchlistId,
+  WL_MOMENTUM_CHANGED_EVENT,
+  WL_SYMBOL_ARCHIVED_EVENT,
   type ArchivedMomentumSymbol,
 } from '../../lib/watchlistMomentumState'
 
 export default function WatchlistPage() {
-  const [watchlists, setWatchlists] = useState<Watchlist[]>([])
+  const {
+    watchlists,
+    setWatchlists,
+    watchlistsReady,
+    ticks,
+    connected,
+    hasSymbols,
+    windowChanges,
+    historyRef,
+  } = useWatchlistStream()
   const [layouts, setLayouts] = useState<WatchlistLayoutMap>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -110,13 +114,6 @@ export default function WatchlistPage() {
     () => loadArchivedSymbols(),
   )
 
-  const hasSymbols = watchlists.some(wl => wl.symbols.length > 0)
-  const { ticks, connected } = useWatchlistTicks(watchlists, hasSymbols)
-  const { windowChanges, historyRef, forceRecompute } = useWatchlistPriceHistory(ticks)
-
-  // Pre-seed local price history from candle data so % changes are visible immediately on load
-  useWatchlistHistorySeeder(watchlists, historyRef, forceRecompute)
-
   /** Returns symbols for a watchlist — auto-sorted or manual drag order. */
   const orderedSymbolsFor = useCallback(
     (wl: Watchlist): WatchlistSymbol[] => {
@@ -142,8 +139,16 @@ export default function WatchlistPage() {
     [watchlists, orderedSymbolsFor],
   )
 
+  const syncMomentumState = useCallback(() => {
+    setMomentumWatchlistIds(loadMomentumWatchlistIds())
+    setMomentumSymbolKeys(loadMomentumSymbolKeys())
+    setMomentumNoTpSymbolKeys(loadMomentumNoTpSymbolKeys())
+    setMomentumLiveSymbolKeys(loadMomentumLiveSymbolKeys())
+  }, [])
+
   const handleToggleMomentum = useCallback((watchlistId: string) => {
     setMomentumWatchlistIds(prev => toggleMomentumWatchlistId(prev, watchlistId))
+    notifyMomentumStateChanged()
   }, [])
 
   const handleToggleSymbolMomentum = useCallback((watchlistId: string, symboltoken: string) => {
@@ -152,6 +157,7 @@ export default function WatchlistPage() {
     )
     setMomentumSymbolKeys(normal)
     setMomentumNoTpSymbolKeys(noTp)
+    notifyMomentumStateChanged()
   }, [momentumSymbolKeys, momentumNoTpSymbolKeys])
 
   const handleToggleSymbolMomentumNoTp = useCallback((watchlistId: string, symboltoken: string) => {
@@ -160,10 +166,12 @@ export default function WatchlistPage() {
     )
     setMomentumSymbolKeys(normal)
     setMomentumNoTpSymbolKeys(noTp)
+    notifyMomentumStateChanged()
   }, [momentumSymbolKeys, momentumNoTpSymbolKeys])
 
   const handleToggleSymbolMomentumLive = useCallback((watchlistId: string, symboltoken: string) => {
     setMomentumLiveSymbolKeys(prev => toggleMomentumLiveSymbolKey(prev, watchlistId, symboltoken))
+    notifyMomentumStateChanged()
   }, [])
 
   const handleSymbolsReordered = useCallback((watchlistId: string, tokens: string[]) => {
@@ -181,39 +189,31 @@ export default function WatchlistPage() {
     })
   }, [])
 
-  const handleSymbolArchived: SymbolArchivedCallback = useCallback(params => {
-    const archived = archiveSymbol({ ...params, archivedAt: Date.now() })
-    setArchivedSymbols(archived)
-    // Remove the symbol from the watchlist (backend + state)
-    void removeWatchlistSymbol(params.watchlistId, params.symboltoken).then(updated => {
-      setWatchlists(prev => prev.map(wl => (wl.id === params.watchlistId ? updated : wl)))
-    }).catch(() => {
-      // Still update local state even if the API call fails
-      setWatchlists(prev =>
-        prev.map(wl =>
-          wl.id === params.watchlistId
-            ? { ...wl, symbols: wl.symbols.filter(s => s.symboltoken !== params.symboltoken) }
-            : wl,
-        ),
+  const monitoredSymbols = useMemo(
+    () => {
+      const index = buildMomentumSymbolIndex(
+        watchlists,
+        momentumWatchlistIds,
+        allOrderedSymbols,
+        momentumSymbolKeys,
+        momentumNoTpSymbolKeys,
+        momentumLiveSymbolKeys,
       )
-    })
-  }, [])
-
-  const { monitoredSymbols } = useWatchlistMomentumAlerts({
-    watchlists,
-    momentumWatchlistIds,
-    momentumSymbolKeys,
-    momentumNoTpSymbolKeys,
-    momentumLiveSymbolKeys,
-    orderedSymbols: allOrderedSymbols,
-    ticks,
-    windowChanges,
-    historyRef,
-    enabled: hasSymbols && connected,
-    config: momentumConfig,
-    onSymbolArchived: handleSymbolArchived,
-  })
-  useMomentumNotificationPermission(momentumConfig.enabled && hasSymbols)
+      return [...index.values()].map(symbol => ({
+        symbol: symbol.tradingsymbol,
+        tradeEnv: symbol.tradeEnv,
+        noTakeProfit: symbol.noTakeProfit,
+      }))
+    },
+    [
+      watchlists,
+      momentumWatchlistIds,
+      allOrderedSymbols,
+      momentumSymbolKeys,
+      momentumNoTpSymbolKeys,
+      momentumLiveSymbolKeys,
+    ],
+  )
 
   const tableMinWidth = watchlistTableMinWidthPx(visibleChangeColumns.length)
 
@@ -244,12 +244,8 @@ export default function WatchlistPage() {
     saveWatchlistLayouts(next)
   }, [])
 
-  const load = useCallback(async () => {
-    setError(null)
-    try {
-      const rows = await fetchWatchlists()
-      setWatchlists(rows)
-      // Restore saved symbol orders for all watchlists
+  const syncLayoutsFromWatchlists = useCallback(
+    (rows: Watchlist[]) => {
       const orders: Record<string, string[]> = {}
       for (const wl of rows) {
         const order = loadSymbolOrder(wl.id)
@@ -266,16 +262,28 @@ export default function WatchlistPage() {
         ]),
       )
       persistLayouts(sized)
-    } catch (e) {
-      setError(errorMessage(e, 'Failed to load watchlists'))
-    } finally {
-      setLoading(false)
-    }
-  }, [persistLayouts])
+    },
+    [persistLayouts],
+  )
 
   useEffect(() => {
-    load()
-  }, [load])
+    if (!watchlistsReady) return
+    syncLayoutsFromWatchlists(watchlists)
+    setLoading(false)
+  }, [watchlistsReady, watchlists, syncLayoutsFromWatchlists])
+
+  useEffect(() => {
+    const onMomentumChanged = () => syncMomentumState()
+    const onSymbolArchived = () => {
+      setArchivedSymbols(loadArchivedSymbols())
+    }
+    window.addEventListener(WL_MOMENTUM_CHANGED_EVENT, onMomentumChanged)
+    window.addEventListener(WL_SYMBOL_ARCHIVED_EVENT, onSymbolArchived)
+    return () => {
+      window.removeEventListener(WL_MOMENTUM_CHANGED_EVENT, onMomentumChanged)
+      window.removeEventListener(WL_SYMBOL_ARCHIVED_EVENT, onSymbolArchived)
+    }
+  }, [syncMomentumState])
 
   const wrap = async (fn: () => Promise<void>) => {
     setBusy(true)

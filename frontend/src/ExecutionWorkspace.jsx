@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
+import { Minimize2 } from 'lucide-react'
 
 import {
   formatBrokerCompactMoney,
@@ -97,7 +98,6 @@ const CANDLE_UP_COLOR = '#00e676'
 const CANDLE_DOWN_COLOR = '#ff5252'
 const CANDLE_NEUTRAL_UP = '#00c853'
 const CANDLE_NEUTRAL_DOWN = '#ff1744'
-const CANDLE_VISIBLE_BARS = 55
 const CANDLE_PREFETCH_COUNT = 1000
 const CANDLE_HISTORY_MAX_BARS = 1100
 const CANDLE_HISTORY_2H_MINUTES = 120
@@ -1233,6 +1233,7 @@ export function LiveExecutionChart({
   const lastPointRef = useRef(null)
   const viewportInitializedRef = useRef(false)
   const lastViewportBarCountRef = useRef(0)
+  const userInteractedRef = useRef(false)
   const [hoveredOhlc, setHoveredOhlc] = useState(null)
   const candlesRef = useRef([])
   const chartData = useMemo(() => sanitizeChartSeries(data), [data])
@@ -1261,8 +1262,13 @@ export function LiveExecutionChart({
 
     viewportInitializedRef.current = false
     lastViewportBarCountRef.current = 0
+    userInteractedRef.current = false
     lastPointRef.current = null
     setHoveredOhlc(null)
+
+    const markUserInteracted = () => { userInteractedRef.current = true }
+    container.addEventListener('wheel', markUserInteracted, { passive: true })
+    container.addEventListener('pointerdown', markUserInteracted)
 
     let chart = null
     let resizeObserver = null
@@ -1359,6 +1365,8 @@ export function LiveExecutionChart({
 
     return () => {
       cancelled = true
+      container.removeEventListener('wheel', markUserInteracted)
+      container.removeEventListener('pointerdown', markUserInteracted)
       if (chart && crosshairHandler) {
         chart.unsubscribeCrosshairMove(crosshairHandler)
       }
@@ -1406,13 +1414,9 @@ export function LiveExecutionChart({
       }
       applyDynamicCandleColors(series, lastCandle)
       lastPointRef.current = lastCandle
-      const shouldResetViewport = (
-        !viewportInitializedRef.current
-        || (compact && candles.length !== lastViewportBarCountRef.current)
-        || (lastViewportBarCountRef.current < 20 && candles.length >= 20)
-        || (candles.length >= 10 && lastViewportBarCountRef.current <= 5)
-      )
-      if (shouldResetViewport) {
+      // Default to a fully zoomed-out view and keep it that way as new candles
+      // stream in — but never override a zoom level the user set themselves.
+      if (!userInteractedRef.current) {
         applyCandleViewport(chart, candles.length, compact)
         viewportInitializedRef.current = true
         lastViewportBarCountRef.current = candles.length
@@ -1440,7 +1444,7 @@ export function LiveExecutionChart({
       series.setData(chartData)
     }
     lastPointRef.current = lastPoint
-    if (!viewportInitializedRef.current && chartData.length > 0) {
+    if (!userInteractedRef.current && chartData.length > 0) {
       chart.timeScale().fitContent()
       viewportInitializedRef.current = true
     }
@@ -1465,12 +1469,35 @@ export function LiveExecutionChart({
     }
   }, [chartData, candles, execution.executor_id, realtimeEvents, isCandleMode])
 
+  const handleZoomOut = () => {
+    const chart = chartRef.current
+    if (!chart) return
+    // Resume auto-fit so the view stays zoomed out as new candles arrive.
+    userInteractedRef.current = false
+    applyCandleViewport(chart, candlesRef.current.length || 1, compact)
+  }
+
   return (
     <div className="w-full min-w-0">
       {isCandleMode && !compact ? (
         <CandleOhlcReadout broker={execution?.broker} ohlc={displayOhlc} />
       ) : null}
-      <div ref={containerRef} style={{ height }} />
+      <div className="relative">
+        <div ref={containerRef} style={{ height }} />
+        {isCandleMode ? (
+          <button
+            type="button"
+            onClick={handleZoomOut}
+            className={`absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border border-border/70 bg-secondary/80 font-semibold text-text-secondary shadow-sm backdrop-blur-sm transition-colors hover:bg-secondary hover:text-text-primary ${
+              compact ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-1 text-[11px]'
+            }`}
+            title="Zoom out to show all candles"
+          >
+            <Minimize2 className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
+            {compact ? null : 'Zoom out'}
+          </button>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -3990,26 +4017,13 @@ function candlesToVolumeData(candles) {
 
 function applyCandleViewport(chart, barCount, compact = false) {
   if (!chart || barCount <= 0) return
-  if (compact) {
-    chart.timeScale().applyOptions({
-      barSpacing: 1,
-      minBarSpacing: 0.5,
-      rightOffset: 2,
-    })
-    chart.timeScale().fitContent()
-    return
-  }
-  const to = Math.max(barCount - 1, 0)
-  const from = Math.max(0, to - CANDLE_VISIBLE_BARS + 1)
+  // Always fully zoom out so every candle is visible by default.
   chart.timeScale().applyOptions({
-    barSpacing: 6,
-    minBarSpacing: 2,
-    rightOffset: 6,
+    barSpacing: compact ? 1 : 3,
+    minBarSpacing: 0.5,
+    rightOffset: compact ? 2 : 4,
   })
-  chart.timeScale().setVisibleLogicalRange({
-    from,
-    to: to + 6,
-  })
+  chart.timeScale().fitContent()
 }
 
 function applyDynamicCandleColors(series, candle) {

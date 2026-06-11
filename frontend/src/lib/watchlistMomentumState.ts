@@ -14,6 +14,29 @@ const MOMENTUM_LIVE_SYMBOL_KEYS_KEY = 'wl-momentum-live-symbols-v1'
 const SYMBOL_ORDER_KEY_PREFIX = 'wl-sym-order-'
 const ARCHIVED_KEY = 'wl-momentum-archived-v1'
 
+export const WL_MOMENTUM_CHANGED_EVENT = 'wl-momentum-changed'
+export const WL_SYMBOL_ARCHIVED_EVENT = 'wl-symbol-archived'
+
+export function notifyMomentumStateChanged(): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(WL_MOMENTUM_CHANGED_EVENT))
+}
+
+export function notifySymbolArchived(): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(WL_SYMBOL_ARCHIVED_EVENT))
+}
+
+export function archivedSymbolKey(watchlistId: string, symboltoken: string): string {
+  return `${watchlistId}::${symboltoken}`
+}
+
+export function loadArchivedSymbolKeys(): Set<string> {
+  return new Set(
+    loadArchivedSymbols().map(sym => archivedSymbolKey(sym.watchlistId, sym.symboltoken)),
+  )
+}
+
 // ── Momentum watchlist IDs ────────────────────────────────────────────────────
 
 export function loadMomentumWatchlistIds(): Set<string> {

@@ -108,10 +108,10 @@ export default function FeaturesPage() {
           </div>
           <div className="flex items-center gap-3">
             <Button asChild variant="ghost">
-              <Link to="/dashboard">Open app</Link>
+              <Link to="/watchlist">Open app</Link>
             </Button>
             <Button asChild>
-              <Link to="/dashboard">
+              <Link to="/watchlist">
                 Launch workspace
                 <ArrowRight className="ml-2 size-4" />
               </Link>
@@ -164,7 +164,7 @@ export default function FeaturesPage() {
             Strategy Desk · shadcn Gallery4 marketing page
           </p>
           <Button asChild variant="outline">
-            <Link to="/dashboard">Return to trading app</Link>
+            <Link to="/watchlist">Return to trading app</Link>
           </Button>
         </div>
       </footer>

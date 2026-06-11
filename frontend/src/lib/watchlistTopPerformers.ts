@@ -49,6 +49,7 @@ export function getTopWatchlistPerformers(
   columnId: WatchlistChangeWindowId,
   momentum: MomentumLookup,
   limit = 5,
+  excludeSymbolKeys: Set<string> = new Set(),
 ): RankedWatchlistSymbol[] {
   const rows: RankedWatchlistSymbol[] = []
 
@@ -58,6 +59,9 @@ export function getTopWatchlistPerformers(
     const accountEnv = watchlist.account_env || (watchlist.broker === 'etoro' ? 'demo' : 'live')
 
     ordered.forEach((symbol, index) => {
+      const symKey = momentumSymbolKey(watchlist.id, symbol.symboltoken)
+      if (excludeSymbolKeys.has(symKey)) return
+
       const tickKey = watchlistTickKey(watchlist.broker, accountEnv, symbol.symboltoken)
       const flags = momentumFlags(watchlist, symbol, index === 0, momentum)
       rows.push({
