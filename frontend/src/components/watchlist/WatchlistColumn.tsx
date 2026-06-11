@@ -1,12 +1,20 @@
-import { useEffect, useRef, useState } from 'react'
-import { Pencil, Plus, Trash2, TrendingDown, TrendingUp, X } from 'lucide-react'
+import { useRef, useState, useEffect } from 'react'
+import { GripVertical, Pencil, Plus, Trash2, TrendingDown, TrendingUp, X, Zap } from 'lucide-react'
 
 import { Button } from '../ui/button'
 import { formatBrokerMoney } from '../../lib/currency'
 import {
+  buildWatchlistTableGrid,
+  formatWindowChangePct,
+  watchlistTableMinWidthPx,
+  WATCHLIST_CHANGE_WINDOWS,
+  windowChangeTone,
+  type WatchlistChangeWindowId,
+} from '../../lib/watchlistChangeColumns'
+import type { WatchlistWindowChanges } from '../../hooks/useWatchlistPriceHistory'
+import {
   EMPTY_TABLE_PX,
   ROW_HEIGHT_PX,
-  WATCHLIST_TABLE_GRID,
 } from '../../lib/watchlistLayout'
 import {
   defaultAccountEnv,
@@ -23,14 +31,72 @@ type SearchHit = {
   exchange: string
 }
 
+/** Visual intensity tiers — uses Inter (font-sans) so numbers are actually readable. */
+function pctBadgeStyles(value: number | null | undefined): string {
+  // Base: Inter, numeric features, proper size
+  const base = 'font-sans tabular-nums tracking-tight'
+
+  if (value == null || Number.isNaN(value)) {
+    return `${base} text-[13px] font-medium text-text-secondary/50`
+  }
+  const abs = Math.abs(value)
+  const up = value > 0
+
+  // Extreme: ≥ 3% — solid pill, glow, pulse
+  if (abs >= 3) {
+    return up
+      ? `${base} text-[15px] font-black text-white bg-green shadow-[0_0_10px_2px_rgba(0,200,83,0.5)] animate-pulse ring-1 ring-green/70`
+      : `${base} text-[15px] font-black text-white bg-red shadow-[0_0_10px_2px_rgba(255,23,68,0.5)] animate-pulse ring-1 ring-red/70`
+  }
+  // Strong: 1.5–3% — bright tint, ring
+  if (abs >= 1.5) {
+    return up
+      ? `${base} text-[14px] font-bold text-green bg-green/20 ring-1 ring-green/50`
+      : `${base} text-[14px] font-bold text-red bg-red/20 ring-1 ring-red/50`
+  }
+  // Mild: 0.5–1.5%
+  if (abs >= 0.5) {
+    return up
+      ? `${base} text-[14px] font-semibold text-green bg-green/12`
+      : `${base} text-[14px] font-semibold text-red bg-red/12`
+  }
+  // Tiny / flat
+  if (abs === 0) return `${base} text-[13px] font-medium text-text-secondary bg-muted/20`
+  return up
+    ? `${base} text-[13px] font-semibold text-green/70`
+    : `${base} text-[13px] font-semibold text-red/70`
+}
+
+function windowChangeStyles(tone: ReturnType<typeof windowChangeTone>) {
+  if (tone === 'up') return 'text-green bg-green/12'
+  if (tone === 'down') return 'text-red bg-red/12'
+  if (tone === 'flat') return 'text-text-secondary bg-muted/25'
+  return 'text-text-secondary/60 bg-muted/15'
+}
+
+export type DeployAllContext = {
+  broker: WatchlistBroker
+  accountEnv: string
+  symbols: Array<{ symboltoken: string; tradingsymbol: string; exchange: string }>
+  ticks: Record<string, WatchlistTick>
+}
+
 type Props = {
   watchlist: Watchlist
+  /** Symbols in display order (may differ from watchlist.symbols after drag-reorder). */
+  orderedSymbols?: WatchlistSymbol[]
   ticks: Record<string, WatchlistTick>
+  windowChanges: WatchlistWindowChanges
+  visibleChangeColumns: WatchlistChangeWindowId[]
+  isMomentumWatchlist?: boolean
+  onToggleMomentum?: (watchlistId: string) => void
   onRename: (id: string, name: string) => void
   onDelete: (id: string) => void
   onBrokerChange: (id: string, broker: WatchlistBroker, accountEnv: string) => void
   onAddSymbol: (watchlistId: string, hit: SearchHit) => void
   onRemoveSymbol: (watchlistId: string, symboltoken: string) => void
+  onSymbolsReordered?: (watchlistId: string, orderedTokens: string[]) => void
+  onDeployAll?: (ctx: DeployAllContext) => Promise<void>
   onMetricsChange?: (metrics: { symbolCount: number; searchOpen: boolean }) => void
 }
 
@@ -58,12 +124,19 @@ function directionStyles(direction: WatchlistTick['direction'] | undefined) {
 
 export default function WatchlistColumn({
   watchlist,
+  orderedSymbols,
   ticks,
+  windowChanges,
+  visibleChangeColumns,
+  isMomentumWatchlist = false,
+  onToggleMomentum,
   onRename,
   onDelete,
   onBrokerChange,
   onAddSymbol,
   onRemoveSymbol,
+  onSymbolsReordered,
+  onDeployAll,
   onMetricsChange,
 }: Props) {
   const broker = (watchlist.broker || 'angel') as WatchlistBroker
@@ -75,7 +148,32 @@ export default function WatchlistColumn({
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<SearchHit[]>([])
   const [searching, setSearching] = useState(false)
+  const [deployEnv, setDeployEnv] = useState<'demo' | 'live'>('demo')
+  const [deploying, setDeploying] = useState(false)
   const nameInputRef = useRef<HTMLInputElement>(null)
+
+  // Drag-to-reorder state
+  const dragTokenRef = useRef<string | null>(null)
+  const [dragOverToken, setDragOverToken] = useState<string | null>(null)
+
+  const handleDeployAll = async () => {
+    if (!onDeployAll || deploying || watchlist.symbols.length === 0) return
+    setDeploying(true)
+    try {
+      await onDeployAll({
+        broker,
+        accountEnv: deployEnv,
+        symbols: watchlist.symbols.map(s => ({
+          symboltoken: s.symboltoken,
+          tradingsymbol: s.tradingsymbol,
+          exchange: s.exchange,
+        })),
+        ticks,
+      })
+    } finally {
+      setDeploying(false)
+    }
+  }
 
   useEffect(() => {
     if (!editingName) setNameDraft(watchlist.name)
@@ -110,12 +208,47 @@ export default function WatchlistColumn({
     }
   }
 
+  const displaySymbols = orderedSymbols ?? watchlist.symbols
   const existingTokens = new Set(watchlist.symbols.map(s => s.symboltoken))
+  const tableGrid = buildWatchlistTableGrid(visibleChangeColumns)
+  const tableMinWidth = watchlistTableMinWidthPx(visibleChangeColumns.length)
+  const windowColumnLabels = new Map(
+    WATCHLIST_CHANGE_WINDOWS.map(window => [window.id, window.label]),
+  )
+
+  const handleDragStart = (token: string) => {
+    dragTokenRef.current = token
+  }
+
+  const handleDragOver = (e: React.DragEvent, token: string) => {
+    e.preventDefault()
+    setDragOverToken(token)
+  }
+
+  const handleDrop = (e: React.DragEvent, targetToken: string) => {
+    e.preventDefault()
+    const sourceToken = dragTokenRef.current
+    dragTokenRef.current = null
+    setDragOverToken(null)
+    if (!sourceToken || sourceToken === targetToken) return
+    const tokens = displaySymbols.map(s => s.symboltoken)
+    const fromIdx = tokens.indexOf(sourceToken)
+    const toIdx = tokens.indexOf(targetToken)
+    if (fromIdx === -1 || toIdx === -1) return
+    tokens.splice(fromIdx, 1)
+    tokens.splice(toIdx, 0, sourceToken)
+    onSymbolsReordered?.(watchlist.id, tokens)
+  }
+
+  const handleDragEnd = () => {
+    dragTokenRef.current = null
+    setDragOverToken(null)
+  }
 
   return (
-    <div className="flex flex-col">
+    <div className={`flex flex-col ${isMomentumWatchlist ? 'ring-1 ring-amber-500/40' : ''}`}>
       <header
-        className="grid shrink-0 cursor-grab grid-cols-[auto_auto_1fr_auto_auto] items-center gap-1.5 border-b border-border bg-secondary/40 px-2.5 py-2 active:cursor-grabbing"
+        className="grid shrink-0 cursor-grab grid-cols-[auto_auto_1fr_auto_auto_auto_auto] items-center gap-1.5 border-b border-border bg-secondary/40 px-2.5 py-2 active:cursor-grabbing"
         data-watchlist-drag
       >
         <button
@@ -177,6 +310,45 @@ export default function WatchlistColumn({
         >
           <Pencil className="h-3.5 w-3.5" />
         </button>
+        {onToggleMomentum && (
+          <button
+            type="button"
+            data-no-drag
+            onClick={() => onToggleMomentum(watchlist.id)}
+            title={isMomentumWatchlist ? 'Momentum trading ON — click to disable' : 'Enable momentum trading for this watchlist'}
+            className={`flex h-7 items-center gap-1 rounded-md border px-2 text-[10px] font-bold transition-colors ${
+              isMomentumWatchlist
+                ? 'border-amber-500/60 bg-amber-500/20 text-amber-300 hover:bg-amber-500/30'
+                : 'border-border bg-transparent text-text-secondary hover:border-amber-500/40 hover:bg-amber-500/10 hover:text-amber-400'
+            }`}
+          >
+            <Zap className="h-3 w-3" />
+            {isMomentumWatchlist ? 'Momentum' : ''}
+          </button>
+        )}
+        {onDeployAll ? (
+          <div className="flex items-center gap-0.5" data-no-drag>
+            <select
+              value={deployEnv}
+              onChange={e => setDeployEnv(e.target.value as 'demo' | 'live')}
+              disabled={deploying || watchlist.symbols.length === 0}
+              className="h-7 rounded-l-md border border-r-0 border-amber-500/40 bg-amber-500/10 px-1.5 text-[10px] font-semibold text-amber-300 outline-none focus:border-amber-500/60 disabled:opacity-50"
+            >
+              <option value="demo">Demo</option>
+              <option value="live">Live</option>
+            </select>
+            <button
+              type="button"
+              onClick={handleDeployAll}
+              disabled={deploying || watchlist.symbols.length === 0}
+              className="flex h-7 items-center gap-1 rounded-r-md border border-amber-500/40 bg-amber-500/10 px-2 text-[10px] font-bold text-amber-300 hover:bg-amber-500/20 disabled:opacity-50"
+              title={`Deploy all ${watchlist.symbols.length} symbol(s) as strategies on ${deployEnv}`}
+            >
+              <Zap className="h-3 w-3" />
+              {deploying ? '…' : 'All'}
+            </button>
+          </div>
+        ) : null}
         <button
           type="button"
           data-no-drag
@@ -237,20 +409,26 @@ export default function WatchlistColumn({
         </div>
       )}
 
-      <div className="px-2.5 pb-2.5 pt-2">
-        <div className="overflow-hidden rounded-lg border border-border bg-secondary/20 text-sm">
+      <div className="min-w-0 flex-1 px-2.5 pb-2.5 pt-2">
+        <div className="overflow-x-auto rounded-lg border border-border bg-secondary/20 text-sm">
+          <div style={{ minWidth: tableMinWidth }}>
           <div
-            className="grid items-center border-b border-border bg-secondary/80 text-xs font-semibold uppercase tracking-wide text-text-secondary"
-            style={{ gridTemplateColumns: WATCHLIST_TABLE_GRID }}
+            className="grid items-center border-b border-border bg-secondary/80 text-[10px] font-semibold uppercase tracking-wide text-text-secondary"
+            style={{ gridTemplateColumns: tableGrid }}
           >
-            <div className="truncate px-3 py-2">Symbol</div>
-            <div className="px-2 py-2 text-right">Last</div>
-            <div className="px-1 py-2 text-center">Trend</div>
-            <div className="px-2 py-2 text-right">Chg%</div>
+            <div className="truncate px-2 py-2">Symbol</div>
+            <div className="px-1.5 py-2 text-right">Last</div>
+            <div className="px-0.5 py-2 text-center">Trend</div>
+            {visibleChangeColumns.map(columnId => (
+              <div key={columnId} className="px-1 py-2 text-right">
+                {windowColumnLabels.get(columnId)}
+              </div>
+            ))}
+            <div className="px-1.5 py-2 text-right">Tick</div>
             <div className="px-0.5 py-2" aria-hidden />
           </div>
 
-          {watchlist.symbols.length === 0 && (
+          {displaySymbols.length === 0 && (
             <div
               className="px-3 text-center text-sm text-text-secondary"
               style={{ height: EMPTY_TABLE_PX, lineHeight: `${EMPTY_TABLE_PX}px` }}
@@ -259,31 +437,51 @@ export default function WatchlistColumn({
             </div>
           )}
 
-          {watchlist.symbols.map((symbol: WatchlistSymbol) => {
+          {displaySymbols.map((symbol: WatchlistSymbol, rowIndex: number) => {
             const tickKey = watchlistTickKey(broker, accountEnv, symbol.symboltoken)
             const tick = ticks[tickKey]
             const pct = tick?.change_pct
-            const pctLabel =
-              pct === undefined || Number.isNaN(pct)
-                ? '—'
-                : `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`
             const dir = tick?.direction
             const styles = directionStyles(dir)
             const DirIcon = styles.icon
+            const symbolWindows = windowChanges[tickKey]
+            const isFirst = rowIndex === 0
+            const isDragOver = dragOverToken === symbol.symboltoken
 
             return (
               <div
                 key={symbol.symboltoken}
-                className="group grid items-center border-t border-border/40 transition-colors hover:bg-accent/[0.04]"
-                style={{ gridTemplateColumns: WATCHLIST_TABLE_GRID, height: ROW_HEIGHT_PX }}
+                draggable
+                onDragStart={() => handleDragStart(symbol.symboltoken)}
+                onDragOver={e => handleDragOver(e, symbol.symboltoken)}
+                onDrop={e => handleDrop(e, symbol.symboltoken)}
+                onDragEnd={handleDragEnd}
+                className={`group grid items-center border-t transition-colors hover:bg-accent/[0.04] ${
+                  isDragOver
+                    ? 'border-t-2 border-t-accent bg-accent/10'
+                    : 'border-t-border/40'
+                }`}
+                style={{ gridTemplateColumns: tableGrid, height: ROW_HEIGHT_PX }}
               >
-                <div
-                  className="min-w-0 truncate px-3 font-semibold text-text-primary"
-                  title={symbol.tradingsymbol}
-                >
-                  {symbol.tradingsymbol}
+                {/* Drag handle + first-row crown */}
+                <div className="flex min-w-0 items-center gap-1 px-1">
+                  <GripVertical className="h-3.5 w-3.5 shrink-0 cursor-grab text-text-secondary/30 opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing" />
+                  {isMomentumWatchlist && isFirst && (
+                    <span
+                      title="Next momentum trade candidate"
+                      className="shrink-0 text-[10px] leading-none text-amber-400"
+                    >
+                      ★
+                    </span>
+                  )}
+                  <span
+                    className="min-w-0 truncate font-sans text-[14px] font-semibold text-text-primary"
+                    title={symbol.tradingsymbol}
+                  >
+                    {symbol.tradingsymbol}
+                  </span>
                 </div>
-                <div className="flex justify-end px-2 font-mono tabular-nums text-text-primary">
+                <div className="flex justify-end px-1.5 font-sans text-[13px] font-medium tabular-nums text-text-primary">
                   {tick ? (
                     formatBrokerMoney(broker, tick.ltp, 2)
                   ) : (
@@ -302,15 +500,27 @@ export default function WatchlistColumn({
                     )}
                   </span>
                 </div>
-                <div className="flex justify-end px-2">
+                {visibleChangeColumns.map(columnId => {
+                  const value = symbolWindows?.[columnId] ?? null
+                  return (
+                    <div key={columnId} className="flex justify-end px-1">
+                      <span
+                        className={`rounded-md px-2 py-0.5 tabular-nums whitespace-nowrap tracking-tight transition-colors ${pctBadgeStyles(value)}`}
+                        title={value == null ? 'Collecting local history…' : undefined}
+                      >
+                        {value == null ? '—' : `${value > 0 ? '+' : ''}${value.toFixed(2)}%`}
+                      </span>
+                    </div>
+                  )
+                })}
+                <div className="flex justify-end px-1.5">
                   <span
-                    className={`rounded-md px-2 py-0.5 font-mono text-sm font-semibold tabular-nums ${styles.text} ${
-                      dir === 'up' ? 'bg-green/12' : dir === 'down' ? 'bg-red/12' : 'bg-muted/25'
-                    }`}
+                    className={`rounded-md px-2 py-0.5 tabular-nums whitespace-nowrap tracking-tight transition-colors ${pctBadgeStyles(pct)}`}
                   >
-                    {tick ? pctLabel : (
-                      <span className="font-normal text-text-secondary/60">…</span>
-                    )}
+                    {tick
+                      ? (pct == null || Number.isNaN(pct) ? '—' : `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`)
+                      : <span className="text-text-secondary/40 text-[11px]">…</span>
+                    }
                   </span>
                 </div>
                 <div className="flex justify-center px-0.5">
@@ -326,6 +536,7 @@ export default function WatchlistColumn({
               </div>
             )
           })}
+          </div>
         </div>
       </div>
     </div>

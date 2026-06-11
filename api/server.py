@@ -236,7 +236,7 @@ class DataPlaneEngineUpdate(BaseModel):
     metadata: Optional[dict] = None
 
 
-ExecutionSourceId = Literal["user", "ai_research", "ai_chatbot_panel"]
+ExecutionSourceId = Literal["user", "ai_research", "ai_chatbot_panel", "momentum-trade"]
 InstrumentClass = Literal["equity", "crypto"]
 
 
@@ -1213,6 +1213,57 @@ async def get_execution_candles(execution_id: str, count: int = 100):
             "token": str(token),
         },
     }
+
+
+@app.get(
+    "/api/watchlist/candles",
+    operation_id="get_watchlist_symbol_candles",
+    summary="Fetch recent 1-minute OHLCV candles for a watchlist symbol (used to pre-seed local price history)",
+)
+async def get_watchlist_symbol_candles(
+    broker: str,
+    account_env: str,
+    symbol: str,
+    token: str,
+    count: int = 250,
+):
+    """Returns up to `count` recent 1-minute candles for the symbol so the frontend
+    can pre-populate its local price-change windows (1m/2m/5m/10m/…) immediately
+    on page load instead of waiting for the WebSocket feed to accumulate enough data.
+    Currently only supports eToro; Angel returns an empty list."""
+    broker_lower = broker.lower()
+    if broker_lower != "etoro":
+        # Graceful no-op for unsupported brokers; frontend falls back to live-only mode
+        return {"status": True, "data": []}
+
+    from brokers.etoro.candles import (
+        CANDLE_INTERVAL_ONE_MINUTE,
+        aget_historical_candles,
+    )
+
+    safe_count = max(10, min(int(count), 1000))
+    try:
+        client = await _etoro_trading_client(account_env)
+        instrument_id = await client._instrument_id(symbol, str(token))
+        if instrument_id is None:
+            return {"status": True, "data": []}
+
+        candles = await aget_historical_candles(
+            client,
+            instrument_id,
+            interval=CANDLE_INTERVAL_ONE_MINUTE,
+            count=safe_count,
+            direction="desc",
+        )
+        log.info(
+            "[WATCHLIST_CANDLES] symbol=%s token=%s env=%s candles=%d",
+            symbol, token, account_env, len(candles),
+        )
+        return {"status": True, "data": candles}
+    except Exception as exc:
+        log.warning("[WATCHLIST_CANDLES] failed symbol=%s: %s", symbol, exc)
+        # Return empty gracefully — frontend falls back to live-only mode
+        return {"status": True, "data": []}
 
 
 @app.post(

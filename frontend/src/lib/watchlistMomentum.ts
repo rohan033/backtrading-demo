@@ -5,12 +5,14 @@ import {
   type WatchlistChangeWindowId,
 } from './watchlistChangeColumns'
 
-export const WATCHLIST_MOMENTUM_STORAGE_KEY = 'watchlist-momentum-v2'
+export const WATCHLIST_MOMENTUM_STORAGE_KEY = 'watchlist-momentum-v3'
 
 export type MomentumConfig = {
   // toggles
   enabled: boolean
   autoDemo: boolean
+  /** Simple = just min 1m change. Complex = all velocity/acceleration/guard filters. */
+  complexMode: boolean
 
   // velocity / window filters
   min30sPct: number       // minimum 30s change (burst check)
@@ -45,6 +47,7 @@ export type MomentumConfig = {
 export const DEFAULT_MOMENTUM_CONFIG: MomentumConfig = {
   enabled: true,
   autoDemo: true,
+  complexMode: false,
 
   min30sPct: 0.35,
   min1mPct: 0.75,
@@ -235,9 +238,26 @@ export function detectRapidPositiveMomentum(
   const change10m = changes['10m'] ?? null
   const velocity30s = shortTermVelocityPct(samples, now)
 
-  // ── must have core windows ──────────────────────────────────────────────
-  if (change1m == null || change5m == null) return null
+  if (change1m == null) return null
   if (samples.length < 2) return null
+
+  // ════════════════════════════════════════════════════════════════════════
+  // SIMPLE MODE — only the 1m threshold matters
+  // ════════════════════════════════════════════════════════════════════════
+  if (!config.complexMode) {
+    if (change1m <= 0 || change1m < config.min1mPct) return null
+    const score = change1m
+    const detail = [
+      change5m != null ? `5m ${change5m > 0 ? '+' : ''}${change5m.toFixed(2)}%` : null,
+      velocity30s != null ? `30s ${velocity30s > 0 ? '+' : ''}${velocity30s.toFixed(2)}%` : null,
+    ].filter(Boolean).join(' · ')
+    return { score, headline: `+${change1m.toFixed(2)}% in 1m`, detail }
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // COMPLEX MODE — full filter chain
+  // ════════════════════════════════════════════════════════════════════════
+  if (change5m == null) return null
 
   // ── price filter ────────────────────────────────────────────────────────
   const ltp = options.currentLtp

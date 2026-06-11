@@ -117,7 +117,13 @@ class EtoroWebsocketFeedClient(EtoroTradingClient):
         instrument_id = await self._instrument_id(symbol, token)
         if instrument_id is None:
             raise ValueError(f"Could not resolve eToro instrument for {symbol}/{token}")
+
+        already_subscribed = instrument_id in self._subscriptions
         self._subscriptions[instrument_id] = Subscription(exchange=exchange, symbol=symbol, token=str(token))
+
+        if already_subscribed:
+            # Already tracked and (if connected) already subscribed on the WS — skip re-send
+            return
 
         if self._socket and self._authenticated:
             await self._send_subscription("Subscribe", [instrument_id])
@@ -334,12 +340,14 @@ class EtoroWebsocketFeedClient(EtoroTradingClient):
                 self._authenticated,
             )
         else:
-            logger.error(
+            error_code = message.get("errorCode") or ""
+            log_fn = logger.debug if error_code == "TopicAlreadySubscribed" else logger.error
+            log_fn(
                 "[eToro] WS feed %s failed request_id=%s success=%s errorCode=%s errorMessage=%s",
                 operation,
                 request_id,
                 success,
-                message.get("errorCode"),
+                error_code,
                 message.get("errorMessage"),
             )
         return True
