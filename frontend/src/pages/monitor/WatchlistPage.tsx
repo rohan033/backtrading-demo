@@ -54,10 +54,13 @@ import {
   archiveSymbol,
   clearArchivedSymbols,
   loadArchivedSymbols,
+  loadMomentumNoTpSymbolKeys,
+  loadMomentumSymbolKeys,
   loadMomentumWatchlistIds,
   loadSymbolOrder,
   removeArchivedSymbol,
   saveSymbolOrder,
+  setMomentumSymbolMode,
   toggleMomentumWatchlistId,
   type ArchivedMomentumSymbol,
 } from '../../lib/watchlistMomentumState'
@@ -77,6 +80,12 @@ export default function WatchlistPage() {
   // Momentum-trade watchlist state (all persisted in localStorage)
   const [momentumWatchlistIds, setMomentumWatchlistIds] = useState<Set<string>>(
     () => loadMomentumWatchlistIds(),
+  )
+  const [momentumSymbolKeys, setMomentumSymbolKeys] = useState<Set<string>>(
+    () => loadMomentumSymbolKeys(),
+  )
+  const [momentumNoTpSymbolKeys, setMomentumNoTpSymbolKeys] = useState<Set<string>>(
+    () => loadMomentumNoTpSymbolKeys(),
   )
   const [symbolOrders, setSymbolOrders] = useState<Record<string, string[]>>(() => {
     // Pre-load any saved orders when the component mounts (watchlists aren't loaded yet,
@@ -111,6 +120,22 @@ export default function WatchlistPage() {
     setMomentumWatchlistIds(prev => toggleMomentumWatchlistId(prev, watchlistId))
   }, [])
 
+  const handleToggleSymbolMomentum = useCallback((watchlistId: string, symboltoken: string) => {
+    const { normal, noTp } = setMomentumSymbolMode(
+      momentumSymbolKeys, momentumNoTpSymbolKeys, watchlistId, symboltoken, 'normal',
+    )
+    setMomentumSymbolKeys(normal)
+    setMomentumNoTpSymbolKeys(noTp)
+  }, [momentumSymbolKeys, momentumNoTpSymbolKeys])
+
+  const handleToggleSymbolMomentumNoTp = useCallback((watchlistId: string, symboltoken: string) => {
+    const { normal, noTp } = setMomentumSymbolMode(
+      momentumSymbolKeys, momentumNoTpSymbolKeys, watchlistId, symboltoken, 'no-tp',
+    )
+    setMomentumSymbolKeys(normal)
+    setMomentumNoTpSymbolKeys(noTp)
+  }, [momentumSymbolKeys, momentumNoTpSymbolKeys])
+
   const handleSymbolsReordered = useCallback((watchlistId: string, tokens: string[]) => {
     saveSymbolOrder(watchlistId, tokens)
     setSymbolOrders(prev => ({ ...prev, [watchlistId]: tokens }))
@@ -137,6 +162,8 @@ export default function WatchlistPage() {
   useWatchlistMomentumAlerts({
     watchlists,
     momentumWatchlistIds,
+    momentumSymbolKeys,
+    momentumNoTpSymbolKeys,
     orderedSymbols: allOrderedSymbols,
     ticks,
     windowChanges,
@@ -463,6 +490,10 @@ export default function WatchlistPage() {
                     visibleChangeColumns={visibleChangeColumns}
                     isMomentumWatchlist={momentumWatchlistIds.has(wl.id)}
                     onToggleMomentum={handleToggleMomentum}
+                    momentumSymbolKeys={momentumSymbolKeys}
+                    onToggleSymbolMomentum={handleToggleSymbolMomentum}
+                    momentumNoTpSymbolKeys={momentumNoTpSymbolKeys}
+                    onToggleSymbolMomentumNoTp={handleToggleSymbolMomentumNoTp}
                     onRename={handleRename}
                     onDelete={handleDelete}
                     onBrokerChange={handleBrokerChange}

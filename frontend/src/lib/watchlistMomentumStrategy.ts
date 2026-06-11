@@ -9,6 +9,8 @@ export type MomentumSymbolContext = {
   exchange: string
   closePrice: number
   watchlistId?: string
+  /** When true, place the bracket order without a take-profit (let it run). */
+  noTakeProfit?: boolean
 }
 
 export function buildMomentumEnterPayload(
@@ -26,6 +28,7 @@ export function buildMomentumEnterPayload(
     close_price: ctx.closePrice,
     long_percent: config.longPercent,
     short_percent: config.shortPercent,
+    no_take_profit: ctx.noTakeProfit ?? false,
     max_available_capital: config.maxCapital,
     allow_partial_stocks: ctx.broker === 'etoro',
     instrument_class: 'equity',

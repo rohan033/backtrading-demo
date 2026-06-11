@@ -297,6 +297,7 @@ class MomentumEnterRequest(BaseModel):
     close_price: float
     long_percent: float = 5.0
     short_percent: float = 1.0
+    no_take_profit: bool = False
     stop_loss_amount: Optional[float] = None
     max_available_capital: float = 100000
     allow_partial_stocks: bool = True
@@ -787,7 +788,10 @@ async def momentum_enter(req: MomentumEnterRequest):
     if entry_price <= 0:
         raise HTTPException(status_code=400, detail="Invalid entry price")
 
-    take_profit_price = round(entry_price * (1 + req.long_percent / 100), 2)
+    # No-take-profit mode (high-growth: let the winner run) leaves TP unset.
+    take_profit_price = (
+        None if req.no_take_profit else round(entry_price * (1 + req.long_percent / 100), 2)
+    )
     stop_loss_price = compute_stop_loss_price(
         entry_price,
         capital,
@@ -804,8 +808,9 @@ async def momentum_enter(req: MomentumEnterRequest):
         )
 
     log.info(
-        "[MOMENTUM] enter symbol=%s env=%s capital=%.2f (avail=%.2f) entry=%.2f qty=%s TP=%.2f SL=%.2f",
-        req.symbol, env, capital, available_cash, entry_price, quantity, take_profit_price, stop_loss_price,
+        "[MOMENTUM] enter symbol=%s env=%s capital=%.2f (avail=%.2f) entry=%.2f qty=%s TP=%s SL=%.2f",
+        req.symbol, env, capital, available_cash, entry_price, quantity,
+        "none" if take_profit_price is None else f"{take_profit_price:.2f}", stop_loss_price,
     )
 
     # 3. Place the bracket order immediately.

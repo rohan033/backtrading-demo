@@ -24,6 +24,7 @@ import {
 } from '../../lib/watchlistBrokers'
 import type { Watchlist, WatchlistSymbol, WatchlistTick } from '../../lib/watchlists'
 import { watchlistTickKey } from '../../lib/watchlists'
+import { momentumSymbolKey } from '../../lib/watchlistMomentumState'
 
 type SearchHit = {
   symboltoken: string
@@ -137,6 +138,12 @@ type Props = {
   visibleChangeColumns: WatchlistChangeWindowId[]
   isMomentumWatchlist?: boolean
   onToggleMomentum?: (watchlistId: string) => void
+  /** Set of armed per-symbol momentum keys (`watchlistId::token`). */
+  momentumSymbolKeys?: Set<string>
+  onToggleSymbolMomentum?: (watchlistId: string, symboltoken: string) => void
+  /** Set of armed per-symbol no-take-profit momentum keys (`watchlistId::token`). */
+  momentumNoTpSymbolKeys?: Set<string>
+  onToggleSymbolMomentumNoTp?: (watchlistId: string, symboltoken: string) => void
   onRename: (id: string, name: string) => void
   onDelete: (id: string) => void
   onBrokerChange: (id: string, broker: WatchlistBroker, accountEnv: string) => void
@@ -177,6 +184,10 @@ export default function WatchlistColumn({
   visibleChangeColumns,
   isMomentumWatchlist = false,
   onToggleMomentum,
+  momentumSymbolKeys,
+  onToggleSymbolMomentum,
+  momentumNoTpSymbolKeys,
+  onToggleSymbolMomentumNoTp,
   onRename,
   onDelete,
   onBrokerChange,
@@ -495,6 +506,9 @@ export default function WatchlistColumn({
             const symbolWindows = windowChanges[tickKey]
             const isFirst = rowIndex === 0
             const isDragOver = dragOverToken === symbol.symboltoken
+            const symbolMomentumKey = momentumSymbolKey(watchlist.id, symbol.symboltoken)
+            const symbolMomentumOn = momentumSymbolKeys?.has(symbolMomentumKey) ?? false
+            const symbolMomentumNoTpOn = momentumNoTpSymbolKeys?.has(symbolMomentumKey) ?? false
 
             return (
               <div
@@ -571,11 +585,47 @@ export default function WatchlistColumn({
                     }
                   </span>
                 </div>
-                <div className="flex justify-center px-0.5">
+                <div className="flex items-center justify-end gap-0.5 px-0.5">
+                  {onToggleSymbolMomentum && (
+                    <button
+                      type="button"
+                      onClick={() => onToggleSymbolMomentum(watchlist.id, symbol.symboltoken)}
+                      title={
+                        symbolMomentumOn
+                          ? 'Momentum armed (5% TP / 1% SL) — click to disable'
+                          : 'Arm momentum for this symbol (5% TP / 1% SL)'
+                      }
+                      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors ${
+                        symbolMomentumOn
+                          ? 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-500/50'
+                          : 'text-text-secondary opacity-0 group-hover:opacity-100 hover:bg-amber-500/10 hover:text-amber-400'
+                      }`}
+                    >
+                      <Zap className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  {onToggleSymbolMomentumNoTp && (
+                    <button
+                      type="button"
+                      onClick={() => onToggleSymbolMomentumNoTp(watchlist.id, symbol.symboltoken)}
+                      title={
+                        symbolMomentumNoTpOn
+                          ? 'Momentum armed · no take-profit (let it run) — click to disable'
+                          : 'Arm momentum · no take-profit for high-growth (let it run)'
+                      }
+                      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md transition-colors ${
+                        symbolMomentumNoTpOn
+                          ? 'bg-blue-500/20 text-blue-300 ring-1 ring-blue-500/50'
+                          : 'text-text-secondary opacity-0 group-hover:opacity-100 hover:bg-blue-500/10 hover:text-blue-400'
+                      }`}
+                    >
+                      <Zap className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => onRemoveSymbol(watchlist.id, symbol.symboltoken)}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-secondary opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red/10 hover:text-red"
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-secondary opacity-0 transition-opacity group-hover:opacity-100 hover:bg-red/10 hover:text-red"
                     title="Remove"
                   >
                     <X className="h-3.5 w-3.5" />
