@@ -10,6 +10,7 @@ import {
   isIndianBroker,
 } from './lib/currency'
 import { formatDbTimestamp } from './lib/datetime'
+import ChartsGrid from './components/charts/ChartsGrid'
 import StrategyScheduleSection from './components/StrategyScheduleSection'
 import { buildLocalTradingDayOptions, loadTradingDayOptions } from './lib/tradingSchedule'
 import { EXECUTION_SOURCE_USER } from './lib/executionSources'
@@ -172,6 +173,11 @@ export function ExecutionProvider({ children }) {
     })
   }, [controlledExecutions, executions])
 
+  const panelExecutionsRef = useRef(panelExecutions)
+  useEffect(() => {
+    panelExecutionsRef.current = panelExecutions
+  }, [panelExecutions])
+
   const selectedExecution = useMemo(
     () => panelExecutions.find(ex => ex.executor_id === selectedExecutionId) || null,
     [panelExecutions, selectedExecutionId],
@@ -325,7 +331,7 @@ export function ExecutionProvider({ children }) {
   }, [])
 
   const refreshExecutions = useCallback(async () => {
-    const planes = filterActiveDataPlanes(dataPlanesRef.current)
+    const planes = collectActiveDataPlanes(dataPlanesRef.current, panelExecutionsRef.current)
     if (!planes.length) return
     const allExecutions = []
 
@@ -359,19 +365,24 @@ export function ExecutionProvider({ children }) {
     return () => clearInterval(intervalId)
   }, [refreshDataPlanes, refreshControlledExecutions])
 
-  const dataPlaneIdsKey = useMemo(
-    () => dataPlanes.map(engine => `${engine.id}:${engine.status}:${engine.port}:${engine.ws_url}`).join('|'),
-    [dataPlanes],
+  const activeDataPlanes = useMemo(
+    () => collectActiveDataPlanes(dataPlanes, panelExecutions),
+    [dataPlanes, panelExecutions],
+  )
+
+  const activePlanesKey = useMemo(
+    () => activeDataPlanes.map(engine => `${engine.id}:${engine.status}:${engine.port}:${engine.ws_url}`).join('|'),
+    [activeDataPlanes],
   )
 
   useEffect(() => {
     refreshExecutions()
     const intervalId = setInterval(refreshExecutions, 10000)
     return () => clearInterval(intervalId)
-  }, [dataPlaneIdsKey, refreshExecutions])
+  }, [activePlanesKey, refreshExecutions])
 
   useEffect(() => {
-    const activePlanes = filterActiveDataPlanes(dataPlanes)
+    const activePlanes = activeDataPlanes
     const activeIds = new Set(activePlanes.map(plane => plane.id))
 
     for (const planeId of Object.keys(planeSocketsRef.current)) {
@@ -585,7 +596,7 @@ export function ExecutionProvider({ children }) {
 
       connect()
     }
-  }, [dataPlaneIdsKey, updatePlaneStream])
+  }, [activePlanesKey, activeDataPlanes, updatePlaneStream])
 
   useEffect(() => () => {
     for (const planeId of Object.keys(planeSocketsRef.current)) {
@@ -1145,78 +1156,23 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
   )
 }
 
-export function ChartTab({ executions, planeStreams, selectedExecutionId }) {
-  const liveExecutions = useMemo(
-    () => executions.filter(execution =>
-      execution?.ws_url
-      && ['running', 'starting'].includes(String(execution.data_plane_status || '').toLowerCase()),
-    ),
-    [executions],
-  )
-  const nowMs = useNow(liveExecutions.length ? PRICE_STREAM_STATUS_POLL_MS : null)
-
-  if (!liveExecutions.length) {
-    return (
-      <EmptyState
-        title="No live chart streams"
-        body="Start one or more executions from the Strategy or Launch tab to stream chart data."
-      />
-    )
-  }
-
+export function ChartTab({
+  executions,
+  planeStreams,
+  selectedExecutionId,
+  onSelectExecution,
+  refreshControlledExecutions,
+  refreshExecutions,
+}) {
   return (
-    <div className="p-4 space-y-4">
-      {liveExecutions.map(execution => {
-        const stream = getPlaneStream(planeStreams, execution.data_plane_id)
-        const resolvedStream = resolveExecutionStream(stream, execution)
-        const { tickHistory, candleHistory, tick: streamTick, streamKey } = resolvedStream
-        const liveLtp = streamTick?.ltp ?? null
-        const chartSeries = buildChartSeries(tickHistory, execution, liveLtp)
-        const candleSeries = buildCandleSeries(candleHistory, execution, liveLtp)
-        const priceStreamStatus = resolveExecutionPriceStreamStatus({
-          isStreaming: true,
-          stream,
-          streamKey,
-          nowMs,
-        })
-        const realtimeEvents = stream.realtimeEvents.filter(event =>
-          event.executor_id === execution.executor_id
-          || event.details?.executor_id === execution.executor_id,
-        )
-        const selected = execution.executor_id === selectedExecutionId
-
-        return (
-          <div
-            key={`${execution.data_plane_id}:${execution.executor_id}`}
-            className={`rounded border ${selected ? 'border-accent bg-accent/5' : 'border-border bg-card'}`}
-          >
-            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border/60">
-              <div>
-                <div className="text-sm font-bold">{execution.label || execution.executor_id}</div>
-                <div className="text-[10px] text-text-secondary mt-0.5">
-                  {execution.symbol || '-'} · server :{execution.data_plane_port || '-'}
-                  {execution.created_at ? ` · created ${formatDbTimestamp(execution.created_at)}` : ''}
-                </div>
-                <PriceStreamStatusLine status={priceStreamStatus} />
-              </div>
-              {selected ? (
-                <span className="text-[10px] px-2 py-1 rounded bg-accent/15 text-accent font-bold">Selected</span>
-              ) : null}
-            </div>
-            <div className="p-4 space-y-4">
-              <LiveExecutionChart
-                execution={execution}
-                mode="line"
-                data={chartSeries}
-                candleData={candleSeries}
-                realtimeEvents={realtimeEvents}
-              />
-              <ExecutionLevels execution={execution} />
-            </div>
-          </div>
-        )
-      })}
-    </div>
+    <ChartsGrid
+      executions={executions}
+      planeStreams={planeStreams}
+      selectedExecutionId={selectedExecutionId}
+      onSelectExecution={onSelectExecution}
+      refreshControlledExecutions={refreshControlledExecutions}
+      refreshExecutions={refreshExecutions}
+    />
   )
 }
 
@@ -1258,7 +1214,15 @@ function CandleOhlcReadout({ broker, ohlc }) {
   )
 }
 
-function LiveExecutionChart({ execution, mode = 'line', data, candleData = [], realtimeEvents }) {
+export function LiveExecutionChart({
+  execution,
+  mode = 'line',
+  data,
+  candleData = [],
+  realtimeEvents,
+  height = 420,
+  compact = false,
+}) {
   const containerRef = useRef(null)
   const chartRef = useRef(null)
   const seriesRef = useRef(null)
@@ -1313,16 +1277,16 @@ function LiveExecutionChart({ execution, mode = 'line', data, candleData = [], r
 
       chart = createChart(containerRef.current, {
         width,
-        height: 420,
+        height,
         layout: { background: { color: '#111d28' }, textColor: '#8899a6' },
         grid: { vertLines: { color: '#1a2733' }, horzLines: { color: '#1a2733' } },
         timeScale: {
           timeVisible: true,
           secondsVisible: !isCandleMode,
           borderColor: '#2a3f52',
-          barSpacing: isCandleMode ? 7 : undefined,
-          minBarSpacing: isCandleMode ? 3 : undefined,
-          rightOffset: isCandleMode ? 4 : undefined,
+          barSpacing: isCandleMode ? (compact ? 1 : 7) : undefined,
+          minBarSpacing: isCandleMode ? (compact ? 0.5 : 2) : undefined,
+          rightOffset: isCandleMode ? (compact ? 2 : 4) : undefined,
         },
         rightPriceScale: { borderColor: '#2a3f52', autoScale: true },
       })
@@ -1405,7 +1369,7 @@ function LiveExecutionChart({ execution, mode = 'line', data, candleData = [], r
       priceLinesRef.current = []
       setHoveredOhlc(null)
     }
-  }, [execution.executor_id, isCandleMode])
+  }, [execution.executor_id, isCandleMode, height, compact])
 
   useEffect(() => {
     if (!seriesRef.current || !chartRef.current) return
@@ -1442,11 +1406,12 @@ function LiveExecutionChart({ execution, mode = 'line', data, candleData = [], r
       lastPointRef.current = lastCandle
       const shouldResetViewport = (
         !viewportInitializedRef.current
+        || (compact && candles.length !== lastViewportBarCountRef.current)
         || (lastViewportBarCountRef.current < 20 && candles.length >= 20)
         || (candles.length >= 10 && lastViewportBarCountRef.current <= 5)
       )
       if (shouldResetViewport) {
-        applyCandleViewport(chart, candles.length)
+        applyCandleViewport(chart, candles.length, compact)
         viewportInitializedRef.current = true
         lastViewportBarCountRef.current = candles.length
       }
@@ -1477,7 +1442,7 @@ function LiveExecutionChart({ execution, mode = 'line', data, candleData = [], r
       chart.timeScale().fitContent()
       viewportInitializedRef.current = true
     }
-  }, [chartData, candles, isCandleMode])
+  }, [chartData, candles, isCandleMode, compact])
 
   useEffect(() => {
     if (!seriesRef.current) return
@@ -1500,10 +1465,10 @@ function LiveExecutionChart({ execution, mode = 'line', data, candleData = [], r
 
   return (
     <div className="w-full min-w-0">
-      {isCandleMode ? (
+      {isCandleMode && !compact ? (
         <CandleOhlcReadout broker={execution?.broker} ohlc={displayOhlc} />
       ) : null}
-      <div ref={containerRef} className="h-[420px]" />
+      <div ref={containerRef} style={{ height }} />
     </div>
   )
 }
@@ -1574,7 +1539,10 @@ function HighlightMetricCard({ label, value, tone = 'default', mono = true, size
 
   return (
     <div className="rounded-lg border border-border bg-card px-4 py-4">
-      <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">{label}</div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-[10px] font-semibold uppercase tracking-widest text-text-secondary">{label}</div>
+        {action}
+      </div>
       <div className={`font-bold leading-tight ${mono ? 'font-mono' : ''} ${sizeClass} ${valueToneClass}`}>
         {value}
       </div>
@@ -2503,7 +2471,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     token: selectedStock.symboltoken,
     exchange: selectedStock.exchange || 'NSE',
     close_price: Number(form.close_price),
-    long_percent: Number(form.long_percent),
+    long_percent: resolvedLongPercent,
     short_percent: Number(form.short_percent),
     stop_loss_amount: parseStopLossAmount(form),
     initial_threshold: Number(form.initial_threshold),
@@ -3358,7 +3326,7 @@ function DataTable({ columns, rows }) {
   )
 }
 
-function FormField({ label, value, onChange, type = 'text', highlighted = false, warning = '', disabled = false }) {
+function FormField({ label, value, onChange, type = 'text', highlighted = false, warning = '', hint = '', disabled = false }) {
   return (
     <div className={highlighted ? 'rounded border border-red/40 bg-red/5 px-2 py-2' : undefined}>
       <label
@@ -3381,6 +3349,9 @@ function FormField({ label, value, onChange, type = 'text', highlighted = false,
             : 'border-border text-text-primary focus:border-accent'
         }`}
       />
+      {hint ? (
+        <p className="mt-1 text-[10px] text-text-secondary">{hint}</p>
+      ) : null}
       {warning ? (
         <div
           role="alert"
@@ -3588,6 +3559,27 @@ function filterActiveDataPlanes(engines) {
   )
 }
 
+function collectActiveDataPlanes(engines, liveExecutions = []) {
+  const byId = new Map()
+  for (const plane of filterActiveDataPlanes(engines)) {
+    byId.set(plane.id, plane)
+  }
+  for (const execution of liveExecutions) {
+    if (!execution?.data_plane_id || !execution?.ws_url) continue
+    if (!ACTIVE_DATA_PLANE_STATUSES.has(String(execution.data_plane_status || '').toLowerCase())) continue
+    if (byId.has(execution.data_plane_id)) continue
+    byId.set(execution.data_plane_id, {
+      id: execution.data_plane_id,
+      label: execution.data_plane_label || execution.label,
+      port: execution.data_plane_port || 0,
+      status: execution.data_plane_status,
+      api_base_url: execution.api_base_url,
+      ws_url: execution.ws_url,
+    })
+  }
+  return [...byId.values()]
+}
+
 function executionTimestamp() {
   const now = new Date()
   const pad = value => String(value).padStart(2, '0')
@@ -3603,12 +3595,12 @@ function buildExecutionId(broker, symbol, strategyName) {
   return `${slug}-${executionTimestamp()}`
 }
 
-function getPlaneStream(planeStreams, planeId) {
+export function getPlaneStream(planeStreams, planeId) {
   if (!planeId) return EMPTY_PLANE_STREAM
   return planeStreams[planeId] || EMPTY_PLANE_STREAM
 }
 
-function resolveExecutionStream(stream, execution) {
+export function resolveExecutionStream(stream, execution) {
   const planeId = execution?.data_plane_id
   const token = execution?.token
   const symbol = String(execution?.symbol || '').trim().toUpperCase()
@@ -3739,7 +3731,7 @@ function useNow(intervalMs) {
   return nowMs
 }
 
-function buildChartSeries(history, execution, liveLtp) {
+export function buildChartSeries(history, execution, liveLtp) {
   const sanitized = sanitizeChartSeries(history)
   if (sanitized.length) return sanitized
 
@@ -3770,7 +3762,7 @@ function minuteBucket(ts = Date.now()) {
   return Math.floor(sec / 60) * 60
 }
 
-function sanitizeCandleSeries(candles) {
+export function sanitizeCandleSeries(candles) {
   if (!candles?.length) return []
 
   const sanitized = []
@@ -3806,7 +3798,7 @@ function applyCandleTick(history, candle) {
   return next.slice(-CANDLE_HISTORY_MAX_BARS)
 }
 
-function mergeCandleSync(history, candles) {
+export function mergeCandleSync(history, candles) {
   const merged = new Map((history || []).map(item => [item.time, item]))
   for (const candle of sanitizeCandleSeries(candles)) {
     merged.set(candle.time, candle)
@@ -3814,7 +3806,7 @@ function mergeCandleSync(history, candles) {
   return [...merged.values()].sort((a, b) => a.time - b.time).slice(-CANDLE_HISTORY_MAX_BARS)
 }
 
-function buildCandleSeries(history, execution, liveLtp) {
+export function buildCandleSeries(history, execution, liveLtp) {
   return sanitizeCandleSeries(history)
 }
 
@@ -3828,10 +3820,19 @@ function candlesToVolumeData(candles) {
   }))
 }
 
-function applyCandleViewport(chart, barCount) {
+function applyCandleViewport(chart, barCount, compact = false) {
   if (!chart || barCount <= 0) return
+  if (compact) {
+    chart.timeScale().applyOptions({
+      barSpacing: 1,
+      minBarSpacing: 0.5,
+      rightOffset: 2,
+    })
+    chart.timeScale().fitContent()
+    return
+  }
   const to = Math.max(barCount - 1, 0)
-  const from = to - CANDLE_VISIBLE_BARS + 1
+  const from = Math.max(0, to - CANDLE_VISIBLE_BARS + 1)
   chart.timeScale().applyOptions({
     barSpacing: 6,
     minBarSpacing: 2,

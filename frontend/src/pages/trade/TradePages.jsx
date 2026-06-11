@@ -573,14 +573,24 @@ export function ActivityPage() {
 }
 
 export function ChartsPage() {
-  const { panelExecutions, planeStreams, selectedExecutionId } = useExecution()
+  const {
+    panelExecutions,
+    planeStreams,
+    selectedExecutionId,
+    setSelectedExecutionId,
+    refreshControlledExecutions,
+    refreshExecutions,
+  } = useExecution()
 
   return (
-    <div className="h-full overflow-auto">
+    <div className="h-full overflow-hidden">
       <ChartTab
         executions={panelExecutions}
         planeStreams={planeStreams}
         selectedExecutionId={selectedExecutionId}
+        onSelectExecution={setSelectedExecutionId}
+        refreshControlledExecutions={refreshControlledExecutions}
+        refreshExecutions={refreshExecutions}
       />
     </div>
   )
