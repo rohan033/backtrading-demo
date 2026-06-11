@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { formatSignedInr } from '../lib/currency'
 import { formatDbTimestamp } from '../lib/datetime'
 import { pnlClass } from '../layout/useAccountSummary'
+import { executionSourceLabel } from '../lib/executionSources'
 
 export type StrategyTableRow = {
   id: string
@@ -15,6 +16,8 @@ export type StrategyTableRow = {
   pnl?: number
   inPosition?: boolean
   logFile?: string | null
+  accountEnv?: string | null
+  source?: string | null
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -111,6 +114,12 @@ export function StrategiesTable({
               Created
             </th>
             <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
+              Env
+            </th>
+            <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
+              Source
+            </th>
+            <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
               P&amp;L
             </th>
             {onOpenLogs ? (
@@ -147,6 +156,34 @@ export function StrategiesTable({
               </td>
               <td className="px-3.5 py-2.5 whitespace-nowrap text-text-secondary">
                 {formatDbTimestamp(row.createdAt)}
+              </td>
+              <td className="px-3.5 py-2.5">
+                {row.accountEnv ? (
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
+                      row.accountEnv === 'live'
+                        ? 'bg-green/20 text-green'
+                        : 'bg-text-secondary/15 text-text-secondary'
+                    }`}
+                  >
+                    {row.accountEnv}
+                  </span>
+                ) : <span className="text-text-secondary">—</span>}
+              </td>
+              <td className="px-3.5 py-2.5">
+                {row.source ? (
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                      row.source === 'momentum-trade'
+                        ? 'bg-amber-500/20 text-amber-400'
+                        : row.source === 'ai_research' || row.source === 'ai_chatbot_panel'
+                          ? 'bg-accent/20 text-accent'
+                          : 'bg-text-secondary/15 text-text-secondary'
+                    }`}
+                  >
+                    {executionSourceLabel(row.source)}
+                  </span>
+                ) : <span className="text-text-secondary">—</span>}
               </td>
               <td className={`px-3.5 py-2.5 font-mono ${pnlClass(row.pnl ?? 0)}`}>
                 {formatSignedInr(row.pnl ?? 0, { maxFractionDigits: 0 })}

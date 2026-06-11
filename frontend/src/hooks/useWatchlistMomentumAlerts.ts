@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react'
+import { AlertTriangle } from 'lucide-react'
 
 import { showPlatformToast } from '../lib/platform-toast'
 import {
@@ -239,7 +240,8 @@ export function useWatchlistMomentumAlerts({
           highlightTitle: true,
           actions: {
             label: 'Deploy live',
-            variant: 'default',
+            variant: 'destructive',
+            icon: AlertTriangle,
             onClick: () => {
               const latest = pendingLiveRef.current.get(tickKey) ?? ctx
               const liveTick = ticksRef.current[tickKey]

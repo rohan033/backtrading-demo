@@ -760,6 +760,37 @@ class DbEventWriter:
             logger.error("Failed to get executor positions for %s: %s", executor_id, e)
             return []
 
+    def mark_position_closed(self, position_id: str, executor_id: str | None = None) -> bool:
+        """Immediately mark a position as closed in the local DB after a control-plane direct close.
+        This ensures the UI reflects the closed state without waiting for the next remote poll."""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            now = time.time()
+            if executor_id:
+                cursor.execute(
+                    """UPDATE order_positions
+                       SET state = 'closed', remaining_units = 0, updated_at = ?
+                       WHERE position_id = ?
+                         AND (executor_id = ? OR executor_id IS NULL)""",
+                    (now, str(position_id), executor_id),
+                )
+            else:
+                cursor.execute(
+                    """UPDATE order_positions
+                       SET state = 'closed', remaining_units = 0, updated_at = ?
+                       WHERE position_id = ?""",
+                    (now, str(position_id)),
+                )
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            logger.info("[DB] mark_position_closed position=%s rows_updated=%d", position_id, affected)
+            return affected > 0
+        except Exception as exc:
+            logger.error("Failed to mark position %s as closed: %s", position_id, exc)
+            return False
+
     def touch_order_poll_job(
         self,
         executor_id: str,

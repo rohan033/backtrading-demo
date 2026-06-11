@@ -27,7 +27,8 @@ type Position =
 interface ActionButton {
   label: string
   onClick: () => void
-  variant?: 'default' | 'outline' | 'ghost'
+  variant?: 'default' | 'outline' | 'ghost' | 'destructive'
+  icon?: React.ComponentType<{ className?: string }>
 }
 
 export interface ToasterProps {
@@ -136,8 +137,9 @@ const Toaster = forwardRef<ToasterRef, { defaultPosition?: Position }>(
                       actions.onClick()
                       sonnerToast.dismiss(toastId)
                     }}
-                    className="h-7 cursor-pointer px-2 text-xs"
+                    className="h-7 cursor-pointer gap-1 px-2 text-xs"
                   >
+                    {actions.icon ? <actions.icon className="h-3.5 w-3.5" /> : null}
                     {actions.label}
                   </Button>
                 ) : null}

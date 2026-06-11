@@ -17,6 +17,8 @@ export function executionToStrategyRow(execution: ExecutionLike): StrategyTableR
     isLive: isStoppable,
     isScheduled: engineStatus === 'scheduled',
     logFile: execution.log_file || null,
+    accountEnv: execution.account_env || null,
+    source: execution.source_id || null,
   }
 }
 

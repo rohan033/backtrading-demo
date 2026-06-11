@@ -120,6 +120,8 @@ function RuntimePills({ port, apiBaseUrl, wsUrl, logFile, pending }) {
   )
 }
 
+const LIVE_PNL_POLL_MS = 10_000
+
 function PositionsPanel({ executorId, execution }) {
   const [positions, setPositions] = useState([])
   const [loading, setLoading] = useState(false)
@@ -128,6 +130,8 @@ function PositionsPanel({ executorId, execution }) {
   const [closing, setClosing] = useState({})
   const [closeErrors, setCloseErrors] = useState({})
   const [closedIds, setClosedIds] = useState(new Set())
+  const [livePnl, setLivePnl] = useState({})   // position_id → { pnl, pnl_pct, current_rate }
+  const [totalPnl, setTotalPnl] = useState(null)
 
   const broker = execution?.broker
   const accountEnv = execution?.account_env || 'demo'
@@ -148,7 +152,27 @@ function PositionsPanel({ executorId, execution }) {
     }
   }, [executorId])
 
+  const fetchLivePnl = useCallback(async () => {
+    if (!executorId || broker !== 'etoro') return
+    try {
+      const res = await fetch(`/api/control/executions/${encodeURIComponent(executorId)}/live-pnl`)
+      const data = await res.json()
+      if (data.status) {
+        const map = {}
+        for (const item of data.data || []) map[item.position_id] = item
+        setLivePnl(map)
+        setTotalPnl(data.total_pnl ?? null)
+      }
+    } catch { /* silent — P&L is best-effort */ }
+  }, [executorId, broker])
+
   useEffect(() => { fetchPositions() }, [fetchPositions])
+
+  useEffect(() => {
+    fetchLivePnl()
+    const id = setInterval(fetchLivePnl, LIVE_PNL_POLL_MS)
+    return () => clearInterval(id)
+  }, [fetchLivePnl])
 
   const handleClose = useCallback(async (positionId, maxUnits) => {
     const raw = unitInputs[positionId]
@@ -217,6 +241,12 @@ function PositionsPanel({ executorId, execution }) {
   )
 
   const formatPrice = (v) => v != null ? `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}` : '—'
+  const formatPnl = (v) => {
+    if (v == null) return null
+    const n = Number(v)
+    const sign = n >= 0 ? '+' : ''
+    return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  }
 
   const renderRow = (p) => {
     const pos = p.position || {}
@@ -229,6 +259,7 @@ function PositionsPanel({ executorId, execution }) {
     const sl = pos.stopLossRate ?? null
     const tp = pos.takeProfitRate ?? null
     const isBusy = closing[posId]
+    const live = livePnl[posId] ?? null
 
     return (
       <div
@@ -244,16 +275,29 @@ function PositionsPanel({ executorId, execution }) {
           <span className="font-mono text-[11px]" style={{ color: 'var(--sd-text-muted)' }}>
             #{posId}
           </span>
-          <span
-            className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest"
-            style={
-              isOpen
-                ? { background: 'var(--sd-green-soft)', color: 'var(--sd-green)' }
-                : { background: 'rgba(139,156,176,0.15)', color: 'var(--sd-text-muted)' }
-            }
-          >
-            {isOpen ? 'Open' : 'Closed'}
-          </span>
+          <div className="flex items-center gap-2">
+            {isOpen && live != null && (
+              <span
+                className="font-mono text-[13px] font-bold"
+                style={{ color: live.pnl >= 0 ? 'var(--sd-green)' : 'var(--sd-red)' }}
+              >
+                {formatPnl(live.pnl)}
+                <span className="ml-1 text-[10px] font-normal opacity-70">
+                  ({live.pnl >= 0 ? '+' : ''}{live.pnl_pct?.toFixed(2)}%)
+                </span>
+              </span>
+            )}
+            <span
+              className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest"
+              style={
+                isOpen
+                  ? { background: 'var(--sd-green-soft)', color: 'var(--sd-green)' }
+                  : { background: 'rgba(139,156,176,0.15)', color: 'var(--sd-text-muted)' }
+              }
+            >
+              {isOpen ? 'Open' : 'Closed'}
+            </span>
+          </div>
         </div>
 
         <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] sm:grid-cols-4">
@@ -266,14 +310,34 @@ function PositionsPanel({ executorId, execution }) {
             <div className="font-mono font-semibold">{formatPrice(avgPrice)}</div>
           </div>
           <div>
-            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>Stop loss</div>
-            <div className="font-mono" style={{ color: 'var(--sd-red)' }}>{formatPrice(sl)}</div>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>
+              {live ? 'Current price' : 'Stop loss'}
+            </div>
+            <div className="font-mono" style={{ color: live ? 'var(--sd-text)' : 'var(--sd-red)' }}>
+              {live ? formatPrice(live.current_rate) : formatPrice(sl)}
+            </div>
           </div>
           <div>
-            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>Take profit</div>
-            <div className="font-mono" style={{ color: 'var(--sd-green)' }}>{formatPrice(tp)}</div>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>
+              {live ? 'Stop loss' : 'Take profit'}
+            </div>
+            <div className="font-mono" style={{ color: live ? 'var(--sd-red)' : 'var(--sd-green)' }}>
+              {live ? formatPrice(sl) : formatPrice(tp)}
+            </div>
           </div>
         </div>
+
+        {live && isOpen && (
+          <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] sm:grid-cols-4">
+            <div />
+            <div />
+            <div>
+              <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>Take profit</div>
+              <div className="font-mono" style={{ color: 'var(--sd-green)' }}>{formatPrice(tp)}</div>
+            </div>
+            <div />
+          </div>
+        )}
 
         {isOpen && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -307,8 +371,31 @@ function PositionsPanel({ executorId, execution }) {
     )
   }
 
+  const hasOpenWithLive = open.length > 0 && totalPnl != null
+
   return (
     <div className="space-y-2">
+      {/* Total P&L banner across all open positions */}
+      {hasOpenWithLive && (
+        <div
+          className="flex items-center justify-between rounded-lg px-3 py-2 text-[12px]"
+          style={{
+            background: totalPnl >= 0 ? 'rgba(0,200,83,0.08)' : 'rgba(255,23,68,0.08)',
+            border: `1px solid ${totalPnl >= 0 ? 'rgba(0,200,83,0.25)' : 'rgba(255,23,68,0.25)'}`,
+          }}
+        >
+          <span style={{ color: 'var(--sd-text-muted)' }}>
+            P&amp;L across {open.length} open position{open.length !== 1 ? 's' : ''}
+          </span>
+          <span
+            className="font-mono text-[16px] font-bold"
+            style={{ color: totalPnl >= 0 ? 'var(--sd-green)' : 'var(--sd-red)' }}
+          >
+            {formatPnl(totalPnl)}
+          </span>
+        </div>
+      )}
+
       {open.length > 0 && (
         <div className="space-y-2">
           {open.map(renderRow)}

@@ -161,6 +161,38 @@ class EtoroTradingClient(EtoroClient, TickClient):
                 return portfolio
         return {}
 
+    async def aget_available_cash(self) -> float:
+        """Return USD cash available to open new positions.
+
+        Per eToro: Available Cash = credit
+            - Σ(ordersForOpen[i].amount where mirrorID == 0)
+            - Σ(orders[i].amount)
+        """
+        portfolio = await self.aget_client_portfolio()
+        credit = float(portfolio.get("credit") or 0.0)
+
+        pending_open = 0.0
+        for order in portfolio.get("ordersForOpen") or []:
+            if not isinstance(order, dict):
+                continue
+            mirror_id = order.get("mirrorID", order.get("mirrorId", 0)) or 0
+            if int(mirror_id) != 0:
+                continue
+            pending_open += float(order.get("amount") or 0.0)
+
+        pending_close = 0.0
+        for order in portfolio.get("orders") or []:
+            if not isinstance(order, dict):
+                continue
+            pending_close += float(order.get("amount") or 0.0)
+
+        available = credit - pending_open - pending_close
+        logger.info(
+            "[eToro] available cash credit=%.2f pending_open=%.2f pending_orders=%.2f -> available=%.2f",
+            credit, pending_open, pending_close, available,
+        )
+        return max(0.0, available)
+
     async def aget_orders_snapshot(self) -> dict[str, list[dict[str, Any]]]:
         """Return pending/active orders from eToro /pnl."""
         portfolio = await self.aget_client_portfolio()
@@ -181,7 +213,7 @@ class EtoroTradingClient(EtoroClient, TickClient):
 
         When units is omitted or <= 0, eToro closes the full position.
         """
-        logger.info("[eToro] Closing position: %s units=%s", position_id, units)
+        logger.info("[eToro] close_position START position=%s units=%s", position_id, units)
 
         resolved_instrument_id = instrument_id
         if resolved_instrument_id is None:
@@ -190,7 +222,7 @@ class EtoroTradingClient(EtoroClient, TickClient):
                 resolved_instrument_id = position.get("instrumentID") or position.get("instrumentId")
 
         if resolved_instrument_id is None:
-            logger.error("[eToro] Cannot close position %s; instrument ID not found", position_id)
+            logger.error("[eToro] close_position ABORT position=%s reason=instrument_id_not_found", position_id)
             return False
 
         units_to_deduct = None
@@ -202,19 +234,26 @@ class EtoroTradingClient(EtoroClient, TickClient):
             except (TypeError, ValueError):
                 units_to_deduct = None
 
+        path = f"{self.execution_base_path()}/market-close-orders/positions/{position_id}"
+        payload = {
+            "InstrumentID": int(resolved_instrument_id),
+            "UnitsToDeduct": units_to_deduct,
+        }
+
+        logger.info(
+            "[eToro] close_position REQUEST position=%s path=%s payload=%s",
+            position_id, path, json.dumps(payload, default=str),
+        )
+
         try:
-            await self.arequest(
-                "POST",
-                f"{self.execution_base_path()}/market-close-orders/positions/{position_id}",
-                json_body={
-                    "InstrumentID": int(resolved_instrument_id),
-                    "UnitsToDeduct": units_to_deduct,
-                },
-                trade_execution=True,
+            response = await self.arequest("POST", path, json_body=payload, trade_execution=True)
+            logger.info(
+                "[eToro] close_position RESPONSE position=%s response=%s",
+                position_id, json.dumps(response, default=str) if response else "(empty)",
             )
             return True
         except Exception as e:
-            logger.error("[eToro] Error closing position %s: %s", position_id, e, exc_info=True)
+            logger.error("[eToro] close_position ERROR position=%s error=%s", position_id, e, exc_info=True)
             return False
 
     async def aget_position_ids_for_order(self, order_id):

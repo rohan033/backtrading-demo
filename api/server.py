@@ -41,7 +41,11 @@ from control_plane.log_stream import (
     stream_engine_log_events,
 )
 from control_plane.execution_scheduler import ExecutionScheduler
-from control_plane.execution_sources import DEFAULT_EXECUTION_SOURCE, EXECUTION_SOURCE_AI_RESEARCH
+from control_plane.execution_sources import (
+    DEFAULT_EXECUTION_SOURCE,
+    EXECUTION_SOURCE_AI_RESEARCH,
+    EXECUTION_SOURCE_MOMENTUM_TRADE,
+)
 from control_plane.execution_source_links import ensure_research_source_on_engine
 from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
 from brokers.angel.adapters.portfolio import angel_portfolio_rows_from_holdings
@@ -282,6 +286,22 @@ class ControlPlaneExecutionRequest(BaseModel):
         elif self.instrument_class not in {"equity", "crypto"}:
             self.instrument_class = "equity"
         return self
+
+
+class MomentumEnterRequest(BaseModel):
+    broker: str = "etoro"
+    account_env: str = "demo"
+    symbol: str
+    token: str
+    exchange: str = "ETORO"
+    close_price: float
+    long_percent: float = 5.0
+    short_percent: float = 1.0
+    stop_loss_amount: Optional[float] = None
+    max_available_capital: float = 100000
+    allow_partial_stocks: bool = True
+    instrument_class: InstrumentClass = "equity"
+    watchlist_id: Optional[int] = None
 
 
 # ── Endpoints ──
@@ -708,6 +728,205 @@ def create_controlled_execution(req: ControlPlaneExecutionRequest):
             "execution_id": execution_id,
             "engine": engine,
             "executor": executor_payload,
+        },
+    }
+
+
+@app.post(
+    "/api/control/momentum/enter",
+    operation_id="momentum_enter",
+    summary="Momentum entry: check balance, place a bracket order immediately, then attach a monitor-only strategy",
+)
+async def momentum_enter(req: MomentumEnterRequest):
+    """Fast-path entry for momentum trades.
+
+    Unlike the normal strategy flow (which spawns an engine that waits for a
+    threshold cross before buying), this:
+      1. Checks available cash for the account environment.
+      2. Sizes the position (scaling down to available cash when needed).
+      3. Places the bracket order (entry + take-profit + stop-loss) immediately
+         from the warm server-side client — no per-deploy websocket auth.
+      4. Registers an order poll job so the monitor engine tracks the position.
+      5. Spins up a monitor-only strategy (initial_threshold set very high so it
+         never places its own orders) purely to observe / manage the position.
+    """
+    if req.broker != "etoro":
+        raise HTTPException(
+            status_code=400,
+            detail="Momentum entry currently supports eToro bracket orders only",
+        )
+
+    env = _normalize_etoro_account_env(req.account_env)
+
+    from brokers.etoro.order_client import EtoroV2BracketOrderClient
+    from brokers.etoro.order_helpers import compute_stop_loss_price
+    from utils import order_quantity_from_capital
+
+    # 1. Balance check.
+    try:
+        order_client = EtoroV2BracketOrderClient(account_env=env)
+        order_client.generate_session()
+        available_cash = await order_client.aget_available_cash()
+    except Exception as exc:
+        log.error("[MOMENTUM] balance fetch failed env=%s: %s", env, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Could not fetch account balance: {exc}") from exc
+
+    if available_cash <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient funds in {env} account (available ${available_cash:.2f})",
+        )
+
+    # 2. Size the position — scale down to what's actually available.
+    capital = min(float(req.max_available_capital), available_cash)
+
+    # The entry is a market order, so the actual fill price comes from eToro.
+    # TP/SL are computed off close_price as an approximation — that's acceptable
+    # for our app; the exact levels can be verified on eToro.
+    entry_price = float(req.close_price)
+    if entry_price <= 0:
+        raise HTTPException(status_code=400, detail="Invalid entry price")
+
+    take_profit_price = round(entry_price * (1 + req.long_percent / 100), 2)
+    stop_loss_price = compute_stop_loss_price(
+        entry_price,
+        capital,
+        stop_loss_amount=req.stop_loss_amount,
+        short_percent=req.short_percent,
+    )
+    quantity = order_quantity_from_capital(
+        capital, entry_price, allow_partial=req.allow_partial_stocks
+    )
+    if quantity <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Available cash ${capital:.2f} too small to buy {req.symbol} at ${entry_price:.2f}",
+        )
+
+    log.info(
+        "[MOMENTUM] enter symbol=%s env=%s capital=%.2f (avail=%.2f) entry=%.2f qty=%s TP=%.2f SL=%.2f",
+        req.symbol, env, capital, available_cash, entry_price, quantity, take_profit_price, stop_loss_price,
+    )
+
+    # 3. Place the bracket order immediately.
+    try:
+        buy_result = await order_client.abuy_with_take_profit_stop_loss(
+            ltp=entry_price,
+            available_capital=capital,
+            symbol=req.symbol,
+            token=req.token,
+            exchange=req.exchange,
+            take_profit_rate=take_profit_price,
+            stop_loss_rate=stop_loss_price,
+            instrument_class=req.instrument_class,
+            quantity=quantity,
+        )
+    except Exception as exc:
+        log.error("[MOMENTUM] bracket order failed symbol=%s: %s", req.symbol, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Order placement failed: {exc}") from exc
+
+    order_id = (buy_result or {}).get("order_id")
+    if not order_id:
+        raise HTTPException(
+            status_code=502,
+            detail=(buy_result or {}).get("error_message") or "eToro did not return an order id",
+        )
+
+    # 4. Create the monitor-only strategy and register the poll job so the
+    #    engine tracks the position we just opened.
+    monitor_req = ControlPlaneExecutionRequest(
+        source_id=EXECUTION_SOURCE_MOMENTUM_TRADE,
+        broker="etoro",
+        account_env=env,
+        strategy_name="one-percent",
+        symbol=req.symbol,
+        token=req.token,
+        exchange=req.exchange,
+        close_price=entry_price,
+        long_percent=req.long_percent,
+        short_percent=req.short_percent,
+        stop_loss_amount=req.stop_loss_amount,
+        # Monitor-only: an unreachable threshold means the strategy never
+        # generates its own BUY signal — it only observes the open position.
+        initial_threshold=10000,
+        max_available_capital=req.max_available_capital,
+        allow_partial_stocks=req.allow_partial_stocks,
+        use_fake_client=False,
+        client_mode="bracket",
+        feed_mode="websocket",
+        tick_sample_every=1,
+        schedule_enabled=False,
+        start_immediately=True,
+        instrument_class=req.instrument_class,
+    )
+
+    try:
+        execution_id, executor_payload, engine_config = _controlled_execution_payload(monitor_req)
+        engine_registry.upsert_engine(engine_config)
+    except Exception as exc:
+        log.error("[MOMENTUM] monitor execution create failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Order placed but monitor setup failed: {exc}") from exc
+
+    db = get_live_events_db()
+    db.upsert_order_poll_job(
+        executor_id=execution_id,
+        order_id=order_id,
+        broker="etoro",
+        account_env=env,
+        engine_id=execution_id,
+        status="RUNNING",
+    )
+    db.log_event(
+        str(order_id),
+        "BUY_ORDER_PLACED",
+        {
+            "executor_id": execution_id,
+            "source": EXECUTION_SOURCE_MOMENTUM_TRADE,
+            "symbol": req.symbol,
+            "token": req.token,
+            "exchange": req.exchange,
+            "entry_price": entry_price,
+            "quantity": quantity,
+            "take_profit_price": take_profit_price,
+            "stop_loss_price": buy_result.get("stop_loss_rate", stop_loss_price),
+            "account_env": env,
+        },
+    )
+
+    # 5. Spin up the monitor engine.
+    try:
+        _start_controlled_execution(execution_id, trigger="momentum")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error("[MOMENTUM] monitor engine start failed execution=%s: %s", execution_id, exc, exc_info=True)
+        # The order is already live and tracked via the poll job; surface a soft warning.
+        return {
+            "status": True,
+            "data": {
+                "execution_id": execution_id,
+                "order_id": order_id,
+                "quantity": quantity,
+                "capital": round(capital, 2),
+                "available_cash": round(available_cash, 2),
+                "take_profit_price": take_profit_price,
+                "stop_loss_price": buy_result.get("stop_loss_rate", stop_loss_price),
+                "monitor_started": False,
+                "warning": f"Order placed and tracked, but monitor engine failed to start: {exc}",
+            },
+        }
+
+    return {
+        "status": True,
+        "data": {
+            "execution_id": execution_id,
+            "order_id": order_id,
+            "quantity": quantity,
+            "capital": round(capital, 2),
+            "available_cash": round(available_cash, 2),
+            "take_profit_price": take_profit_price,
+            "stop_loss_price": buy_result.get("stop_loss_rate", stop_loss_price),
+            "monitor_started": True,
         },
     }
 
@@ -1351,11 +1570,89 @@ async def close_execution_position(
         order_id=order_id,
     )
     db.log_event(order_id, "POSITION_CLOSED", {**request_details, "source": "control_plane_direct"})
+
+    # Mark the position as closed in the local DB immediately so the next GET /positions
+    # reflects the new state without waiting for the next remote poll.
+    db.mark_position_closed(str(position_id), execution_id)
+
     log.info(
         "[CONTROL_ETORO] close_position OK execution=%s position=%s env=%s units=%s",
         execution_id, position_id, account_env, req.units,
     )
     return {"status": True, "position_id": position_id, "closed": True}
+
+
+@app.get(
+    "/api/control/executions/{execution_id}/live-pnl",
+    operation_id="get_execution_live_pnl",
+    summary="Fetch live P&L for open positions belonging to an execution from eToro",
+)
+async def get_execution_live_pnl(execution_id: str):
+    """Returns live P&L for each open position tied to this execution.
+
+    Calls eToro's /pnl portfolio endpoint and matches by position IDs stored in the DB.
+    Falls back to computing (currentRate - openRate) * units when netProfit is absent.
+    """
+    db = get_live_events_db()
+
+    engine = engine_registry.get_engine(execution_id)
+    poll_job = db.get_order_poll_job(execution_id)
+    account_env = (
+        (engine or {}).get("account_env")
+        or (poll_job or {}).get("account_env")
+        or "demo"
+    )
+
+    # Collect position IDs we care about from the local DB.
+    stored = db.get_executor_positions(execution_id)
+    tracked_ids = {
+        str(p["position_id"])
+        for p in stored
+        if p.get("state") != "closed"
+    }
+
+    if not tracked_ids:
+        return {"status": True, "data": [], "total_pnl": 0.0}
+
+    try:
+        client = await _etoro_trading_client(account_env)
+        live_positions = await client.aget_positions()
+    except Exception as exc:
+        log.error("[LIVE_PNL] Failed to fetch eToro positions execution=%s: %s", execution_id, exc)
+        raise HTTPException(status_code=502, detail=f"Could not fetch live positions: {exc}") from exc
+
+    result = []
+    total_pnl = 0.0
+    for pos in live_positions:
+        pos_id = str(pos.get("positionID") or pos.get("positionId") or "")
+        if pos_id not in tracked_ids:
+            continue
+
+        open_rate = float(pos.get("openRate") or pos.get("OpenRate") or 0)
+        current_rate = float(
+            pos.get("currentRate") or pos.get("CurrentRate")
+            or pos.get("rate") or open_rate
+        )
+        units = float(pos.get("units") or pos.get("Units") or pos.get("remainingUnits") or 0)
+
+        # Use netProfit directly when eToro supplies it, otherwise compute.
+        net_profit = pos.get("netProfit") or pos.get("NetProfit")
+        if net_profit is not None:
+            pnl = float(net_profit)
+        else:
+            pnl = (current_rate - open_rate) * units
+
+        total_pnl += pnl
+        result.append({
+            "position_id": pos_id,
+            "open_rate": open_rate,
+            "current_rate": current_rate,
+            "units": units,
+            "pnl": round(pnl, 4),
+            "pnl_pct": round(((current_rate - open_rate) / open_rate * 100) if open_rate else 0, 3),
+        })
+
+    return {"status": True, "data": result, "total_pnl": round(total_pnl, 4)}
 
 
 @app.get(
