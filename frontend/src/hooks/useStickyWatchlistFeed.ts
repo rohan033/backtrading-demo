@@ -1,46 +1,34 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { useWatchlistHistorySeeder } from './useWatchlistHistorySeeder'
-import { useWatchlistPriceHistory } from './useWatchlistPriceHistory'
-import { useWatchlistTicks } from './useWatchlistTicks'
+import { useWatchlistStream } from '../context/WatchlistStreamContext'
 import type { WindowChangesLookup } from '../lib/watchlistAutoSort'
 import {
   loadStickyFeedConfig,
   saveStickyFeedConfig,
-  STICKY_FEED_WATCHLIST_REFRESH_MS,
   type StickyFeedConfig,
 } from '../lib/stickyFeed'
-import {
-  getTopWatchlistPerformers,
-  type MomentumLookup,
-  type RankedWatchlistSymbol,
-} from '../lib/watchlistTopPerformers'
-import {
-  loadMomentumLiveSymbolKeys,
-  loadMomentumNoTpSymbolKeys,
-  loadMomentumSymbolKeys,
-  loadMomentumWatchlistIds,
-} from '../lib/watchlistMomentumState'
-import { fetchWatchlists, type Watchlist } from '../lib/watchlists'
-
-function loadMomentumLookup(): MomentumLookup {
-  return {
-    watchlistIds: loadMomentumWatchlistIds(),
-    symbolKeys: loadMomentumSymbolKeys(),
-    noTpSymbolKeys: loadMomentumNoTpSymbolKeys(),
-    liveSymbolKeys: loadMomentumLiveSymbolKeys(),
-  }
-}
+import { getTopWatchlistPerformers, type RankedWatchlistSymbol } from '../lib/watchlistTopPerformers'
+import { loadArchivedSymbolKeys, WL_SYMBOL_ARCHIVED_EVENT } from '../lib/watchlistMomentumState'
 
 export function useStickyWatchlistFeed() {
-  const [watchlists, setWatchlists] = useState<Watchlist[]>([])
+  const {
+    watchlists,
+    hasSymbols,
+    connected,
+    windowChanges,
+    momentum,
+    setSymbolDeployEnv,
+    deploySymbolMomentum,
+  } = useWatchlistStream()
+
   const [config, setConfig] = useState<StickyFeedConfig>(() => loadStickyFeedConfig())
-  const [momentum, setMomentum] = useState<MomentumLookup>(() => loadMomentumLookup())
+  const [archivedKeys, setArchivedKeys] = useState<Set<string>>(() => loadArchivedSymbolKeys())
   const [topPerformers, setTopPerformers] = useState<RankedWatchlistSymbol[]>([])
 
   const watchlistsRef = useRef(watchlists)
   const momentumRef = useRef(momentum)
   const configRef = useRef(config)
+  const archivedKeysRef = useRef(archivedKeys)
 
   useEffect(() => {
     watchlistsRef.current = watchlists
@@ -54,46 +42,16 @@ export function useStickyWatchlistFeed() {
     configRef.current = config
   }, [config])
 
-  const hasSymbols = useMemo(
-    () => watchlists.some(watchlist => watchlist.symbols.length > 0),
-    [watchlists],
-  )
-
-  const refreshWatchlists = useCallback(async () => {
-    try {
-      const data = await fetchWatchlists()
-      setWatchlists(data)
-    } catch {
-      // Keep last known watchlists on transient errors.
-    }
-  }, [])
+  useEffect(() => {
+    archivedKeysRef.current = archivedKeys
+  }, [archivedKeys])
 
   useEffect(() => {
-    refreshWatchlists()
-    const id = window.setInterval(refreshWatchlists, STICKY_FEED_WATCHLIST_REFRESH_MS)
-    return () => window.clearInterval(id)
-  }, [refreshWatchlists])
-
-  const refreshMomentum = useCallback(() => {
-    setMomentum(loadMomentumLookup())
+    const refreshArchived = () => setArchivedKeys(loadArchivedSymbolKeys())
+    refreshArchived()
+    window.addEventListener(WL_SYMBOL_ARCHIVED_EVENT, refreshArchived)
+    return () => window.removeEventListener(WL_SYMBOL_ARCHIVED_EVENT, refreshArchived)
   }, [])
-
-  useEffect(() => {
-    refreshMomentum()
-    const onStorage = (event: StorageEvent) => {
-      if (!event.key || event.key.startsWith('wl-')) refreshMomentum()
-    }
-    window.addEventListener('storage', onStorage)
-    const id = window.setInterval(refreshMomentum, 2_000)
-    return () => {
-      window.removeEventListener('storage', onStorage)
-      window.clearInterval(id)
-    }
-  }, [refreshMomentum])
-
-  const { ticks, connected } = useWatchlistTicks(watchlists, hasSymbols)
-  const { windowChanges, historyRef, forceRecompute } = useWatchlistPriceHistory(ticks)
-  useWatchlistHistorySeeder(watchlists, historyRef, forceRecompute)
 
   const windowChangesRef = useRef<WindowChangesLookup>(windowChanges)
   useEffect(() => {
@@ -108,6 +66,7 @@ export function useStickyWatchlistFeed() {
         configRef.current.column,
         momentumRef.current,
         5,
+        archivedKeysRef.current,
       ),
     )
   }, [])
@@ -118,10 +77,9 @@ export function useStickyWatchlistFeed() {
     return () => window.clearInterval(id)
   }, [config.sortIntervalMs, resortTopPerformers])
 
-  // Re-rank immediately when rank window or sort interval changes.
   useEffect(() => {
     resortTopPerformers()
-  }, [config.column, config.sortIntervalMs, resortTopPerformers])
+  }, [config.column, config.sortIntervalMs, archivedKeys, momentum, watchlists, resortTopPerformers])
 
   const updateConfig = useCallback((patch: Partial<StickyFeedConfig>) => {
     setConfig(prev => {
@@ -132,13 +90,13 @@ export function useStickyWatchlistFeed() {
   }, [])
 
   return {
-    watchlists,
     topPerformers,
     windowChanges,
     config,
     updateConfig,
     connected,
     hasSymbols,
-    refreshWatchlists,
+    setSymbolDeployEnv,
+    deploySymbolMomentum,
   }
 }

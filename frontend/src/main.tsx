@@ -45,7 +45,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <Routes>
         <Route path="/features" element={<FeaturesPage />} />
         <Route element={<AppShell />}>
-          <Route index element={<Navigate to="/dashboard" replace />} />
+          <Route index element={<Navigate to="/watchlist" replace />} />
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/portfolio" element={<PortfolioPage />} />
           <Route path="/watchlist" element={<WatchlistPage />} />
@@ -75,7 +75,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
 
-        <Route path="*" element={<Navigate to="/dashboard" replace />} />
+        <Route path="*" element={<Navigate to="/watchlist" replace />} />
       </Routes>
     </BrowserRouter>
   </React.StrictMode>,
