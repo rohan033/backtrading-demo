@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import {
   LiveExecutionChart,
   resolveExecutionPriceStreamStatus,
+  stopControlledExecution,
 } from '../../ExecutionWorkspace'
 import { formatDbTimestamp } from '../../lib/datetime'
 import type { ExecutionPnlSnapshot } from '../../hooks/useExecutionPositionsPnl'
@@ -68,6 +70,24 @@ export default function ChartGridCard({
   const liveLtp = streamBundle.tick?.ltp ?? null
   const totalPnl = pnlSnapshot?.totalPnl
   const candleSeries = useExecutionCandlePrefetch(execution, streamCandles as never[])
+  const [confirmStop, setConfirmStop] = useState(false)
+  const [stopping, setStopping] = useState(false)
+  const [stopError, setStopError] = useState<string | null>(null)
+
+  const executeStop = async () => {
+    if (stopping) return
+    setStopping(true)
+    setStopError(null)
+    setConfirmStop(false)
+    try {
+      await stopControlledExecution(execution.executor_id)
+      await onExecutionStopped?.(execution.executor_id)
+    } catch (err) {
+      setStopError(err instanceof Error ? err.message : 'Stop failed')
+    } finally {
+      setStopping(false)
+    }
+  }
 
   return (
     <div
@@ -75,12 +95,12 @@ export default function ChartGridCard({
         selected ? 'border-accent bg-accent/5' : 'border-border bg-card'
       }`}
     >
-      <button
-        type="button"
-        className="flex w-full items-start justify-between gap-2 border-b border-border/60 px-2.5 py-2 text-left"
-        onClick={() => onSelect?.(execution.executor_id)}
-      >
-        <div className="min-w-0 flex-1">
+      <div className="flex items-start gap-2 border-b border-border/60">
+        <button
+          type="button"
+          className="min-w-0 flex-1 px-2.5 py-2 text-left"
+          onClick={() => onSelect?.(execution.executor_id)}
+        >
           <div className="truncate text-[11px] font-bold leading-tight">
             {execution.symbol || execution.label || execution.executor_id}
           </div>
@@ -92,8 +112,8 @@ export default function ChartGridCard({
           <p className={`mt-0.5 text-[9px] font-semibold ${streamToneClass(priceStreamStatus.tone)}`}>
             {priceStreamStatus.label}
           </p>
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-1">
+        </button>
+        <div className="flex shrink-0 flex-col items-end gap-1 px-2.5 py-2">
           {totalPnl != null ? (
             <span className={`font-mono text-[11px] font-bold ${totalPnl >= 0 ? 'text-green' : 'text-red'}`}>
               {formatPnl(totalPnl)}
@@ -102,15 +122,49 @@ export default function ChartGridCard({
           {selected ? (
             <span className="rounded bg-accent/15 px-1.5 py-0.5 text-[9px] font-bold text-accent">Selected</span>
           ) : null}
+          {confirmStop ? (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={stopping}
+                onClick={executeStop}
+                className="rounded border border-red/50 bg-red/15 px-1.5 py-0.5 text-[9px] font-semibold text-red disabled:opacity-50"
+              >
+                {stopping ? '…' : 'Yes'}
+              </button>
+              <button
+                type="button"
+                disabled={stopping}
+                onClick={() => setConfirmStop(false)}
+                className="rounded border border-border px-1.5 py-0.5 text-[9px] text-text-secondary disabled:opacity-50"
+              >
+                No
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              disabled={stopping}
+              onClick={() => {
+                setStopError(null)
+                setConfirmStop(true)
+              }}
+              className="text-[9px] font-semibold text-red hover:underline disabled:opacity-50"
+            >
+              {stopping ? 'Stopping…' : 'Stop'}
+            </button>
+          )}
           <Link
             to={`/trade/strategies/${encodeURIComponent(execution.executor_id)}`}
             className="text-[9px] text-accent hover:underline"
-            onClick={event => event.stopPropagation()}
           >
             Detail
           </Link>
         </div>
-      </button>
+      </div>
+      {stopError ? (
+        <p className="border-b border-border/60 px-2.5 py-1 text-center text-[9px] text-red">{stopError}</p>
+      ) : null}
 
       <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1 p-1.5">
