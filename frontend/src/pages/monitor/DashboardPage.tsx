@@ -75,9 +75,10 @@ type ControlEvent = {
 
 function StatCard({ label, value, valueClass = '' }: { label: string; value: string; valueClass?: string }) {
   return (
-    <div className="rounded-lg border border-border bg-card px-4 py-3.5">
-      <div className="mb-1.5 text-[10px] uppercase tracking-widest text-text-secondary">{label}</div>
-      <div className={`font-mono text-xl font-bold ${valueClass}`}>{value}</div>
+    <div className="group relative overflow-hidden rounded-lg border border-border bg-card px-4 py-4 shadow-panel transition-colors hover:border-accent/30">
+      <span className="absolute inset-y-0 left-0 w-0.5 bg-accent/0 transition-colors group-hover:bg-accent/60" aria-hidden="true" />
+      <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-text-secondary">{label}</div>
+      <div className={`font-display text-[28px] font-bold leading-none tracking-tightest tabular-nums ${valueClass}`}>{value}</div>
     </div>
   )
 }
@@ -339,17 +340,20 @@ export default function DashboardPage() {
   }, [])
 
   return (
-    <div className="h-full overflow-auto p-5">
-      <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
+    <div className="h-full overflow-auto p-5 animate-fade-in">
+      <div className="mb-4 grid grid-cols-2 gap-3 stagger-rise xl:grid-cols-4">
         <StatCard label="Total saved" value={String(strategyMetrics.total)} />
         <StatCard label="Running now" value={String(strategyMetrics.running)} valueClass="text-green" />
         <StatCard label="Stopped" value={String(strategyMetrics.stopped)} />
         <StatCard label="Pending deploy" value={String(strategyMetrics.pending)} />
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-border bg-card">
+      <div className="overflow-hidden rounded-lg border border-border bg-card shadow-panel">
         <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3.5">
-          <h3 className="text-[13px] font-semibold">Strategies</h3>
+          <h3 className="flex items-center gap-2 font-display text-sm font-bold tracking-tightest text-text-primary">
+            <span className="h-3.5 w-0.5 rounded-full bg-accent" aria-hidden="true" />
+            Strategies
+          </h3>
           <Link to="/trade/strategies" className="text-xs font-semibold text-accent hover:underline">
             View all
           </Link>
@@ -362,9 +366,12 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="mt-4 overflow-hidden rounded-lg border border-border bg-card">
+      <div className="mt-4 overflow-hidden rounded-lg border border-border bg-card shadow-panel">
         <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-3.5">
-          <h3 className="text-[13px] font-semibold">Recent activity</h3>
+          <h3 className="flex items-center gap-2 font-display text-sm font-bold tracking-tightest text-text-primary">
+            <span className="h-3.5 w-0.5 rounded-full bg-accent" aria-hidden="true" />
+            Recent activity
+          </h3>
           <Link to="/trade/activity" className="text-xs font-semibold text-accent hover:underline">
             Open activity
           </Link>

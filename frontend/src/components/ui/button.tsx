@@ -5,17 +5,18 @@ import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50',
+  'inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-semibold ring-offset-background transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:pointer-events-none disabled:opacity-50',
   {
     variants: {
       variant: {
-        default: 'bg-brand text-brand-foreground hover:bg-brand/90',
+        default:
+          'bg-brand text-brand-foreground shadow-[0_4px_14px_rgb(var(--c-accent)/0.28)] hover:-translate-y-px hover:shadow-[0_6px_20px_rgb(var(--c-accent)/0.42)] active:translate-y-0',
         destructive:
-          'bg-destructive text-destructive-foreground hover:bg-destructive/90',
+          'bg-destructive text-white hover:bg-destructive/90',
         outline:
-          'border border-input bg-background hover:bg-muted hover:text-foreground',
+          'border border-input bg-card/40 hover:border-accent/40 hover:bg-card-hi hover:text-foreground',
         secondary:
-          'bg-muted text-foreground hover:bg-muted/80',
+          'bg-muted text-foreground hover:bg-card-hi',
         tertiary:
           'border border-transparent bg-transparent text-text-secondary hover:border-border hover:bg-card/70 hover:text-text-primary',
         ghost: 'hover:bg-muted hover:text-foreground',

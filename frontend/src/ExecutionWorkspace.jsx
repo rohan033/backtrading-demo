@@ -1,6 +1,17 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { createChart } from 'lightweight-charts'
-import { Minimize2 } from 'lucide-react'
+import { Eye, EyeOff, Minimize2 } from 'lucide-react'
+
+const CHART_ANNOTATIONS_KEY = 'chart-annotations-visible-v1'
+const CHART_ANNOTATIONS_EVENT = 'chart-annotations-changed'
+
+function readChartAnnotationsVisible() {
+  try {
+    return window.localStorage.getItem(CHART_ANNOTATIONS_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
 
 import {
   formatBrokerCompactMoney,
@@ -1235,6 +1246,7 @@ export function LiveExecutionChart({
   const lastViewportBarCountRef = useRef(0)
   const userInteractedRef = useRef(false)
   const [hoveredOhlc, setHoveredOhlc] = useState(null)
+  const [showAnnotations, setShowAnnotations] = useState(readChartAnnotationsVisible)
   const candlesRef = useRef([])
   const chartData = useMemo(() => sanitizeChartSeries(data), [data])
   const candles = useMemo(() => sanitizeCandleSeries(candleData), [candleData])
@@ -1255,6 +1267,26 @@ export function LiveExecutionChart({
   useEffect(() => {
     candlesRef.current = candles
   }, [candles])
+
+  // Keep every chart instance's annotation visibility in sync.
+  useEffect(() => {
+    const handler = event => setShowAnnotations(Boolean(event.detail))
+    window.addEventListener(CHART_ANNOTATIONS_EVENT, handler)
+    return () => window.removeEventListener(CHART_ANNOTATIONS_EVENT, handler)
+  }, [])
+
+  const toggleAnnotations = useCallback(() => {
+    setShowAnnotations(prev => {
+      const next = !prev
+      try {
+        window.localStorage.setItem(CHART_ANNOTATIONS_KEY, next ? '1' : '0')
+      } catch {
+        // ignore storage failures
+      }
+      window.dispatchEvent(new CustomEvent(CHART_ANNOTATIONS_EVENT, { detail: next }))
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     const container = containerRef.current
@@ -1320,7 +1352,7 @@ export function LiveExecutionChart({
         })
         volumeSeriesRef.current = volumeSeries
       } else {
-        series = chart.addLineSeries({ color: '#1da1f2', lineWidth: 2, priceLineVisible: false })
+        series = chart.addLineSeries({ color: '#f0b840', lineWidth: 2, priceLineVisible: false })
         volumeSeriesRef.current = null
       }
       chartRef.current = chart
@@ -1454,20 +1486,24 @@ export function LiveExecutionChart({
     if (!seriesRef.current) return
     const series = seriesRef.current
     priceLinesRef.current.forEach(line => series.removePriceLine(line))
-    priceLinesRef.current = getPriceLines(execution).map(line => series.createPriceLine(line))
-  }, [execution, chartData.length, candles.length, isCandleMode])
+    priceLinesRef.current = showAnnotations
+      ? getPriceLines(execution).map(line => series.createPriceLine(line))
+      : []
+  }, [execution, chartData.length, candles.length, isCandleMode, showAnnotations])
 
   useEffect(() => {
     if (!seriesRef.current) return
     const markerSource = isCandleMode ? candles : chartData
     if (!markerSource.length) return
-    const markers = buildTradeMarkers(realtimeEvents, execution.executor_id, markerSource)
+    const markers = showAnnotations
+      ? buildTradeMarkers(realtimeEvents, execution.executor_id, markerSource)
+      : []
     try {
       seriesRef.current.setMarkers(markers)
     } catch (error) {
       console.warn('[LiveExecutionChart] Failed to set markers', error)
     }
-  }, [chartData, candles, execution.executor_id, realtimeEvents, isCandleMode])
+  }, [chartData, candles, execution.executor_id, realtimeEvents, isCandleMode, showAnnotations])
 
   const handleZoomOut = () => {
     const chart = chartRef.current
@@ -1484,6 +1520,24 @@ export function LiveExecutionChart({
       ) : null}
       <div className="relative">
         <div ref={containerRef} style={{ height }} />
+        <button
+          type="button"
+          onClick={toggleAnnotations}
+          aria-pressed={showAnnotations}
+          className={`absolute left-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border font-semibold shadow-sm backdrop-blur-sm transition-colors ${
+            showAnnotations
+              ? 'border-accent/40 bg-accent/15 text-accent hover:bg-accent/25'
+              : 'border-border/70 bg-secondary/80 text-text-secondary hover:bg-secondary hover:text-text-primary'
+          } ${compact ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-1 text-[11px]'}`}
+          title={showAnnotations ? 'Hide BUY / CLOSE / TP / SL markers' : 'Show BUY / CLOSE / TP / SL markers'}
+        >
+          {showAnnotations ? (
+            <Eye className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
+          ) : (
+            <EyeOff className={compact ? 'h-3 w-3' : 'h-3.5 w-3.5'} />
+          )}
+          {compact ? null : showAnnotations ? 'Markers' : 'Markers off'}
+        </button>
         {isCandleMode ? (
           <button
             type="button"
@@ -4241,7 +4295,7 @@ function getPriceLines(execution) {
 
   return [
     closePrice && { price: closePrice, color: '#8899a6', lineStyle: 2, lineWidth: 1, title: 'CLOSE', axisLabelVisible: true },
-    buyTrigger && { price: buyTrigger, color: '#1da1f2', lineStyle: 2, lineWidth: 1, title: 'BUY', axisLabelVisible: true },
+    buyTrigger && { price: buyTrigger, color: '#f0b840', lineStyle: 2, lineWidth: 1, title: 'BUY', axisLabelVisible: true },
     takeProfit && { price: takeProfit, color: '#00c853', lineStyle: 2, lineWidth: 1, title: 'TP', axisLabelVisible: true },
     stopLoss && { price: stopLoss, color: '#ff1744', lineStyle: 2, lineWidth: 1, title: 'SL', axisLabelVisible: true },
   ].filter(Boolean)

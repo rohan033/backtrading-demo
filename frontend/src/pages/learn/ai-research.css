@@ -1,8 +1,8 @@
 .ai-research-ui {
-  font-family: Inter, 'Segoe UI', system-ui, sans-serif;
+  font-family: 'Hanken Grotesk', 'Segoe UI', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  letter-spacing: -0.011em;
+  letter-spacing: -0.005em;
 }
 
 .ai-research-ui input,

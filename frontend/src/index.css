@@ -2,14 +2,40 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ===========================================================================
+   Obsidian Quant Terminal — design tokens
+   Single source of truth. Colors are space-separated RGB channels so Tailwind
+   opacity modifiers (bg-accent/15, text-accent/50, ...) keep working.
+   =========================================================================== */
+:root {
+  --c-bg: 10 13 18;          /* #0A0D12  deepest ink (app canvas)      */
+  --c-bg-elev: 15 19 26;     /* #0F131A  sidebar / top bar             */
+  --c-card: 22 27 36;        /* #161B24  panels / cards                */
+  --c-card-hi: 28 34 45;     /* #1C222D  hover / elevated              */
+  --c-border: 38 46 59;      /* #262E3B  hairline borders              */
+  --c-text: 230 234 240;     /* #E6EAF0  primary text                  */
+  --c-text-2: 139 150 168;   /* #8B96A8  secondary text                */
+  --c-accent: 240 184 64;    /* #F0B840  signature amber-gold          */
+  --c-accent-2: 96 165 214;  /* #60A5D6  cool info / AI                */
+  --c-up: 45 200 130;        /* #2DC882  long / gains                  */
+  --c-down: 255 92 110;      /* #FF5C6E  short / losses                */
+  --c-ink: 10 13 18;         /* on-accent text                         */
+
+  color-scheme: dark;
+}
+
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
-  background: #0f1923;
-  color: #e1e8ed;
+  font-family: 'Hanken Grotesk', 'Segoe UI', system-ui, sans-serif;
+  background: rgb(var(--c-bg));
+  color: rgb(var(--c-text));
   height: 100vh;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: 'cv01', 'ss01';
 }
 
 #root {
@@ -17,15 +43,89 @@ body {
   overflow: hidden;
 }
 
+/* Tabular, lined-up numerals everywhere data is shown */
+.font-mono,
+.tabular-nums,
+[class*='tabular'] {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'zero' 1;
+}
+
+/* Display type helper (headlines, page titles, hero numbers) */
+.font-display {
+  font-family: 'Bricolage Grotesque', 'Hanken Grotesk', system-ui, sans-serif;
+}
+
+/* ---- Filled accent actions: guarantee readable ink-on-gold contrast.
+   Only targets solid <button>/<a> fills; translucent bg-accent/NN badges use
+   different class names and are intentionally left untouched. ---- */
+button.bg-accent,
+a.bg-accent,
+.bg-accent.bg-accent[role='button'] {
+  color: rgb(var(--c-ink));
+}
+
+/* Selection */
+::selection {
+  background: rgb(var(--c-accent) / 0.28);
+  color: rgb(var(--c-text));
+}
+
 /* Custom scrollbar */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: #0f1923; }
-::-webkit-scrollbar-thumb { background: #2a3f52; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #3a5068; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--c-border));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--c-text-2) / 0.5); background-clip: padding-box; }
+
+/* ===========================================================================
+   Atmosphere — gradient-mesh canvas + fine grain overlay
+   =========================================================================== */
+.app-atmosphere {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(900px 600px at 12% -8%, rgb(var(--c-accent) / 0.07), transparent 60%),
+    radial-gradient(820px 520px at 108% 0%, rgb(var(--c-accent-2) / 0.06), transparent 55%),
+    radial-gradient(1200px 700px at 50% 120%, rgb(var(--c-up) / 0.04), transparent 60%);
+}
+.app-grain {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Staggered entrance for navigation / panels */
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.stagger-rise > * {
+  animation: riseIn 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.stagger-rise > *:nth-child(1) { animation-delay: 0.02s; }
+.stagger-rise > *:nth-child(2) { animation-delay: 0.06s; }
+.stagger-rise > *:nth-child(3) { animation-delay: 0.10s; }
+.stagger-rise > *:nth-child(4) { animation-delay: 0.14s; }
+.stagger-rise > *:nth-child(5) { animation-delay: 0.18s; }
+.stagger-rise > *:nth-child(6) { animation-delay: 0.22s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .stagger-rise > * { animation: none; }
+  .app-atmosphere, .app-grain { display: none; }
+}
 
 @keyframes btnGlow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(29, 161, 242, 0); }
-  50% { box-shadow: 0 0 18px 2px rgba(29, 161, 242, 0.28); }
+  0%, 100% { box-shadow: 0 0 0 0 rgb(var(--c-accent) / 0); }
+  50% { box-shadow: 0 0 20px 2px rgb(var(--c-accent) / 0.30); }
 }
 @keyframes strategyPulse {
   0%, 100% { transform: scale(1); opacity: 0.25; }
@@ -76,7 +176,7 @@ body {
 
 .floating-ai-button:hover {
   transform: scale(1.1) rotate(5deg);
-  box-shadow: 0 0 30px rgba(139, 92, 246, 0.9), 0 0 50px rgba(124, 58, 237, 0.7), 0 0 70px rgba(109, 40, 217, 0.5);
+  box-shadow: 0 0 26px rgb(var(--c-accent) / 0.85), 0 0 48px rgb(var(--c-accent) / 0.5), 0 0 70px rgb(var(--c-accent-2) / 0.35);
 }
 
 .ai-chat-scroll::-webkit-scrollbar {
@@ -178,7 +278,7 @@ input[type="range"] {
   -webkit-appearance: none;
   appearance: none;
   height: 6px;
-  background: #1e2d3d;
+  background: rgb(var(--c-card-hi));
   border-radius: 3px;
   outline: none;
   cursor: pointer;
@@ -188,7 +288,8 @@ input[type="range"]::-webkit-slider-thumb {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #1da1f2;
+  background: rgb(var(--c-accent));
   cursor: pointer;
-  border: 2px solid #0f1923;
+  border: 2px solid rgb(var(--c-bg));
+  box-shadow: 0 0 0 1px rgb(var(--c-accent) / 0.4);
 }

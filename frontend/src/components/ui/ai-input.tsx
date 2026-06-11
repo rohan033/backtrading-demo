@@ -26,11 +26,11 @@ function AiMark({ size = 'md' }: { size?: 'sm' | 'md' }) {
   return (
     <span
       className={cn(
-        'inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500/20 to-sky-400/20 ring-1 ring-white/10',
+        'inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-accent/25 to-accent-2/25 ring-1 ring-white/10',
         box,
       )}
     >
-      <Sparkles className={cn(icon, 'text-sky-300')} strokeWidth={2} />
+      <Sparkles className={cn(icon, 'text-accent')} strokeWidth={2} />
     </span>
   )
 }
@@ -331,27 +331,16 @@ export function MorphPanel({
                 messages={chatMessages}
                 pinToBottom
                 emptyState={
-                  <div className="space-y-3">
-                    <p className="text-text-secondary">
-                      Ask about strategies, live executions, brokers, or this codebase.
-                    </p>
+                  <div className="flex flex-col items-start gap-3 py-2">
+                    <AiMark />
                     <div>
-                      <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary">
-                        Quick workflows
+                      <p className="font-display text-base font-bold tracking-tightest text-text-primary">
+                        Strategy AI
                       </p>
-                      <div className="flex flex-wrap gap-1.5">
-                        {AI_WORKFLOWS.map(workflow => (
-                          <button
-                            key={workflow.id}
-                            type="button"
-                            disabled={!connected || sending}
-                            onClick={() => void runQuickPrompt(workflow.prompt)}
-                            className="rounded-full border border-border/70 bg-primary/50 px-2.5 py-1 text-[11px] text-text-primary transition-colors hover:border-accent/40 hover:bg-accent/10 disabled:cursor-not-allowed disabled:opacity-40"
-                          >
-                            {workflow.label}
-                          </button>
-                        ))}
-                      </div>
+                      <p className="mt-1 text-sm text-text-secondary">
+                        Ask about strategies, live executions, brokers, or this codebase. Pick a
+                        quick workflow below to get started.
+                      </p>
                     </div>
                   </div>
                 }
@@ -360,7 +349,7 @@ export function MorphPanel({
             </div>
 
             {error ? (
-              <div className="shrink-0 border-b border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+              <div className="shrink-0 border-b border-red/30 bg-red/10 px-3 py-2 text-xs text-red">
                 {error}
               </div>
             ) : null}
@@ -406,7 +395,7 @@ export function MorphPanel({
                           'rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors disabled:cursor-not-allowed disabled:opacity-50',
                           interactionMode === mode
                             ? mode === 'execute'
-                              ? 'bg-amber-500/20 text-amber-200'
+                              ? 'bg-accent/20 text-accent'
                               : 'bg-card text-text-primary shadow-sm'
                             : 'text-text-secondary hover:text-text-primary',
                         )}
@@ -429,7 +418,7 @@ export function MorphPanel({
                     className={cn(
                       'inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50',
                       webSearchEnabled
-                        ? 'border-sky-400/40 bg-sky-500/15 text-sky-200'
+                        ? 'border-accent-2/40 bg-accent-2/15 text-accent-2'
                         : 'border-border/60 bg-primary/50 text-text-secondary hover:text-text-primary',
                     )}
                   >
@@ -467,7 +456,7 @@ export function MorphPanel({
                     onClick={() => onStop?.()}
                     aria-label="Stop response"
                     title="Stop response"
-                    className="rounded-lg bg-red-500/15 p-2.5 text-red-300 transition-colors hover:bg-red-500/25"
+                    className="rounded-lg bg-red/15 p-2.5 text-red transition-colors hover:bg-red/25"
                   >
                     <Square className="h-4 w-4 fill-current" />
                   </button>

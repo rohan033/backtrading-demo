@@ -24,7 +24,7 @@ import './ai-research.css'
 
 function AiTextMark() {
   return (
-    <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-violet-500/30 to-sky-400/30 text-[10px] font-semibold tracking-tight text-white ring-1 ring-white/10">
+    <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-gradient-to-br from-accent/30 to-accent-2/30 font-display text-[10px] font-bold tracking-tight text-text-primary ring-1 ring-white/10">
       AI
     </span>
   )
@@ -365,7 +365,7 @@ export function AiResearchSessionPage() {
                     className={`rounded-md px-2.5 py-1 text-xs font-medium capitalize transition-colors ${
                       interactionMode === mode
                         ? mode === 'execute'
-                          ? 'bg-amber-500/20 text-amber-200'
+                          ? 'bg-accent/20 text-accent'
                           : 'bg-card text-text-primary shadow-sm'
                         : 'text-text-secondary hover:text-text-primary'
                     }`}
@@ -387,7 +387,7 @@ export function AiResearchSessionPage() {
                 onClick={() => void toggleWebSearch(!webSearchEnabled)}
                 className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                   webSearchEnabled
-                    ? 'border-sky-400/40 bg-sky-500/15 text-sky-200'
+                    ? 'border-accent-2/40 bg-accent-2/15 text-accent-2'
                     : 'border-border/60 bg-primary/50 text-text-secondary hover:text-text-primary'
                 }`}
               >

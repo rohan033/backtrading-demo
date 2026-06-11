@@ -47,19 +47,24 @@ export function AiResearchListPage() {
   }
 
   return (
-    <div className="ai-research-ui h-full overflow-auto p-6">
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">AI Research</h1>
-          <p className="mt-1 text-sm font-normal leading-relaxed text-text-secondary">
-            Persisted research sessions with strategy suggestions and interactive deploy actions.
-          </p>
+    <div className="ai-research-ui h-full overflow-auto p-6 animate-fade-in">
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-accent/30 to-accent-2/30 font-display text-xs font-extrabold text-text-primary ring-1 ring-inset ring-white/10">
+            AI
+          </span>
+          <div>
+            <h1 className="font-display text-xl font-bold tracking-tightest text-text-primary">AI Research</h1>
+            <p className="mt-1 text-sm leading-relaxed text-text-secondary">
+              Persisted research sessions with strategy suggestions and interactive deploy actions.
+            </p>
+          </div>
         </div>
         <button
           type="button"
           onClick={startSession}
           disabled={creating}
-          className="rounded-md bg-accent px-4 py-2 text-xs font-medium text-white disabled:opacity-50"
+          className="rounded-md bg-accent px-4 py-2 text-[12px] font-bold text-primary shadow-[0_4px_14px_rgb(var(--c-accent)/0.3)] transition-transform hover:-translate-y-px disabled:opacity-50"
         >
           {creating ? 'Starting…' : 'New session'}
         </button>
@@ -74,14 +79,14 @@ export function AiResearchListPage() {
           Loading sessions…
         </div>
       ) : sessions.length ? (
-        <div className="overflow-hidden rounded-lg border border-border bg-card text-sm">
+        <div className="overflow-hidden rounded-lg border border-border bg-card text-sm shadow-panel">
           <table className="w-full border-collapse">
             <thead>
-              <tr className="bg-black/15 text-left">
-                <th className="px-3.5 py-2.5 text-[10px] font-medium uppercase tracking-wider text-text-secondary">Session</th>
-                <th className="px-3.5 py-2.5 text-[10px] font-medium uppercase tracking-wider text-text-secondary">Mode</th>
-                <th className="px-3.5 py-2.5 text-[10px] font-medium uppercase tracking-wider text-text-secondary">Actions</th>
-                <th className="px-3.5 py-2.5 text-[10px] font-medium uppercase tracking-wider text-text-secondary">Updated</th>
+              <tr className="bg-secondary text-left">
+                <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">Session</th>
+                <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">Mode</th>
+                <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">Actions</th>
+                <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">Updated</th>
               </tr>
             </thead>
             <tbody>

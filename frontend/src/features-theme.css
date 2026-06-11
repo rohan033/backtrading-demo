@@ -1,26 +1,26 @@
 /* shadcn theme scoped to the features marketing page */
 .features-shell {
-  --background: 207 36% 10%;
-  --foreground: 210 20% 92%;
-  --card: 210 28% 14%;
-  --card-foreground: 210 20% 92%;
-  --popover: 210 28% 14%;
-  --popover-foreground: 210 20% 92%;
-  --brand: 203 89% 53%;
-  --brand-foreground: 0 0% 100%;
-  --muted: 210 24% 18%;
-  --muted-foreground: 210 12% 62%;
-  --destructive: 0 84% 60%;
+  --background: 218 28% 5%;
+  --foreground: 218 23% 92%;
+  --card: 218 24% 11%;
+  --card-foreground: 218 23% 92%;
+  --popover: 218 24% 11%;
+  --popover-foreground: 218 23% 92%;
+  --brand: 42 86% 60%;
+  --brand-foreground: 218 28% 5%;
+  --muted: 218 23% 14%;
+  --muted-foreground: 218 14% 60%;
+  --destructive: 351 100% 68%;
   --destructive-foreground: 0 0% 100%;
-  --border: 210 22% 22%;
-  --input: 210 22% 22%;
-  --ring: 203 89% 53%;
+  --border: 218 22% 19%;
+  --input: 218 22% 19%;
+  --ring: 42 86% 60%;
   --radius: 0.75rem;
 
   min-height: 100vh;
   background: hsl(var(--background));
   color: hsl(var(--foreground));
-  font-family: Inter, 'Segoe UI', system-ui, sans-serif;
+  font-family: 'Hanken Grotesk', 'Segoe UI', system-ui, sans-serif;
 }
 
 .features-shell .text-primary-foreground {
