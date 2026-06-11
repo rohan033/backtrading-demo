@@ -120,9 +120,23 @@ function RuntimePills({ port, apiBaseUrl, wsUrl, logFile, pending }) {
   )
 }
 
-const LIVE_PNL_POLL_MS = 10_000
+// Derive realtime P&L for a position from the live feed price already streaming
+// into the chart, so we don't need a backend round-trip for rates.
+function computeLivePnl(p, livePrice) {
+  if (livePrice == null || !(livePrice > 0)) return null
+  const pos = p.position || {}
+  const opening = pos.openingData || {}
+  const openRate = Number(opening.avgPrice ?? pos.openRate ?? pos.OpenRate ?? 0)
+  const units = Number(p.remaining_units ?? pos.remainingUnits ?? pos.units ?? pos.Units ?? 0)
+  if (!(openRate > 0) || !(units > 0)) return null
+  const isBuy = pos.isBuy ?? pos.IsBuy ?? true
+  const direction = isBuy ? 1 : -1
+  const pnl = (livePrice - openRate) * units * direction
+  const pnlPct = ((livePrice - openRate) / openRate) * 100 * direction
+  return { pnl, pnl_pct: pnlPct, current_rate: livePrice }
+}
 
-function PositionsPanel({ executorId, execution }) {
+function PositionsPanel({ executorId, execution, livePrice = null }) {
   const [positions, setPositions] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -130,8 +144,6 @@ function PositionsPanel({ executorId, execution }) {
   const [closing, setClosing] = useState({})
   const [closeErrors, setCloseErrors] = useState({})
   const [closedIds, setClosedIds] = useState(new Set())
-  const [livePnl, setLivePnl] = useState({})   // position_id → { pnl, pnl_pct, current_rate }
-  const [totalPnl, setTotalPnl] = useState(null)
 
   const broker = execution?.broker
   const accountEnv = execution?.account_env || 'demo'
@@ -152,27 +164,7 @@ function PositionsPanel({ executorId, execution }) {
     }
   }, [executorId])
 
-  const fetchLivePnl = useCallback(async () => {
-    if (!executorId || broker !== 'etoro') return
-    try {
-      const res = await fetch(`/api/control/executions/${encodeURIComponent(executorId)}/live-pnl`)
-      const data = await res.json()
-      if (data.status) {
-        const map = {}
-        for (const item of data.data || []) map[item.position_id] = item
-        setLivePnl(map)
-        setTotalPnl(data.total_pnl ?? null)
-      }
-    } catch { /* silent — P&L is best-effort */ }
-  }, [executorId, broker])
-
   useEffect(() => { fetchPositions() }, [fetchPositions])
-
-  useEffect(() => {
-    fetchLivePnl()
-    const id = setInterval(fetchLivePnl, LIVE_PNL_POLL_MS)
-    return () => clearInterval(id)
-  }, [fetchLivePnl])
 
   const handleClose = useCallback(async (positionId, maxUnits) => {
     const raw = unitInputs[positionId]
@@ -234,6 +226,9 @@ function PositionsPanel({ executorId, execution }) {
   const open = positions.filter(p => (p.state || p.position?.state) !== 'closed' && !closedIds.has(p.position_id))
   const closed = positions.filter(p => (p.state || p.position?.state) === 'closed' || closedIds.has(p.position_id))
 
+  const openLive = open.map(p => computeLivePnl(p, livePrice)).filter(Boolean)
+  const totalPnl = openLive.length ? openLive.reduce((sum, l) => sum + l.pnl, 0) : null
+
   if (!positions.length) return (
     <div className="py-8 text-center text-sm" style={{ color: 'var(--sd-text-muted)' }}>
       No positions tracked for this execution yet.
@@ -259,7 +254,7 @@ function PositionsPanel({ executorId, execution }) {
     const sl = pos.stopLossRate ?? null
     const tp = pos.takeProfitRate ?? null
     const isBusy = closing[posId]
-    const live = livePnl[posId] ?? null
+    const live = isOpen ? computeLivePnl(p, livePrice) : null
 
     return (
       <div
@@ -418,7 +413,7 @@ function PositionsPanel({ executorId, execution }) {
 
 const PANEL_TABS = ['Activity', 'Positions']
 
-function ActivityAndPositionsPanel({ executorId, execution, realtimeEvents }) {
+function ActivityAndPositionsPanel({ executorId, execution, realtimeEvents, livePrice = null }) {
   const [tab, setTab] = useState('Activity')
   return (
     <div
@@ -451,19 +446,20 @@ function ActivityAndPositionsPanel({ executorId, execution, realtimeEvents }) {
             className="!border-0 !bg-transparent !rounded-none !shadow-none -mx-4 -my-3"
           />
         ) : (
-          <PositionsPanel executorId={executorId} execution={execution} />
+          <PositionsPanel executorId={executorId} execution={execution} livePrice={livePrice} />
         )}
       </div>
     </div>
   )
 }
 
-function ActivityFeed({ executorId, execution, realtimeEvents }) {
+function ActivityFeed({ executorId, execution, realtimeEvents, livePrice = null }) {
   return (
     <ActivityAndPositionsPanel
       executorId={executorId}
       execution={execution}
       realtimeEvents={realtimeEvents}
+      livePrice={livePrice}
     />
   )
 }
@@ -492,6 +488,25 @@ export default function StrategyDetailView({
   const [filledQty, setFilledQty] = useState(null)
   const levels = useMemo(() => computeExecutionLevels(execution || {}), [execution])
   const broker = execution?.broker
+  // Latest price from the chart's live feed, reused to compute position P&L.
+  const livePrice = useMemo(() => {
+    const planeId = execution?.data_plane_id
+    const token = execution?.token
+    const stream = planeId ? planeStreams?.[planeId] : null
+    if (!stream || !planeId || !token) return null
+    let hist = stream.tickHistory?.[`${planeId}:${token}`]
+    if (!hist?.length) {
+      const symbol = String(execution?.symbol || '').trim().toUpperCase()
+      for (const [k, h] of Object.entries(stream.tickHistory || {})) {
+        if (k.startsWith(`${planeId}:`) && Array.isArray(h) && h.length) {
+          const tick = stream.ticks?.[k]
+          if (String(tick?.symbol || '').trim().toUpperCase() === symbol) { hist = h; break }
+        }
+      }
+    }
+    const last = hist?.[hist.length - 1]?.value
+    return Number.isFinite(last) && last > 0 ? Number(last) : null
+  }, [planeStreams, execution?.data_plane_id, execution?.token, execution?.symbol, selectedTick])
   const port = execution?.data_plane_port || queuedItem?.engine?.port
   const pnl = 0
   const qtyDecimals = execution?.allow_partial_stocks ? 2 : 0
@@ -748,7 +763,7 @@ export default function StrategyDetailView({
             planeStreams={planeStreams}
             selectedTick={selectedTick}
           />
-          <ActivityFeed executorId={executionId} execution={execution} realtimeEvents={strategyActivityEvents} />
+          <ActivityFeed executorId={executionId} execution={execution} realtimeEvents={strategyActivityEvents} livePrice={livePrice} />
         </div>
 
         <div className="space-y-3">
