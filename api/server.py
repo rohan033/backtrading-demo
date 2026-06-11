@@ -1621,26 +1621,57 @@ async def get_execution_live_pnl(execution_id: str):
         log.error("[LIVE_PNL] Failed to fetch eToro positions execution=%s: %s", execution_id, exc)
         raise HTTPException(status_code=502, detail=f"Could not fetch live positions: {exc}") from exc
 
+    matched = [
+        pos for pos in live_positions
+        if str(pos.get("positionID") or pos.get("positionId") or "") in tracked_ids
+    ]
+
+    def _instrument_of(pos):
+        raw = pos.get("instrumentID") or pos.get("instrumentId") or pos.get("InstrumentID")
+        try:
+            return int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    # The /pnl portfolio snapshot does NOT carry a live rate, so pull current
+    # market rates for the involved instruments and compute realtime P&L from them.
+    instrument_ids = {iid for iid in (_instrument_of(p) for p in matched) if iid is not None}
+    live_rate_by_instrument: dict[int, float] = {}
+    if instrument_ids:
+        try:
+            rates = await client.aget_rates(list(instrument_ids))
+            for rate in rates:
+                iid = rate.get("instrumentID") or rate.get("instrumentId")
+                ltp = client._rate_ltp(rate)
+                if iid is not None and ltp is not None:
+                    live_rate_by_instrument[int(iid)] = float(ltp)
+        except Exception as exc:
+            log.warning("[LIVE_PNL] live rate fetch failed execution=%s: %s", execution_id, exc)
+
     result = []
     total_pnl = 0.0
-    for pos in live_positions:
+    for pos in matched:
         pos_id = str(pos.get("positionID") or pos.get("positionId") or "")
-        if pos_id not in tracked_ids:
-            continue
-
         open_rate = float(pos.get("openRate") or pos.get("OpenRate") or 0)
-        current_rate = float(
-            pos.get("currentRate") or pos.get("CurrentRate")
-            or pos.get("rate") or open_rate
-        )
         units = float(pos.get("units") or pos.get("Units") or pos.get("remainingUnits") or 0)
+        is_buy = pos.get("isBuy")
+        if is_buy is None:
+            is_buy = pos.get("IsBuy", True)
+        direction = 1.0 if is_buy else -1.0
 
-        # Use netProfit directly when eToro supplies it, otherwise compute.
-        net_profit = pos.get("netProfit") or pos.get("NetProfit")
-        if net_profit is not None:
-            pnl = float(net_profit)
+        live_rate = live_rate_by_instrument.get(_instrument_of(pos))
+        if live_rate and live_rate > 0:
+            current_rate = live_rate
+            pnl = (current_rate - open_rate) * units * direction
         else:
-            pnl = (current_rate - open_rate) * units
+            # No live rate available: fall back to eToro's netProfit, then to the
+            # (possibly stale) portfolio rate.
+            current_rate = float(
+                pos.get("currentRate") or pos.get("CurrentRate")
+                or pos.get("rate") or open_rate
+            )
+            net_profit = pos.get("netProfit") or pos.get("NetProfit")
+            pnl = float(net_profit) if net_profit is not None else (current_rate - open_rate) * units * direction
 
         total_pnl += pnl
         result.append({
@@ -1649,7 +1680,7 @@ async def get_execution_live_pnl(execution_id: str):
             "current_rate": current_rate,
             "units": units,
             "pnl": round(pnl, 4),
-            "pnl_pct": round(((current_rate - open_rate) / open_rate * 100) if open_rate else 0, 3),
+            "pnl_pct": round(((current_rate - open_rate) / open_rate * 100 * direction) if open_rate else 0, 3),
         })
 
     return {"status": True, "data": result, "total_pnl": round(total_pnl, 4)}
