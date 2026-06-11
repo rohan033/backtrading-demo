@@ -44,6 +44,7 @@ class EngineProcessManager:
         strategy_name = data.get("strategy_name") or "default"
         client_mode = normalize_client_mode(broker, data.get("client_mode"))
         feed_mode = data.get("feed_mode") or "websocket"
+        feed_tick_sample_every = int(data.get("feed_tick_sample_every") or 0)
         symbol = data.get("symbol")
         token = data.get("token")
         engine_id = data.get("id") or _engine_id(broker, symbol, strategy_name, account_env)
@@ -90,8 +91,10 @@ class EngineProcessManager:
             "--client-mode",
             client_mode,
         ]
-        if broker == "angel":
+        if broker in ("angel", "etoro"):
             cmd.extend(["--feed-mode", feed_mode])
+        if feed_tick_sample_every > 0:
+            cmd.extend(["--feed-tick-sample-every", str(feed_tick_sample_every)])
         if symbol:
             cmd.extend(["--symbol", str(symbol)])
         if token:

@@ -8,20 +8,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONTROL_LOG_DIR = REPO_ROOT / "logs" / "control-plane"
 DEFAULT_LIVE_LOG_DIR = REPO_ROOT / "logs" / "executions"
 
-# Frontend poll endpoints — noisy at INFO in uvicorn access logs.
-_QUIET_POLL_GET_RE = re.compile(
-    r'"GET /api/control/',
+# High-frequency control-plane traffic — noisy at INFO in uvicorn access logs.
+_QUIET_ACCESS_RE = re.compile(
+    r'"(?:GET /api/control/|POST /api/control/engines/[^"]+/heartbeat)',
     re.IGNORECASE,
 )
 
 
 class UvicornAccessPollFilter(logging.Filter):
-    """Drop uvicorn access lines for high-frequency control-plane list GETs."""
+    """Drop uvicorn access lines for poll GETs and engine heartbeat POSTs."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         if os.getenv("CONTROL_PLANE_LOG_POLL_GETS", "").strip().lower() in {"1", "true", "yes", "on"}:
             return True
-        return _QUIET_POLL_GET_RE.search(record.getMessage()) is None
+        return _QUIET_ACCESS_RE.search(record.getMessage()) is None
 
 
 def quiet_uvicorn_poll_access_logs() -> None:

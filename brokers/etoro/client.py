@@ -19,6 +19,15 @@ class EtoroApiError(Exception):
         self.status_code = status_code
         self.payload = payload
 
+    def __str__(self) -> str:
+        if self.payload is not None:
+            try:
+                payload_json = json.dumps(self.payload, default=str, sort_keys=True)
+            except TypeError:
+                payload_json = repr(self.payload)
+            return f"{super().__str__()} payload={payload_json}"
+        return super().__str__()
+
 
 class EtoroRateLimitError(EtoroApiError):
     def __init__(self, message: str = "eToro rate limit exceeded", payload: Any = None):
@@ -102,6 +111,10 @@ class EtoroClient:
             parts.append(f"{encoded_key}={encoded_value}")
         return f"?{'&'.join(parts)}" if parts else ""
 
+    @property
+    def _public_api_root(self) -> str:
+        return self.base_url.rsplit("/api/v1", 1)[0]
+
     def _request_sync(
         self,
         method: str,
@@ -110,9 +123,11 @@ class EtoroClient:
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | list[Any] | None = None,
         trade_execution: bool = False,
+        api_root: str | None = None,
     ) -> Any:
         self.generate_session()
-        url = f"{self.base_url.rstrip('/')}{path}{self._query_string(params)}"
+        root = (api_root or self.base_url).rstrip("/")
+        url = f"{root}{path}{self._query_string(params)}"
         body = None if json_body is None else json.dumps(json_body).encode("utf-8")
 
         attempts = 3 if method.upper() == "GET" else 1
@@ -184,6 +199,28 @@ class EtoroClient:
             params=params,
             json_body=json_body,
             trade_execution=trade_execution,
+        )
+
+    async def arequest_v2(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | list[Any] | None = None,
+        trade_execution: bool = False,
+    ) -> Any:
+        import asyncio
+
+        normalized = path if path.startswith("/api/v2") else f"/api/v2{path}"
+        return await asyncio.to_thread(
+            self._request_sync,
+            method,
+            normalized,
+            params=params,
+            json_body=json_body,
+            trade_execution=trade_execution,
+            api_root=self._public_api_root,
         )
 
     async def aget_rates(self, instrument_ids: list[int]) -> list[dict[str, Any]]:

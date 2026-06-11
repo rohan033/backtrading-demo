@@ -10,6 +10,7 @@ import {
   isIndianBroker,
 } from './lib/currency'
 import { formatDbTimestamp } from './lib/datetime'
+import ChartsGrid from './components/charts/ChartsGrid'
 import StrategyScheduleSection from './components/StrategyScheduleSection'
 import { buildLocalTradingDayOptions, loadTradingDayOptions } from './lib/tradingSchedule'
 import { EXECUTION_SOURCE_USER } from './lib/executionSources'
@@ -22,8 +23,6 @@ const NOTIFY_ACTIONS = new Set([
   'BUY_ORDER_PLACED',
   'SELL_ORDER_PLACED',
   'ORDER_FILLED',
-  'ORDER_REJECTED',
-  'ORDER_CANCELLED',
   'POSITION_CLOSED',
   'TAKE_PROFIT_EXIT_PLACED',
   'STOP_LOSS_EXIT_PLACED',
@@ -38,10 +37,28 @@ const HIGH_CAPITAL_WARNING_THRESHOLD = 2000
 function defaultClientMode(broker) {
   return broker === 'etoro' ? 'bracket' : 'standard'
 }
+
+const ETORO_CRYPTO_SYMBOLS = new Set([
+  'BTC', 'ETH', 'XRP', 'LTC', 'BCH', 'ADA', 'DOT', 'SOL', 'DOGE', 'XLM',
+  'ETC', 'LINK', 'UNI', 'AAVE', 'TRX', 'SHIB', 'AVAX', 'MATIC',
+])
+
+function suggestInstrumentClass(symbol) {
+  const token = String(symbol || '').trim().toUpperCase().split('-')[0].split('.')[0]
+  return ETORO_CRYPTO_SYMBOLS.has(token) ? 'crypto' : 'equity'
+}
 const ANGEL_FEED_OPTIONS = [
   { value: 'websocket', label: 'WebSocket (SmartAPI stream)' },
   { value: 'rest', label: 'REST poll (1s)' },
 ]
+const ETORO_FEED_OPTIONS = [
+  { value: 'websocket', label: 'WebSocket (eToro stream)' },
+  { value: 'rest', label: 'REST poll (1s)' },
+]
+
+function feedOptionsForBroker(broker) {
+  return broker === 'etoro' ? ETORO_FEED_OPTIONS : ANGEL_FEED_OPTIONS
+}
 const DEFAULT_DATA_PLANE = {
   id: 'local-live-engine',
   label: 'angel-local-live-strategy-default',
@@ -71,9 +88,19 @@ const EMPTY_PLANE_STREAM = {
   connectExhausted: false,
   ticks: {},
   tickHistory: {},
+  candleHistory: {},
   lastTickAt: {},
   realtimeEvents: [],
 }
+
+const CANDLE_UP_COLOR = '#00e676'
+const CANDLE_DOWN_COLOR = '#ff5252'
+const CANDLE_NEUTRAL_UP = '#00c853'
+const CANDLE_NEUTRAL_DOWN = '#ff1744'
+const CANDLE_VISIBLE_BARS = 55
+const CANDLE_PREFETCH_COUNT = 1000
+const CANDLE_HISTORY_MAX_BARS = 1100
+const CANDLE_HISTORY_2H_MINUTES = 120
 
 const PRICE_STREAM_STALE_MS = 15000
 const PRICE_STREAM_FIRST_TICK_MS = 10000
@@ -146,6 +173,11 @@ export function ExecutionProvider({ children }) {
     })
   }, [controlledExecutions, executions])
 
+  const panelExecutionsRef = useRef(panelExecutions)
+  useEffect(() => {
+    panelExecutionsRef.current = panelExecutions
+  }, [panelExecutions])
+
   const selectedExecution = useMemo(
     () => panelExecutions.find(ex => ex.executor_id === selectedExecutionId) || null,
     [panelExecutions, selectedExecutionId],
@@ -212,6 +244,7 @@ export function ExecutionProvider({ children }) {
   }, [])
 
   const pushTradingToast = useCallback((msg) => {
+    if (!shouldToastWsMessage(msg)) return
     const action = getEventAction(msg)
     if (!shouldNotifyAction(action)) return
 
@@ -298,7 +331,7 @@ export function ExecutionProvider({ children }) {
   }, [])
 
   const refreshExecutions = useCallback(async () => {
-    const planes = filterActiveDataPlanes(dataPlanesRef.current)
+    const planes = collectActiveDataPlanes(dataPlanesRef.current, panelExecutionsRef.current)
     if (!planes.length) return
     const allExecutions = []
 
@@ -332,19 +365,24 @@ export function ExecutionProvider({ children }) {
     return () => clearInterval(intervalId)
   }, [refreshDataPlanes, refreshControlledExecutions])
 
-  const dataPlaneIdsKey = useMemo(
-    () => dataPlanes.map(engine => `${engine.id}:${engine.status}:${engine.port}:${engine.ws_url}`).join('|'),
-    [dataPlanes],
+  const activeDataPlanes = useMemo(
+    () => collectActiveDataPlanes(dataPlanes, panelExecutions),
+    [dataPlanes, panelExecutions],
+  )
+
+  const activePlanesKey = useMemo(
+    () => activeDataPlanes.map(engine => `${engine.id}:${engine.status}:${engine.port}:${engine.ws_url}`).join('|'),
+    [activeDataPlanes],
   )
 
   useEffect(() => {
     refreshExecutions()
     const intervalId = setInterval(refreshExecutions, 10000)
     return () => clearInterval(intervalId)
-  }, [dataPlaneIdsKey, refreshExecutions])
+  }, [activePlanesKey, refreshExecutions])
 
   useEffect(() => {
-    const activePlanes = filterActiveDataPlanes(dataPlanes)
+    const activePlanes = activeDataPlanes
     const activeIds = new Set(activePlanes.map(plane => plane.id))
 
     for (const planeId of Object.keys(planeSocketsRef.current)) {
@@ -403,6 +441,17 @@ export function ExecutionProvider({ children }) {
             const nextKey = JSON.stringify(next.map(ex => [ex.executor_id, ex.status, ex.data_plane_id]))
             return prevKey === nextKey ? prev : next
           })
+          const candlesByToken = msg.candles_by_token || {}
+          if (Object.keys(candlesByToken).length) {
+            persistPlaneStream(current => {
+              const nextCandleHistory = { ...current.candleHistory }
+              for (const [token, candles] of Object.entries(candlesByToken)) {
+                const streamKey = planeTickKey(planeId, token)
+                nextCandleHistory[streamKey] = sanitizeCandleSeries(candles)
+              }
+              return { ...current, candleHistory: nextCandleHistory }
+            })
+          }
           return
         }
 
@@ -443,6 +492,33 @@ export function ExecutionProvider({ children }) {
           return
         }
 
+        if (['candle_bootstrap', 'candle_sync', 'candle_history', 'candle_tick'].includes(msg.type)) {
+          const tokenKey = normalizeTokenKey(msg.token)
+          if (!tokenKey) return
+          const streamKey = planeTickKey(planeId, tokenKey)
+          persistPlaneStream(current => {
+            const existing = current.candleHistory[streamKey] || []
+            let nextHistory = existing
+            if (msg.type === 'candle_bootstrap') {
+              nextHistory = sanitizeCandleSeries(msg.candles || [])
+            } else if (msg.type === 'candle_sync') {
+              nextHistory = mergeCandleSync(existing, msg.candles || [])
+            } else if (msg.type === 'candle_history') {
+              nextHistory = sanitizeCandleSeries(msg.candles || [])
+            } else if (msg.candle) {
+              nextHistory = applyCandleTick(existing, msg.candle)
+            }
+            return {
+              ...current,
+              candleHistory: {
+                ...current.candleHistory,
+                [streamKey]: nextHistory,
+              },
+            }
+          })
+          return
+        }
+
         if (msg.type === 'executor_status') {
           setExecutions(prev => prev.map(ex =>
             ex.executor_id === msg.executor_id
@@ -452,7 +528,14 @@ export function ExecutionProvider({ children }) {
           return
         }
 
-        if (['order', 'event', 'portfolio_status_update', 'portfolio_status_snapshot'].includes(msg.type)) {
+        if ([
+          'order',
+          'event',
+          'portfolio_status_update',
+          'portfolio_status_snapshot',
+          'position_status_update',
+          'order_poll_update',
+        ].includes(msg.type)) {
           pushTradingToastRef.current(msg)
           persistPlaneStream(current => ({
             ...current,
@@ -513,7 +596,7 @@ export function ExecutionProvider({ children }) {
 
       connect()
     }
-  }, [dataPlaneIdsKey, updatePlaneStream])
+  }, [activePlanesKey, activeDataPlanes, updatePlaneStream])
 
   useEffect(() => () => {
     for (const planeId of Object.keys(planeSocketsRef.current)) {
@@ -765,7 +848,7 @@ function ExecutionSidePanel({
             </div>
             <div className="grid grid-cols-3 gap-2 mt-3 text-[9px] text-text-secondary">
               <Metric label="TP" value={`${ex.long_percent ?? '-'}%`} />
-              <Metric label="SL" value={`${ex.short_percent ?? '-'}%`} />
+              <Metric label="SL" value={formatStopLossSetting(ex, ex.broker)} />
               <Metric label="Cap" value={formatBrokerCompactMoney(ex.broker, ex.max_available_capital)} />
             </div>
           </button>
@@ -852,9 +935,15 @@ function TabBar({ activeTab, setActiveTab }) {
 }
 
 export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
+  const [chartMode, setChartMode] = useState('line')
+  const [prefetchCandles, setPrefetchCandles] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyMessage, setHistoryMessage] = useState('')
   const stream = getPlaneStream(planeStreams, execution?.data_plane_id)
   const resolvedStream = useMemo(
-    () => (execution ? resolveExecutionStream(stream, execution) : { tickHistory: [], tick: null, streamKey: '' }),
+    () => (execution
+      ? resolveExecutionStream(stream, execution)
+      : { tickHistory: [], candleHistory: [], tick: null, streamKey: '' }),
     [stream, execution],
   )
   const ltp = selectedTick?.ltp ?? resolvedStream.tick?.ltp ?? null
@@ -862,8 +951,61 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
     () => (execution ? buildChartSeries(resolvedStream.tickHistory, execution, ltp) : []),
     [resolvedStream.tickHistory, execution, ltp],
   )
+  const streamCandles = useMemo(
+    () => (execution ? buildCandleSeries(resolvedStream.candleHistory, execution, ltp) : []),
+    [resolvedStream.candleHistory, execution, ltp],
+  )
+  const candleSeries = useMemo(() => {
+    if (!prefetchCandles.length) return streamCandles
+    if (!streamCandles.length || streamCandles.length <= 1) return prefetchCandles
+    return mergeCandleSync(prefetchCandles, streamCandles)
+  }, [prefetchCandles, streamCandles])
   const isStreaming = Boolean(execution?.ws_url)
     && ['running', 'starting'].includes(String(execution?.data_plane_status || '').toLowerCase())
+  const isEtoro = String(execution?.broker || '').toLowerCase() === 'etoro'
+  const canShowChart = isStreaming || candleSeries.length > 0
+  const oldestCandleTime = candleSeries[0]?.time ?? null
+  const canLoadHistory = (
+    chartMode === 'candles'
+    && isEtoro
+    && isStreaming
+    && Boolean(execution?.api_base_url)
+    && oldestCandleTime != null
+  )
+
+  const loadOlderCandleHistory = async () => {
+    if (!canLoadHistory || historyLoading) return
+    setHistoryLoading(true)
+    setHistoryMessage('')
+    try {
+      const params = new URLSearchParams({
+        token: String(execution.token),
+        before: String(oldestCandleTime),
+        minutes: String(CANDLE_HISTORY_2H_MINUTES),
+      })
+      const res = await fetch(`${execution.api_base_url}/candles/history?${params}`)
+      const data = await res.json()
+      if (!res.ok || !data.status) {
+        throw new Error(data.detail || data.message || `HTTP ${res.status}`)
+      }
+      const payload = data.data || {}
+      const merged = sanitizeCandleSeries(payload.all_candles || payload.candles || [])
+      if (merged.length) {
+        setPrefetchCandles(merged)
+      }
+      const loaded = Number(payload.loaded_count || 0)
+      setHistoryMessage(
+        loaded > 0
+          ? `Loaded ${loaded} older candles`
+          : 'No older candles available for this range',
+      )
+    } catch (error) {
+      console.warn('[StrategyChart] Candle history load failed', error)
+      setHistoryMessage(error?.message || 'Failed to load older candles')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
   const nowMs = useNow(isStreaming ? PRICE_STREAM_STATUS_POLL_MS : null)
   const priceStreamStatus = useMemo(
     () => resolveExecutionPriceStreamStatus({
@@ -874,6 +1016,33 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
     }),
     [isStreaming, stream, resolvedStream.streamKey, nowMs],
   )
+
+  useEffect(() => {
+    if (!execution?.executor_id || String(execution?.broker || '').toLowerCase() !== 'etoro') {
+      setPrefetchCandles([])
+      return undefined
+    }
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(
+          `/api/control/executions/${encodeURIComponent(execution.executor_id)}/candles?count=${CANDLE_PREFETCH_COUNT}`,
+        )
+        const data = await res.json()
+        if (cancelled || !data.status) return
+        setPrefetchCandles(sanitizeCandleSeries(data.data || []))
+      } catch (error) {
+        if (!cancelled) {
+          console.warn('[StrategyChart] Candle prefetch failed', error)
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [execution?.executor_id, execution?.broker, execution?.token])
 
   useEffect(() => {
     if (!execution?.executor_id) return
@@ -916,6 +1085,22 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
         <div>
           <h3 className="text-[13px] font-semibold">Live chart</h3>
           <PriceStreamStatusLine status={priceStreamStatus} />
+          <div className="mt-2 inline-flex rounded border border-border/70 bg-secondary/40 p-0.5 text-[10px]">
+            <button
+              type="button"
+              onClick={() => setChartMode('line')}
+              className={`rounded px-2 py-1 font-semibold ${chartMode === 'line' ? 'bg-accent/20 text-accent' : 'text-text-secondary'}`}
+            >
+              Line
+            </button>
+            <button
+              type="button"
+              onClick={() => setChartMode('candles')}
+              className={`rounded px-2 py-1 font-semibold ${chartMode === 'candles' ? 'bg-accent/20 text-accent' : 'text-text-secondary'}`}
+            >
+              Candles
+            </button>
+          </div>
         </div>
         <div className="text-right">
           <div className="text-sm font-bold">{execution.symbol || '—'}</div>
@@ -929,17 +1114,40 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
         </div>
       </div>
       <div className="p-4 min-w-0">
-        {isStreaming ? (
+        {canShowChart && canLoadHistory ? (
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <button
+              type="button"
+              onClick={loadOlderCandleHistory}
+              disabled={historyLoading}
+              className="rounded border border-border/70 bg-secondary/50 px-2.5 py-1 text-[11px] font-semibold text-text-primary transition hover:bg-secondary disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {historyLoading ? 'Loading 2h…' : 'Load 2h older'}
+            </button>
+            {historyMessage ? (
+              <span className="text-[10px] text-text-secondary">{historyMessage}</span>
+            ) : (
+              <span className="text-[10px] text-text-secondary">
+                Extends chart 2 hours before oldest bar
+              </span>
+            )}
+          </div>
+        ) : null}
+        {canShowChart ? (
           <LiveExecutionChart
             execution={execution}
+            mode={chartMode}
             data={chartSeries}
+            candleData={candleSeries}
             realtimeEvents={realtimeEvents}
           />
         ) : (
           <div className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-border bg-secondary/20 px-6 text-center">
             <p className="text-sm font-semibold">Chart unavailable</p>
             <p className="mt-2 max-w-sm text-xs text-text-secondary">
-              Deploy this strategy to start live price streaming.
+              {isStreaming
+                ? 'Loading candle history…'
+                : 'Deploy this strategy to start live price streaming.'}
             </p>
           </div>
         )}
@@ -948,92 +1156,117 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
   )
 }
 
-export function ChartTab({ executions, planeStreams, selectedExecutionId }) {
-  const liveExecutions = useMemo(
-    () => executions.filter(execution =>
-      execution?.ws_url
-      && ['running', 'starting'].includes(String(execution.data_plane_status || '').toLowerCase()),
-    ),
-    [executions],
+export function ChartTab({
+  executions,
+  planeStreams,
+  selectedExecutionId,
+  onSelectExecution,
+  refreshControlledExecutions,
+  refreshExecutions,
+  onExecutionStopped,
+}) {
+  return (
+    <ChartsGrid
+      executions={executions}
+      planeStreams={planeStreams}
+      selectedExecutionId={selectedExecutionId}
+      onSelectExecution={onSelectExecution}
+      refreshControlledExecutions={refreshControlledExecutions}
+      refreshExecutions={refreshExecutions}
+      onExecutionStopped={onExecutionStopped}
+    />
   )
-  const nowMs = useNow(liveExecutions.length ? PRICE_STREAM_STATUS_POLL_MS : null)
+}
 
-  if (!liveExecutions.length) {
-    return (
-      <EmptyState
-        title="No live chart streams"
-        body="Start one or more executions from the Strategy or Launch tab to stream chart data."
-      />
-    )
+function formatCandleVolume(value) {
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '—'
+  if (num >= 1_000_000) return `${(num / 1_000_000).toFixed(1)}M`
+  if (num >= 1_000) return `${(num / 1_000).toFixed(1)}K`
+  return String(Math.round(num))
+}
+
+function CandleOhlcReadout({ broker, ohlc }) {
+  if (!ohlc) {
+    return <div className="mb-1 min-h-[18px]" aria-hidden />
   }
 
-  return (
-    <div className="p-4 space-y-4">
-      {liveExecutions.map(execution => {
-        const stream = getPlaneStream(planeStreams, execution.data_plane_id)
-        const resolvedStream = resolveExecutionStream(stream, execution)
-        const { tickHistory, tick: streamTick, streamKey } = resolvedStream
-        const liveLtp = streamTick?.ltp ?? null
-        const chartSeries = buildChartSeries(tickHistory, execution, liveLtp)
-        const priceStreamStatus = resolveExecutionPriceStreamStatus({
-          isStreaming: true,
-          stream,
-          streamKey,
-          nowMs,
-        })
-        const realtimeEvents = stream.realtimeEvents.filter(event =>
-          event.executor_id === execution.executor_id
-          || event.details?.executor_id === execution.executor_id,
-        )
-        const selected = execution.executor_id === selectedExecutionId
+  const bullish = Number(ohlc.close) >= Number(ohlc.open)
+  const items = [
+    { label: 'O', value: ohlc.open, format: 'price' },
+    { label: 'H', value: ohlc.high, format: 'price' },
+    { label: 'L', value: ohlc.low, format: 'price' },
+    { label: 'C', value: ohlc.close, format: 'price', tone: bullish ? 'text-green' : 'text-red' },
+    { label: 'V', value: ohlc.volume, format: 'volume' },
+  ]
 
-        return (
-          <div
-            key={`${execution.data_plane_id}:${execution.executor_id}`}
-            className={`rounded border ${selected ? 'border-accent bg-accent/5' : 'border-border bg-card'}`}
-          >
-            <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border/60">
-              <div>
-                <div className="text-sm font-bold">{execution.label || execution.executor_id}</div>
-                <div className="text-[10px] text-text-secondary mt-0.5">
-                  {execution.symbol || '-'} · server :{execution.data_plane_port || '-'}
-                  {execution.created_at ? ` · created ${formatDbTimestamp(execution.created_at)}` : ''}
-                </div>
-                <PriceStreamStatusLine status={priceStreamStatus} />
-              </div>
-              {selected ? (
-                <span className="text-[10px] px-2 py-1 rounded bg-accent/15 text-accent font-bold">Selected</span>
-              ) : null}
-            </div>
-            <div className="p-4 space-y-4">
-              <LiveExecutionChart
-                execution={execution}
-                data={chartSeries}
-                realtimeEvents={realtimeEvents}
-              />
-              <ExecutionLevels execution={execution} />
-            </div>
-          </div>
-        )
-      })}
+  return (
+    <div className="mb-1 flex min-h-[18px] flex-wrap items-center gap-x-3 gap-y-0.5 px-0.5 text-[11px] leading-tight text-text-secondary">
+      {items.map(item => (
+        <span key={item.label} className="inline-flex items-center gap-1">
+          <span className="font-semibold uppercase tracking-wide">{item.label}</span>
+          <span className={`font-mono ${item.tone || 'text-text-primary'}`}>
+            {item.format === 'volume'
+              ? formatCandleVolume(item.value)
+              : formatBrokerPrice(broker, item.value)}
+          </span>
+        </span>
+      ))}
     </div>
   )
 }
 
-function LiveExecutionChart({ execution, data, realtimeEvents }) {
+export function LiveExecutionChart({
+  execution,
+  mode = 'line',
+  data,
+  candleData = [],
+  realtimeEvents,
+  height = 420,
+  compact = false,
+}) {
   const containerRef = useRef(null)
   const chartRef = useRef(null)
   const seriesRef = useRef(null)
+  const volumeSeriesRef = useRef(null)
   const priceLinesRef = useRef([])
   const lastPointRef = useRef(null)
+  const viewportInitializedRef = useRef(false)
+  const lastViewportBarCountRef = useRef(0)
+  const [hoveredOhlc, setHoveredOhlc] = useState(null)
+  const candlesRef = useRef([])
   const chartData = useMemo(() => sanitizeChartSeries(data), [data])
+  const candles = useMemo(() => sanitizeCandleSeries(candleData), [candleData])
+  const isCandleMode = mode === 'candles'
+  const currentCandle = useMemo(() => {
+    if (!candles.length) return null
+    const last = candles[candles.length - 1]
+    return {
+      open: last.open,
+      high: last.high,
+      low: last.low,
+      close: last.close,
+      volume: last.volume ?? 0,
+    }
+  }, [candles])
+  const displayOhlc = hoveredOhlc ?? currentCandle
+
+  useEffect(() => {
+    candlesRef.current = candles
+  }, [candles])
 
   useEffect(() => {
     const container = containerRef.current
     if (!container) return undefined
 
+    viewportInitializedRef.current = false
+    lastViewportBarCountRef.current = 0
+    lastPointRef.current = null
+    setHoveredOhlc(null)
+
     let chart = null
     let resizeObserver = null
+    let crosshairHandler = null
     let cancelled = false
 
     const mountChart = () => {
@@ -1046,16 +1279,73 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
 
       chart = createChart(containerRef.current, {
         width,
-        height: 420,
+        height,
         layout: { background: { color: '#111d28' }, textColor: '#8899a6' },
         grid: { vertLines: { color: '#1a2733' }, horzLines: { color: '#1a2733' } },
-        timeScale: { timeVisible: true, secondsVisible: true, borderColor: '#2a3f52' },
+        timeScale: {
+          timeVisible: true,
+          secondsVisible: !isCandleMode,
+          borderColor: '#2a3f52',
+          barSpacing: isCandleMode ? (compact ? 1 : 7) : undefined,
+          minBarSpacing: isCandleMode ? (compact ? 0.5 : 2) : undefined,
+          rightOffset: isCandleMode ? (compact ? 2 : 4) : undefined,
+        },
         rightPriceScale: { borderColor: '#2a3f52', autoScale: true },
       })
-      const series = chart.addLineSeries({ color: '#1da1f2', lineWidth: 2, priceLineVisible: false })
+      let series
+      if (isCandleMode) {
+        chart.priceScale('right').applyOptions({
+          scaleMargins: { top: 0.05, bottom: 0.28 },
+        })
+        series = chart.addCandlestickSeries({
+          upColor: CANDLE_UP_COLOR,
+          downColor: CANDLE_DOWN_COLOR,
+          borderUpColor: CANDLE_UP_COLOR,
+          borderDownColor: CANDLE_DOWN_COLOR,
+          wickUpColor: CANDLE_UP_COLOR,
+          wickDownColor: CANDLE_DOWN_COLOR,
+        })
+        const volumeSeries = chart.addHistogramSeries({
+          priceFormat: { type: 'volume' },
+          priceScaleId: 'volume',
+        })
+        chart.priceScale('volume').applyOptions({
+          scaleMargins: { top: 0.78, bottom: 0 },
+        })
+        volumeSeriesRef.current = volumeSeries
+      } else {
+        series = chart.addLineSeries({ color: '#1da1f2', lineWidth: 2, priceLineVisible: false })
+        volumeSeriesRef.current = null
+      }
       chartRef.current = chart
       seriesRef.current = series
       lastPointRef.current = null
+
+      if (isCandleMode) {
+        crosshairHandler = (param) => {
+          if (cancelled) return
+          if (!param?.time || param.point == null) {
+            setHoveredOhlc(null)
+            return
+          }
+          const hoveredTime = Math.floor(Number(param.time) / 60) * 60
+          const candle = candlesRef.current.find(item => item.time === hoveredTime)
+          const bar = param.seriesData?.get(series)
+          const source = candle || bar
+          if (!source || source.open == null) {
+            setHoveredOhlc(null)
+            return
+          }
+          setHoveredOhlc({
+            open: source.open,
+            high: source.high,
+            low: source.low,
+            close: source.close,
+            volume: candle?.volume ?? source.volume ?? 0,
+          })
+        }
+        chart.subscribeCrosshairMove(crosshairHandler)
+      }
 
       resizeObserver = new ResizeObserver(() => {
         if (!containerRef.current || !chartRef.current) return
@@ -1069,18 +1359,67 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
 
     return () => {
       cancelled = true
+      if (chart && crosshairHandler) {
+        chart.unsubscribeCrosshairMove(crosshairHandler)
+      }
       resizeObserver?.disconnect()
       chart?.remove()
       chartRef.current = null
       seriesRef.current = null
+      volumeSeriesRef.current = null
       lastPointRef.current = null
+      priceLinesRef.current = []
+      setHoveredOhlc(null)
     }
-  }, [execution.executor_id])
+  }, [execution.executor_id, isCandleMode, height, compact])
 
   useEffect(() => {
     if (!seriesRef.current || !chartRef.current) return
     const series = seriesRef.current
     const chart = chartRef.current
+
+    if (isCandleMode) {
+      const volumeSeries = volumeSeriesRef.current
+      if (!candles.length) {
+        series.setData([])
+        volumeSeries?.setData([])
+        lastPointRef.current = null
+        return
+      }
+      const lastCandle = candles[candles.length - 1]
+      const previous = lastPointRef.current
+      const volumeData = candlesToVolumeData(candles)
+      const lastVolume = volumeData[volumeData.length - 1]
+      if (previous && lastCandle.time === previous.time) {
+        series.update(lastCandle)
+        volumeSeries?.update(lastVolume)
+      } else if (
+        previous
+        && lastCandle.time > previous.time
+        && candles[candles.length - 2]?.time === previous.time
+      ) {
+        series.update(lastCandle)
+        volumeSeries?.update(lastVolume)
+      } else {
+        series.setData(candles)
+        volumeSeries?.setData(volumeData)
+      }
+      applyDynamicCandleColors(series, lastCandle)
+      lastPointRef.current = lastCandle
+      const shouldResetViewport = (
+        !viewportInitializedRef.current
+        || (compact && candles.length !== lastViewportBarCountRef.current)
+        || (lastViewportBarCountRef.current < 20 && candles.length >= 20)
+        || (candles.length >= 10 && lastViewportBarCountRef.current <= 5)
+      )
+      if (shouldResetViewport) {
+        applyCandleViewport(chart, candles.length, compact)
+        viewportInitializedRef.current = true
+        lastViewportBarCountRef.current = candles.length
+      }
+      return
+    }
+
     if (!chartData.length) {
       series.setData([])
       lastPointRef.current = null
@@ -1101,28 +1440,39 @@ function LiveExecutionChart({ execution, data, realtimeEvents }) {
       series.setData(chartData)
     }
     lastPointRef.current = lastPoint
-    chart.timeScale().fitContent()
-  }, [chartData])
+    if (!viewportInitializedRef.current && chartData.length > 0) {
+      chart.timeScale().fitContent()
+      viewportInitializedRef.current = true
+    }
+  }, [chartData, candles, isCandleMode, compact])
 
   useEffect(() => {
     if (!seriesRef.current) return
     const series = seriesRef.current
     priceLinesRef.current.forEach(line => series.removePriceLine(line))
     priceLinesRef.current = getPriceLines(execution).map(line => series.createPriceLine(line))
-    chartRef.current?.timeScale().fitContent()
-  }, [execution, chartData.length])
+  }, [execution, chartData.length, candles.length, isCandleMode])
 
   useEffect(() => {
-    if (!seriesRef.current || !chartData.length) return
-    const markers = buildTradeMarkers(realtimeEvents, execution.executor_id, chartData)
+    if (!seriesRef.current) return
+    const markerSource = isCandleMode ? candles : chartData
+    if (!markerSource.length) return
+    const markers = buildTradeMarkers(realtimeEvents, execution.executor_id, markerSource)
     try {
       seriesRef.current.setMarkers(markers)
     } catch (error) {
       console.warn('[LiveExecutionChart] Failed to set markers', error)
     }
-  }, [chartData, execution.executor_id, realtimeEvents])
+  }, [chartData, candles, execution.executor_id, realtimeEvents, isCandleMode])
 
-  return <div ref={containerRef} className="w-full min-w-0 h-[420px]" />
+  return (
+    <div className="w-full min-w-0">
+      {isCandleMode && !compact ? (
+        <CandleOhlcReadout broker={execution?.broker} ohlc={displayOhlc} />
+      ) : null}
+      <div ref={containerRef} style={{ height }} />
+    </div>
+  )
 }
 
 function PortfolioTab({ ticks, liveApi, execution }) {
@@ -1179,7 +1529,31 @@ function PortfolioTab({ ticks, liveApi, execution }) {
   )
 }
 
-function HighlightMetricCard({ label, value, tone = 'default', mono = true, size = 'lg' }) {
+export const TAKE_PROFIT_MODE_PERCENT = 'percent'
+export const TAKE_PROFIT_MODE_ABSOLUTE = 'absolute'
+
+export function TakeProfitModeToggle({ mode, onChange, className = '' }) {
+  return (
+    <div className={`inline-flex rounded border border-border/70 bg-secondary/40 p-0.5 text-[10px] ${className}`}>
+      <button
+        type="button"
+        onClick={() => onChange(TAKE_PROFIT_MODE_PERCENT)}
+        className={`rounded px-2 py-1 font-semibold ${mode === TAKE_PROFIT_MODE_PERCENT ? 'bg-accent/20 text-accent' : 'text-text-secondary'}`}
+      >
+        %
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(TAKE_PROFIT_MODE_ABSOLUTE)}
+        className={`rounded px-2 py-1 font-semibold ${mode === TAKE_PROFIT_MODE_ABSOLUTE ? 'bg-accent/20 text-accent' : 'text-text-secondary'}`}
+      >
+        $
+      </button>
+    </div>
+  )
+}
+
+function HighlightMetricCard({ label, value, tone = 'default', mono = true, size = 'lg', action = null }) {
   const valueToneClass = tone === 'profit'
     ? 'text-green'
     : tone === 'loss'
@@ -1191,7 +1565,10 @@ function HighlightMetricCard({ label, value, tone = 'default', mono = true, size
 
   return (
     <div className="rounded-lg border border-border bg-card px-4 py-4">
-      <div className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">{label}</div>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-[10px] font-semibold uppercase tracking-widest text-text-secondary">{label}</div>
+        {action}
+      </div>
       <div className={`font-bold leading-tight ${mono ? 'font-mono' : ''} ${sizeClass} ${valueToneClass}`}>
         {value}
       </div>
@@ -1227,11 +1604,18 @@ export function ServerInfoPanel({ port, apiBaseUrl, wsUrl, logFile, pending = fa
 }
 
 function StrategyParametersPanel({ execution, onRefresh }) {
+  const [takeProfitMode, setTakeProfitMode] = useState(TAKE_PROFIT_MODE_PERCENT)
+  const levels = useMemo(() => computeExecutionLevels(execution), [execution])
   const closePrice = execution.close_price != null
     ? formatBrokerPrice(execution.broker, execution.close_price)
     : '—'
-  const takeProfit = execution.long_percent != null ? `${execution.long_percent}%` : '—'
-  const stopLoss = execution.short_percent != null ? `${execution.short_percent}%` : '—'
+  const takeProfit = takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE
+    ? (levels.potentialProfitAbsolute != null
+      ? formatBrokerCompactMoney(execution.broker, levels.potentialProfitAbsolute)
+      : '—')
+    : (execution.long_percent != null ? `${execution.long_percent}%` : '—')
+  const takeProfitLabel = takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? 'Potential profit' : 'Take profit'
+  const stopLoss = formatStopLossSetting(execution, execution.broker)
   const entryThreshold = execution.initial_threshold != null ? `${execution.initial_threshold}%` : '—'
   const maxCapital = execution.max_available_capital != null
     ? formatBrokerCompactMoney(execution.broker, execution.max_available_capital)
@@ -1246,7 +1630,18 @@ function StrategyParametersPanel({ execution, onRefresh }) {
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <HighlightMetricCard label="Take profit" value={takeProfit} tone="profit" size="xl" />
+        <HighlightMetricCard
+          label={takeProfitLabel}
+          value={takeProfit}
+          tone="profit"
+          size="xl"
+          action={(
+            <TakeProfitModeToggle
+              mode={takeProfitMode}
+              onChange={setTakeProfitMode}
+            />
+          )}
+        />
         <HighlightMetricCard label="Stop loss" value={stopLoss} tone="loss" size="xl" />
       </div>
 
@@ -1295,9 +1690,64 @@ export function StrategyTab({ execution, latestTick, liveApi, onCreate, onRefres
   )
 }
 
+function OrderPollControls({ executionId, onChanged }) {
+  const [pollJob, setPollJob] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!executionId) {
+      setPollJob(null)
+      return
+    }
+    fetch(`${CONTROL_API}/executions/${executionId}/order-poll`)
+      .then(res => res.json())
+      .then(data => { if (data.status) setPollJob(data.data || null) })
+      .catch(() => setPollJob(null))
+  }, [executionId, onChanged])
+
+  if (!executionId) return null
+
+  const setPollStatus = async (action) => {
+    setBusy(true)
+    try {
+      const res = await fetch(`${CONTROL_API}/executions/${executionId}/order-poll/${action}`, { method: 'POST' })
+      const data = await res.json()
+      if (data.status) setPollJob(data.data || null)
+      onChanged?.()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-2 text-[10px]">
+      <span className="text-text-secondary">Order status poll:</span>
+      <StatusBadge status={(pollJob?.status || 'NONE').toUpperCase()} />
+      {pollJob?.order_id ? <span className="font-mono text-text-secondary">order={pollJob.order_id}</span> : null}
+      <button
+        type="button"
+        disabled={busy || !pollJob?.order_id}
+        onClick={() => setPollStatus('start')}
+        className="px-2 py-1 rounded border border-border text-accent disabled:opacity-50"
+      >
+        Start
+      </button>
+      <button
+        type="button"
+        disabled={busy || !pollJob?.order_id}
+        onClick={() => setPollStatus('stop')}
+        className="px-2 py-1 rounded border border-border text-text-secondary disabled:opacity-50"
+      >
+        Stop
+      </button>
+    </div>
+  )
+}
+
 export function OrderManagementTab({ globalView, liveApi, execution, executorId, realtimeEvents }) {
   const [orders, setOrders] = useState({})
   const [loading, setLoading] = useState(true)
+  const [pollRefreshKey, setPollRefreshKey] = useState(0)
   const filterExecutorId = !globalView ? (execution?.executor_id || executorId || null) : null
 
   useEffect(() => {
@@ -1319,7 +1769,17 @@ export function OrderManagementTab({ globalView, liveApi, execution, executorId,
 
     Promise.all([loadPersisted, loadLive]).then(([persisted, live]) => {
       if (cancelled) return
-      const merged = { ...persisted, ...live }
+      const merged = { ...persisted }
+      Object.entries(live).forEach(([uid, liveOrder]) => {
+        const persistedOrder = persisted[uid] || {}
+        merged[uid] = {
+          ...persistedOrder,
+          ...liveOrder,
+          positions: liveOrder.positions?.length ? liveOrder.positions : persistedOrder.positions,
+          lookup: liveOrder.lookup ?? persistedOrder.lookup,
+          lookup_updated_at: liveOrder.lookup_updated_at ?? persistedOrder.lookup_updated_at,
+        }
+      })
       if (filterExecutorId) {
         setOrders(Object.fromEntries(
           Object.entries(merged).filter(([, order]) => order.executor_id === filterExecutorId),
@@ -1332,7 +1792,7 @@ export function OrderManagementTab({ globalView, liveApi, execution, executorId,
     })
 
     return () => { cancelled = true }
-  }, [globalView, liveApi, filterExecutorId, realtimeEvents.length])
+  }, [globalView, liveApi, filterExecutorId, realtimeEvents.length, pollRefreshKey])
 
   if (loading) {
     return (
@@ -1343,6 +1803,17 @@ export function OrderManagementTab({ globalView, liveApi, execution, executorId,
     )
   }
 
+  const formatOrderPositions = (order) => {
+    const positions = order.positions
+    if (!Array.isArray(positions) || !positions.length) return '-'
+    return positions.map((row) => {
+      const position = row.position || {}
+      const positionId = row.position_id || position.positionID || position.positionId
+      const units = position.units ?? position.Units ?? position.executedUnits
+      return units != null ? `${positionId} (${units})` : String(positionId)
+    }).join(', ')
+  }
+
   const rows = Object.entries(orders)
     .filter(([, order]) => !filterExecutorId || order.executor_id === filterExecutorId)
     .map(([uid, order]) => [
@@ -1351,6 +1822,8 @@ export function OrderManagementTab({ globalView, liveApi, execution, executorId,
       order.symbol || order.executor_id || '-',
       order.order_type || '-',
       <StatusBadge status={(order.status || 'unknown').toUpperCase()} />,
+      formatOrderPositions(order),
+      (order.poll_job_status || '-').toUpperCase(),
     ])
 
   return (
@@ -1364,8 +1837,14 @@ export function OrderManagementTab({ globalView, liveApi, execution, executorId,
           Orders for execution <span className="font-mono text-accent">{filterExecutorId}</span>
         </div>
       ) : null}
+      {!globalView && filterExecutorId ? (
+        <OrderPollControls
+          executionId={filterExecutorId}
+          onChanged={() => setPollRefreshKey(value => value + 1)}
+        />
+      ) : null}
       {rows.length ? (
-        <DataTable columns={['Order ID', 'Unique ID', 'Strategy', 'Type', 'Status']} rows={rows} />
+        <DataTable columns={['Order ID', 'Unique ID', 'Strategy', 'Type', 'Status', 'Positions', 'Poll']} rows={rows} />
       ) : (
         <EmptyState title="No orders tracked" body="Orders will appear here as the trading manager places and updates them." />
       )}
@@ -1373,8 +1852,141 @@ export function OrderManagementTab({ globalView, liveApi, execution, executorId,
   )
 }
 
+function StrategyPositionsPanel({ executionId, realtimeEvents, onChanged }) {
+  const [positions, setPositions] = useState([])
+  const [maxPositions, setMaxPositions] = useState('')
+  const [unitsByPosition, setUnitsByPosition] = useState({})
+  const [busyPositionId, setBusyPositionId] = useState(null)
+  const [error, setError] = useState('')
+
+  const loadPositions = useCallback(() => {
+    if (!executionId) {
+      setPositions([])
+      return
+    }
+    fetch(`${CONTROL_API}/executions/${executionId}/positions`)
+      .then(res => res.json())
+      .then(data => { if (data.status) setPositions(data.data || []) })
+      .catch(() => setPositions([]))
+  }, [executionId])
+
+  useEffect(() => {
+    loadPositions()
+  }, [loadPositions, realtimeEvents.length, onChanged])
+
+  if (!executionId) return null
+
+  const openPositions = positions.filter(row => String(row.state || '').toLowerCase() !== 'closed')
+  const closedPositions = positions.filter(row => String(row.state || '').toLowerCase() === 'closed')
+  const maxCount = Number(maxPositions)
+  const visibleOpen = Number.isFinite(maxCount) && maxCount > 0
+    ? openPositions.slice(0, maxCount)
+    : openPositions
+
+  const closePosition = async (positionId, instrumentId) => {
+    setBusyPositionId(positionId)
+    setError('')
+    const units = Number(unitsByPosition[positionId])
+    try {
+      const res = await fetch(
+        `${CONTROL_API}/executions/${executionId}/positions/${positionId}/close`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            units: Number.isFinite(units) && units > 0 ? units : null,
+            instrument_id: instrumentId || null,
+            max_positions: Number.isFinite(maxCount) && maxCount > 0 ? maxCount : null,
+          }),
+        },
+      )
+      const data = await res.json()
+      if (!res.ok || !data.status) {
+        throw new Error(data.detail || 'Failed to close position')
+      }
+      onChanged?.()
+      loadPositions()
+    } catch (err) {
+      setError(err.message || 'Failed to close position')
+    } finally {
+      setBusyPositionId(null)
+    }
+  }
+
+  return (
+    <div className="mb-4 rounded border border-border bg-card p-3">
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <div className="text-xs font-bold text-text-primary">Positions</div>
+        <label className="flex items-center gap-2 text-[10px] text-text-secondary">
+          Max positions
+          <input
+            type="number"
+            min="0"
+            value={maxPositions}
+            onChange={e => setMaxPositions(e.target.value)}
+            className="w-20 px-2 py-1 bg-secondary border border-border rounded text-xs"
+          />
+        </label>
+        <span className="text-[10px] text-text-secondary">
+          {openPositions.length} open · {closedPositions.length} closed
+        </span>
+      </div>
+      {error ? <div className="mb-2 text-[10px] text-red">{error}</div> : null}
+      {visibleOpen.length ? (
+        <div className="space-y-2 mb-3">
+          <div className="text-[10px] font-bold text-green">Open</div>
+          {visibleOpen.map(row => {
+            const position = row.position || {}
+            const positionId = row.position_id
+            const instrumentId = position.instrumentId || position.instrumentID || row.instrument_id
+            return (
+              <div key={positionId} className="grid grid-cols-[1fr_auto_auto_auto] gap-2 items-center text-[10px] border border-border/50 rounded px-2 py-2">
+                <div className="font-mono">
+                  {positionId}
+                  <span className="text-text-secondary"> · units={row.remaining_units ?? position.remainingUnits ?? '-'}</span>
+                </div>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="Units (0=all)"
+                  value={unitsByPosition[positionId] ?? ''}
+                  onChange={e => setUnitsByPosition(prev => ({ ...prev, [positionId]: e.target.value }))}
+                  className="w-28 px-2 py-1 bg-secondary border border-border rounded"
+                />
+                <span className="text-text-secondary">{row.last_remote_update || '-'}</span>
+                <button
+                  type="button"
+                  disabled={busyPositionId === positionId}
+                  onClick={() => closePosition(positionId, instrumentId)}
+                  className="px-2 py-1 rounded border border-red/40 text-red disabled:opacity-50"
+                >
+                  Close
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="mb-3 text-[10px] text-text-secondary">No open positions tracked yet.</div>
+      )}
+      {closedPositions.length ? (
+        <div className="space-y-1">
+          <div className="text-[10px] font-bold text-red">Closed</div>
+          {closedPositions.map(row => (
+            <div key={`closed-${row.position_id}`} className="text-[10px] font-mono text-text-secondary px-2 py-1">
+              {row.position_id} · units={row.remaining_units ?? 0} · {row.last_remote_update || '-'}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function TradingEventsTab({ globalView, liveApi, execution, executorId, realtimeEvents }) {
   const [dbEvents, setDbEvents] = useState([])
+  const [refreshKey, setRefreshKey] = useState(0)
   const filterExecutorId = !globalView ? (execution?.executor_id || executorId || null) : null
 
   useEffect(() => {
@@ -1385,7 +1997,7 @@ export function TradingEventsTab({ globalView, liveApi, execution, executorId, r
       .then(res => res.json())
       .then(data => { if (data.status) setDbEvents(data.data || []) })
       .catch(() => setDbEvents([]))
-  }, [globalView, filterExecutorId, realtimeEvents.length])
+  }, [globalView, filterExecutorId, realtimeEvents.length, refreshKey])
 
   const liveEvents = globalView ? [] : realtimeEvents
   const seen = new Set()
@@ -1395,7 +2007,7 @@ export function TradingEventsTab({ globalView, liveApi, execution, executorId, r
         const execId = event.executor_id || event.details?.executor_id
         if (execId !== filterExecutorId) return false
       }
-      const key = `${event.id || ''}-${event.timestamp || event.created_at || ''}-${event.action}-${event.order_id || ''}`
+      const key = `${event.id || ''}-${event.timestamp || event.created_at || ''}-${getEventAction(event)}-${event.order_id || ''}-${event.position_id || event.details?.position_id || ''}`
       if (seen.has(key)) return false
       seen.add(key)
       return true
@@ -1412,6 +2024,13 @@ export function TradingEventsTab({ globalView, liveApi, execution, executorId, r
         <div className="mb-3 text-[10px] text-text-secondary">
           Events for execution <span className="font-mono text-accent">{filterExecutorId}</span>
         </div>
+      ) : null}
+      {!globalView && filterExecutorId ? (
+        <StrategyPositionsPanel
+          executionId={filterExecutorId}
+          realtimeEvents={realtimeEvents}
+          onChanged={() => setRefreshKey(value => value + 1)}
+        />
       ) : null}
       <EventList events={events} emptyTitle="No trading events yet" />
     </div>
@@ -1641,7 +2260,7 @@ export function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, o
               <StatCard label="Strategy" value={engine.strategy_name || '-'} />
               <StatCard label="Close Price" value={executor.close_price ?? '-'} />
               <StatCard label="Take Profit" value={executor.long_percent != null ? `${executor.long_percent}%` : '-'} />
-              <StatCard label="Stop Loss" value={executor.short_percent != null ? `${executor.short_percent}%` : '-'} />
+              <StatCard label="Stop Loss" value={formatStopLossSetting(executor, engine.broker)} />
             </div>
           </>
         ) : null}
@@ -1708,6 +2327,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     close_price: '',
     long_percent: '1.0',
     short_percent: '10.0',
+    stop_loss_amount: '',
     initial_threshold: '0.2',
     max_available_capital: '100000',
     allow_partial_stocks: false,
@@ -1715,7 +2335,10 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     client_mode: 'standard',
     feed_mode: 'websocket',
     tick_sample_every: '1',
+    instrument_class: 'equity',
   })
+  const [takeProfitMode, setTakeProfitMode] = useState(TAKE_PROFIT_MODE_PERCENT)
+  const [profitTargetAmount, setProfitTargetAmount] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [startingLive, setStartingLive] = useState(false)
@@ -1737,9 +2360,34 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
   })
 
   const levels = useMemo(
-    () => computeExecutionLevels(form),
-    [form.close_price, form.initial_threshold, form.long_percent, form.short_percent, form.max_available_capital, form.allow_partial_stocks],
+    () => computeExecutionLevels(form, { takeProfitMode, profitTargetAmount }),
+    [
+      form.close_price,
+      form.initial_threshold,
+      form.long_percent,
+      form.short_percent,
+      form.stop_loss_amount,
+      form.max_available_capital,
+      form.allow_partial_stocks,
+      takeProfitMode,
+      profitTargetAmount,
+    ],
   )
+
+  const resolvedLongPercent = useMemo(
+    () => resolveTakeProfitLongPercent(form, takeProfitMode, profitTargetAmount),
+    [
+      form.close_price,
+      form.initial_threshold,
+      form.long_percent,
+      form.max_available_capital,
+      form.allow_partial_stocks,
+      takeProfitMode,
+      profitTargetAmount,
+    ],
+  )
+
+  const stopLossAmountActive = parseStopLossAmount(form) != null
 
   const capitalValue = Number(form.max_available_capital)
   const showHighCapitalWarning = Number.isFinite(capitalValue) && capitalValue > HIGH_CAPITAL_WARNING_THRESHOLD
@@ -1788,6 +2436,9 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       close_price: String(template.close_price ?? executor.close_price ?? ''),
       long_percent: String(template.long_percent ?? executor.long_percent ?? '1.0'),
       short_percent: String(template.short_percent ?? executor.short_percent ?? '10.0'),
+      stop_loss_amount: template.stop_loss_amount ?? executor.stop_loss_amount
+        ? String(template.stop_loss_amount ?? executor.stop_loss_amount)
+        : '',
       initial_threshold: String(template.initial_threshold ?? executor.initial_threshold ?? '0.2'),
       max_available_capital: String(template.max_available_capital ?? executor.max_available_capital ?? '100000'),
       allow_partial_stocks: Boolean(template.allow_partial_stocks ?? executor.allow_partial_stocks),
@@ -1795,6 +2446,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       client_mode: template.client_mode || defaultClientMode(template.broker || 'angel'),
       feed_mode: template.feed_mode || 'websocket',
       tick_sample_every: String(template.tick_sample_every ?? executor.tick_sample_every ?? '1'),
+      instrument_class: template.instrument_class || executor.instrument_class || 'equity',
     })
     setScheduledDate(template.scheduled_date || template.trading_day || '')
     setScheduleHint(template.market_open_label || '')
@@ -1809,10 +2461,18 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       exchange: template.exchange || executor.exchange || 'NSE',
     })
     setClosePriceManual(Boolean(template.close_price ?? executor.close_price))
+    setTakeProfitMode(TAKE_PROFIT_MODE_PERCENT)
+    setProfitTargetAmount('')
     setResults([])
     setQuery('')
     setError('')
   }, [duplicateDraft])
+
+  useEffect(() => {
+    if (takeProfitMode !== TAKE_PROFIT_MODE_PERCENT) return
+    if (levels.potentialProfitAbsolute == null) return
+    setProfitTargetAmount(String(levels.potentialProfitAbsolute))
+  }, [takeProfitMode, levels.potentialProfitAbsolute])
 
   useEffect(() => {
     if (ltp == null || closePriceManual || !selectedStock) return
@@ -1870,6 +2530,9 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       executor_id: nextId,
       close_price: '',
       allow_partial_stocks: prev.broker === 'etoro' ? true : prev.allow_partial_stocks,
+      instrument_class: prev.broker === 'etoro'
+        ? suggestInstrumentClass(stock.tradingsymbol)
+        : prev.instrument_class,
     }))
     setResults([])
     setQuery('')
@@ -1885,18 +2548,20 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     token: selectedStock.symboltoken,
     exchange: selectedStock.exchange || 'NSE',
     close_price: Number(form.close_price),
-    long_percent: Number(form.long_percent),
+    long_percent: resolvedLongPercent,
     short_percent: Number(form.short_percent),
+    stop_loss_amount: parseStopLossAmount(form),
     initial_threshold: Number(form.initial_threshold),
     max_available_capital: Number(form.max_available_capital),
     allow_partial_stocks: Boolean(form.allow_partial_stocks),
     use_fake_client: form.use_fake_client,
     client_mode: form.broker === 'etoro' ? form.client_mode : 'standard',
-    feed_mode: form.broker === 'angel' ? form.feed_mode : 'websocket',
+    feed_mode: ['angel', 'etoro'].includes(form.broker) ? form.feed_mode : 'websocket',
     tick_sample_every: Math.max(1, Math.min(300, parseInt(form.tick_sample_every, 10) || 1)),
     schedule_enabled: !startImmediately && scheduleEnabled,
     scheduled_date: !startImmediately && scheduleEnabled ? (scheduledDate || null) : null,
     start_immediately: startImmediately,
+    instrument_class: form.broker === 'etoro' ? form.instrument_class : 'equity',
   })
 
   const validateForm = () => {
@@ -2053,7 +2718,39 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
               <option value="bracket">Bracket Order</option>
             </select>
           </div>
-          {form.broker === 'angel' && !form.use_fake_client ? (
+          {form.broker === 'etoro' ? (
+            <div>
+              <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">
+                Instrument Type
+              </label>
+              <div className="flex gap-4 mt-1">
+                <label className="flex items-center gap-2 text-xs text-text-primary cursor-pointer">
+                  <input
+                    type="radio"
+                    name="instrument_class"
+                    value="equity"
+                    checked={form.instrument_class === 'equity'}
+                    onChange={() => setForm(prev => ({ ...prev, instrument_class: 'equity' }))}
+                  />
+                  Equity
+                </label>
+                <label className="flex items-center gap-2 text-xs text-text-primary cursor-pointer">
+                  <input
+                    type="radio"
+                    name="instrument_class"
+                    value="crypto"
+                    checked={form.instrument_class === 'crypto'}
+                    onChange={() => setForm(prev => ({ ...prev, instrument_class: 'crypto' }))}
+                  />
+                  Crypto
+                </label>
+              </div>
+              <p className="mt-1 text-[10px] text-text-secondary">
+                eToro settlement: real for equity, marginTrade for crypto.
+              </p>
+            </div>
+          ) : null}
+          {['angel', 'etoro'].includes(form.broker) && !form.use_fake_client ? (
             <div>
               <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Price Feed</label>
               <select
@@ -2061,7 +2758,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
                 onChange={e => setForm(prev => ({ ...prev, feed_mode: e.target.value }))}
                 className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent"
               >
-                {ANGEL_FEED_OPTIONS.map(option => (
+                {feedOptionsForBroker(form.broker).map(option => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
@@ -2119,8 +2816,58 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
             highlighted={showHighCapitalWarning}
             warning={showHighCapitalWarning ? 'High capital — risky' : undefined}
           />
-          <FormField label="Take Profit %" type="number" value={form.long_percent} onChange={value => setForm(prev => ({ ...prev, long_percent: value }))} />
-          <FormField label="Stop Loss %" type="number" value={form.short_percent} onChange={value => setForm(prev => ({ ...prev, short_percent: value }))} />
+          <div className="col-span-2 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[9px] uppercase tracking-[1.5px] text-text-secondary">
+                {takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? 'Potential profit' : 'Take profit %'}
+              </span>
+              <TakeProfitModeToggle
+                mode={takeProfitMode}
+                onChange={(nextMode) => {
+                  if (nextMode === TAKE_PROFIT_MODE_ABSOLUTE) {
+                    if (levels.potentialProfitAbsolute != null) {
+                      setProfitTargetAmount(String(levels.potentialProfitAbsolute))
+                    }
+                  }
+                  setTakeProfitMode(nextMode)
+                }}
+              />
+            </div>
+            {takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? (
+              <FormField
+                label="Target profit ($)"
+                type="number"
+                value={profitTargetAmount}
+                onChange={setProfitTargetAmount}
+                hint={resolvedLongPercent != null ? `≈ ${resolvedLongPercent.toFixed(2)}% from trigger` : undefined}
+              />
+            ) : (
+              <FormField
+                label="Take profit %"
+                type="number"
+                value={form.long_percent}
+                onChange={value => setForm(prev => ({ ...prev, long_percent: value }))}
+                hint={levels.potentialProfitAbsolute != null
+                  ? `≈ ${formatBrokerCompactMoney(form.broker, levels.potentialProfitAbsolute)} profit`
+                  : undefined}
+              />
+            )}
+          </div>
+          <FormField
+            label="Stop Loss Amount"
+            type="number"
+            value={form.stop_loss_amount}
+            onChange={value => setForm(prev => ({ ...prev, stop_loss_amount: value }))}
+            warning={stopLossAmountActive ? 'Percent stop loss is ignored while amount is set' : undefined}
+          />
+          <FormField
+            label="Stop Loss %"
+            type="number"
+            value={form.short_percent}
+            onChange={value => setForm(prev => ({ ...prev, short_percent: value }))}
+            disabled={stopLossAmountActive}
+            warning={stopLossAmountActive ? 'Disabled while stop loss amount is set' : undefined}
+          />
           <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
             <input
               type="checkbox"
@@ -2155,6 +2902,9 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
           }}
           levels={levels}
           form={form}
+          takeProfitMode={takeProfitMode}
+          resolvedLongPercent={resolvedLongPercent}
+          profitTargetAmount={profitTargetAmount}
         />
       </div>
 
@@ -2209,8 +2959,13 @@ function EventList({ events, emptyTitle }) {
             <span className={`w-40 shrink-0 text-[10px] font-bold ${eventColor(action)}`}>{action}</span>
             <span className="truncate text-text-secondary">
               {event.order_id || event.broker_order_id ? `order=${event.order_id || event.broker_order_id} ` : ''}
-              {event.position_id || event.broker_position_id ? `position=${event.position_id || event.broker_position_id} ` : ''}
+              {event.position_id || event.broker_position_id || details.position_id
+                ? `position=${event.position_id || event.broker_position_id || details.position_id} `
+                : ''}
               {event.executor_id || details.executor_id ? `execution=${event.executor_id || details.executor_id} ` : ''}
+              {details.state ? `state=${details.state} ` : ''}
+              {details.remaining_units != null ? `units=${details.remaining_units} ` : ''}
+              {event.last_update || details.last_update ? `updated=${event.last_update || details.last_update} ` : ''}
               {event.symbol || details.symbol || ''}
               {event.instrument_token || details.instrument_token || details.instrumentID || details.instrumentId
                 ? ` · instrument=${event.instrument_token || details.instrument_token || details.instrumentID || details.instrumentId}`
@@ -2247,6 +3002,9 @@ function MarketPreviewPanel({
   onUseLivePrice,
   levels,
   form,
+  takeProfitMode = TAKE_PROFIT_MODE_PERCENT,
+  resolvedLongPercent = null,
+  profitTargetAmount = '',
 }) {
   if (!selectedStock) {
     return (
@@ -2325,8 +3083,30 @@ function MarketPreviewPanel({
 
       <div className="grid grid-cols-1 gap-2 mt-auto">
         <PreviewLevelRow label="Buy Trigger" value={formatBrokerPrice(form.broker, levels.buyTrigger)} hint={`+${form.initial_threshold}% from close`} tone="accent" />
-        <PreviewLevelRow label="Take Profit" value={formatBrokerPrice(form.broker, levels.takeProfit)} hint={`+${form.long_percent}% from trigger`} tone="green" />
-        <PreviewLevelRow label="Stop Loss" value={formatBrokerPrice(form.broker, levels.stopLoss)} hint={`-${form.short_percent}% from trigger`} tone="red" />
+        <PreviewLevelRow
+          label="Take Profit"
+          value={formatBrokerPrice(form.broker, levels.takeProfit)}
+          hint={
+            takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE
+              ? (profitTargetAmount
+                ? `${formatBrokerCompactMoney(form.broker, profitTargetAmount)} target · ≈ ${Number(resolvedLongPercent || 0).toFixed(2)}%`
+                : 'Set target profit ($)')
+              : `+${form.long_percent}% from trigger${levels.potentialProfitAbsolute != null
+                ? ` · ${formatBrokerCompactMoney(form.broker, levels.potentialProfitAbsolute)}`
+                : ''}`
+          }
+          tone="green"
+        />
+        <PreviewLevelRow
+          label="Stop Loss"
+          value={formatBrokerPrice(form.broker, levels.stopLoss)}
+          hint={
+            levels.stopLossUsesAmount
+              ? `${formatBrokerCompactMoney(form.broker, levels.stopLossAmount)} max loss on ${formatBrokerCompactMoney(form.broker, form.max_available_capital)} capital`
+              : `-${form.short_percent}% from trigger`
+          }
+          tone="red"
+        />
         <PreviewLevelRow
           label="Order Qty"
           value={levels.orderQuantity != null ? levels.orderQuantity.toFixed(form.allow_partial_stocks ? 2 : 0) : '--'}
@@ -2542,7 +3322,7 @@ function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fa
         exchange: exchange || 'NSE',
         account_env,
         use_fake_client,
-        feed_mode: broker === 'angel' ? feed_mode || 'websocket' : 'websocket',
+        feed_mode: ['angel', 'etoro'].includes(broker) ? feed_mode || 'websocket' : 'websocket',
       }))
     }
 
@@ -2580,20 +3360,80 @@ function useMarketPreview({ broker, token, symbol, exchange, account_env, use_fa
   return { ltp, connected, marketError, streamStatus }
 }
 
-export function computeExecutionLevels(source) {
-  const closePrice = Number(source.close_price || 0)
-  if (!closePrice) {
-    return { closePrice: null, buyTrigger: null, takeProfit: null, stopLoss: null, orderQuantity: null }
-  }
+export function parseStopLossAmount(source) {
+  const raw = source?.stop_loss_amount
+  if (raw === '' || raw == null) return null
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 ? value : null
+}
 
+export function formatStopLossSetting(source, broker = 'angel') {
+  const amount = parseStopLossAmount(source)
+  if (amount != null) {
+    return formatBrokerCompactMoney(broker, amount)
+  }
+  if (source?.short_percent != null && source.short_percent !== '') {
+    return `${source.short_percent}%`
+  }
+  return '—'
+}
+
+export function longPercentFromProfitTarget(source, profitTargetAmount) {
+  const closePrice = Number(source.close_price || 0)
+  if (!closePrice) return null
   const buyTrigger = closePrice * (1 + Number(source.initial_threshold || 0) / 100)
-  const takeProfit = buyTrigger * (1 + Number(source.long_percent || 0) / 100)
-  const stopLoss = buyTrigger * (1 - Number(source.short_percent || 0) / 100)
+  const capital = Number(source.max_available_capital || 0)
   const orderQuantity = computeOrderQuantity(
-    Number(source.max_available_capital || 0),
+    capital,
     buyTrigger,
     Boolean(source.allow_partial_stocks),
   )
+  const target = Number(profitTargetAmount)
+  if (!orderQuantity || !buyTrigger || !Number.isFinite(target) || target <= 0) return null
+  return Math.round((target / (orderQuantity * buyTrigger)) * 10000) / 10000
+}
+
+export function resolveTakeProfitLongPercent(source, takeProfitMode, profitTargetAmount) {
+  if (takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE) {
+    const derived = longPercentFromProfitTarget(source, profitTargetAmount)
+    if (derived != null) return derived
+  }
+  return Number(source.long_percent || 0)
+}
+
+export function computeExecutionLevels(source, options = {}) {
+  const { takeProfitMode = TAKE_PROFIT_MODE_PERCENT, profitTargetAmount = '' } = options
+  const closePrice = Number(source.close_price || 0)
+  if (!closePrice) {
+    return {
+      closePrice: null,
+      buyTrigger: null,
+      takeProfit: null,
+      stopLoss: null,
+      orderQuantity: null,
+      potentialProfitAbsolute: null,
+      stopLossUsesAmount: false,
+    }
+  }
+
+  const buyTrigger = closePrice * (1 + Number(source.initial_threshold || 0) / 100)
+  const longPercent = resolveTakeProfitLongPercent(source, takeProfitMode, profitTargetAmount)
+  const takeProfit = buyTrigger * (1 + longPercent / 100)
+  const capital = Number(source.max_available_capital || 0)
+  const stopLossAmount = parseStopLossAmount(source)
+  const stopLossUsesAmount = stopLossAmount != null && capital > stopLossAmount
+  const stopLoss = stopLossUsesAmount
+    ? buyTrigger * (1 - stopLossAmount / capital)
+    : buyTrigger * (1 - Number(source.short_percent || 0) / 100)
+  const orderQuantity = computeOrderQuantity(
+    capital,
+    buyTrigger,
+    Boolean(source.allow_partial_stocks),
+  )
+  const potentialProfitAbsolute =
+    orderQuantity != null && buyTrigger != null && takeProfit != null
+      ? Math.round(orderQuantity * (takeProfit - buyTrigger) * 100) / 100
+      : null
 
   return {
     closePrice,
@@ -2601,7 +3441,16 @@ export function computeExecutionLevels(source) {
     takeProfit,
     stopLoss,
     orderQuantity,
+    potentialProfitAbsolute,
+    stopLossUsesAmount,
+    stopLossAmount,
   }
+}
+
+export function formatOrderQuantity(source, orderQuantity) {
+  if (orderQuantity == null || !Number.isFinite(orderQuantity)) return '—'
+  const decimals = source?.allow_partial_stocks ? 2 : 0
+  return orderQuantity.toFixed(decimals)
 }
 
 export function computeOrderQuantity(capital, price, allowPartial = false) {
@@ -2634,7 +3483,7 @@ function DataTable({ columns, rows }) {
   )
 }
 
-function FormField({ label, value, onChange, type = 'text', highlighted = false, warning = '' }) {
+function FormField({ label, value, onChange, type = 'text', highlighted = false, warning = '', hint = '', disabled = false }) {
   return (
     <div className={highlighted ? 'rounded border border-red/40 bg-red/5 px-2 py-2' : undefined}>
       <label
@@ -2647,13 +3496,19 @@ function FormField({ label, value, onChange, type = 'text', highlighted = false,
       <input
         type={type}
         value={value}
+        disabled={disabled}
         onChange={e => onChange(e.target.value)}
         className={`w-full px-3 py-2 bg-card border rounded text-xs outline-none [color-scheme:dark] ${
-          highlighted
+          disabled
+            ? 'border-border/60 text-text-secondary opacity-60 cursor-not-allowed'
+            : highlighted
             ? 'border-red text-red focus:border-red'
             : 'border-border text-text-primary focus:border-accent'
         }`}
       />
+      {hint ? (
+        <p className="mt-1 text-[10px] text-text-secondary">{hint}</p>
+      ) : null}
       {warning ? (
         <div
           role="alert"
@@ -2752,6 +3607,17 @@ async function ensureExecutorRegistered(runningEngine, executor) {
     throw new Error(executorData.detail || 'Live server started, but executor registration failed')
   }
   return executorData.data
+}
+
+export async function stopControlledExecution(executionId) {
+  const res = await fetch(`${CONTROL_API}/executions/${encodeURIComponent(executionId)}/stop`, {
+    method: 'POST',
+  })
+  const data = await res.json()
+  if (!res.ok) {
+    throw new Error(data.detail || data.message || 'Failed to stop strategy')
+  }
+  return data.data
 }
 
 export async function startControlledExecution(executionId) {
@@ -2861,6 +3727,27 @@ function filterActiveDataPlanes(engines) {
   )
 }
 
+function collectActiveDataPlanes(engines, liveExecutions = []) {
+  const byId = new Map()
+  for (const plane of filterActiveDataPlanes(engines)) {
+    byId.set(plane.id, plane)
+  }
+  for (const execution of liveExecutions) {
+    if (!execution?.data_plane_id || !execution?.ws_url) continue
+    if (!ACTIVE_DATA_PLANE_STATUSES.has(String(execution.data_plane_status || '').toLowerCase())) continue
+    if (byId.has(execution.data_plane_id)) continue
+    byId.set(execution.data_plane_id, {
+      id: execution.data_plane_id,
+      label: execution.data_plane_label || execution.label,
+      port: execution.data_plane_port || 0,
+      status: execution.data_plane_status,
+      api_base_url: execution.api_base_url,
+      ws_url: execution.ws_url,
+    })
+  }
+  return [...byId.values()]
+}
+
 function executionTimestamp() {
   const now = new Date()
   const pad = value => String(value).padStart(2, '0')
@@ -2876,18 +3763,19 @@ function buildExecutionId(broker, symbol, strategyName) {
   return `${slug}-${executionTimestamp()}`
 }
 
-function getPlaneStream(planeStreams, planeId) {
+export function getPlaneStream(planeStreams, planeId) {
   if (!planeId) return EMPTY_PLANE_STREAM
   return planeStreams[planeId] || EMPTY_PLANE_STREAM
 }
 
-function resolveExecutionStream(stream, execution) {
+export function resolveExecutionStream(stream, execution) {
   const planeId = execution?.data_plane_id
   const token = execution?.token
   const symbol = String(execution?.symbol || '').trim().toUpperCase()
   const primaryKey = planeTickKey(planeId, token)
 
   let tickHistory = stream.tickHistory[primaryKey] || []
+  let candleHistory = stream.candleHistory[primaryKey] || []
   let tick = stream.ticks[primaryKey]
   let streamKey = primaryKey
 
@@ -2897,12 +3785,13 @@ function resolveExecutionStream(stream, execution) {
       if (String(entry?.symbol || '').trim().toUpperCase() !== symbol) continue
       tick = entry
       tickHistory = stream.tickHistory[key] || tickHistory
+      candleHistory = stream.candleHistory[key] || candleHistory
       streamKey = key
       break
     }
   }
 
-  return { tickHistory, tick, streamKey }
+  return { tickHistory, candleHistory, tick, streamKey }
 }
 
 export function resolveExecutionPriceStreamStatus({
@@ -3010,7 +3899,7 @@ function useNow(intervalMs) {
   return nowMs
 }
 
-function buildChartSeries(history, execution, liveLtp) {
+export function buildChartSeries(history, execution, liveLtp) {
   const sanitized = sanitizeChartSeries(history)
   if (sanitized.length) return sanitized
 
@@ -3034,6 +3923,108 @@ function planeTickKey(planeId, token) {
   const tokenKey = normalizeTokenKey(token)
   if (!planeId || !tokenKey) return tokenKey
   return `${planeId}:${tokenKey}`
+}
+
+function minuteBucket(ts = Date.now()) {
+  const sec = Math.floor(ts / 1000)
+  return Math.floor(sec / 60) * 60
+}
+
+export function sanitizeCandleSeries(candles) {
+  if (!candles?.length) return []
+
+  const sanitized = []
+  for (const candle of candles) {
+    const time = Number(candle.time)
+    const open = Number(candle.open)
+    const high = Number(candle.high)
+    const low = Number(candle.low)
+    const close = Number(candle.close)
+    if (![time, open, high, low, close].every(Number.isFinite)) continue
+    if (Math.min(open, high, low, close) <= 0) continue
+
+    const normalized = {
+      time: Math.floor(time / 60) * 60,
+      open,
+      high: Math.max(high, open, low, close),
+      low: Math.min(low, open, high, close),
+      close,
+      volume: Number.isFinite(Number(candle.volume)) ? Number(candle.volume) : 0,
+    }
+    const last = sanitized[sanitized.length - 1]
+    if (last && normalized.time <= last.time) {
+      sanitized[sanitized.length - 1] = normalized
+    } else {
+      sanitized.push(normalized)
+    }
+  }
+  return sanitized
+}
+
+function applyCandleTick(history, candle) {
+  const next = sanitizeCandleSeries([...(history || []), candle])
+  return next.slice(-CANDLE_HISTORY_MAX_BARS)
+}
+
+export function mergeCandleSync(history, candles) {
+  const merged = new Map((history || []).map(item => [item.time, item]))
+  for (const candle of sanitizeCandleSeries(candles)) {
+    merged.set(candle.time, candle)
+  }
+  return [...merged.values()].sort((a, b) => a.time - b.time).slice(-CANDLE_HISTORY_MAX_BARS)
+}
+
+export function buildCandleSeries(history, execution, liveLtp) {
+  return sanitizeCandleSeries(history)
+}
+
+function candlesToVolumeData(candles) {
+  return candles.map(candle => ({
+    time: candle.time,
+    value: Number.isFinite(Number(candle.volume)) ? Number(candle.volume) : 0,
+    color: Number(candle.close) >= Number(candle.open)
+      ? 'rgba(0, 230, 118, 0.45)'
+      : 'rgba(255, 82, 82, 0.45)',
+  }))
+}
+
+function applyCandleViewport(chart, barCount, compact = false) {
+  if (!chart || barCount <= 0) return
+  if (compact) {
+    chart.timeScale().applyOptions({
+      barSpacing: 1,
+      minBarSpacing: 0.5,
+      rightOffset: 2,
+    })
+    chart.timeScale().fitContent()
+    return
+  }
+  const to = Math.max(barCount - 1, 0)
+  const from = Math.max(0, to - CANDLE_VISIBLE_BARS + 1)
+  chart.timeScale().applyOptions({
+    barSpacing: 6,
+    minBarSpacing: 2,
+    rightOffset: 6,
+  })
+  chart.timeScale().setVisibleLogicalRange({
+    from,
+    to: to + 6,
+  })
+}
+
+function applyDynamicCandleColors(series, candle) {
+  if (!series || !candle) return
+  const bullish = Number(candle.close) >= Number(candle.open)
+  const upColor = bullish ? CANDLE_UP_COLOR : CANDLE_NEUTRAL_UP
+  const downColor = bullish ? CANDLE_NEUTRAL_DOWN : CANDLE_DOWN_COLOR
+  series.applyOptions({
+    upColor,
+    downColor,
+    borderUpColor: upColor,
+    borderDownColor: downColor,
+    wickUpColor: upColor,
+    wickDownColor: downColor,
+  })
 }
 
 function appendTickPoint(history, ltp) {
@@ -3081,6 +4072,21 @@ function getEventAction(event) {
   ).toUpperCase()
 }
 
+const WS_ORDER_STATUS_MESSAGE_TYPES = new Set([
+  'order_poll_update',
+  'position_status_update',
+  'portfolio_status_update',
+  'portfolio_status_snapshot',
+])
+
+function shouldToastWsMessage(msg) {
+  const type = String(msg?.type || '').toLowerCase()
+  if (WS_ORDER_STATUS_MESSAGE_TYPES.has(type)) return false
+  const action = getEventAction(msg)
+  if (action === 'ORDER_STATUS_UPDATED') return false
+  return true
+}
+
 function shouldNotifyAction(action) {
   if (!action) return false
   if (NOTIFY_ACTIONS.has(action)) return true
@@ -3108,12 +4114,16 @@ function toastTone(action = '') {
 function buildTradeMarkers(realtimeEvents, executorId, chartData) {
   if (!chartData.length) return []
 
+  const CHART_MARKER_ACTIONS = new Set([
+    'BUY_ORDER_PLACED', 'SELL_ORDER_PLACED', 'ORDER_FILLED',
+    'POSITION_CLOSED', 'TAKE_PROFIT_EXIT_PLACED', 'STOP_LOSS_EXIT_PLACED',
+  ])
   const tradeEvents = (realtimeEvents || [])
     .filter(evt => {
       const execId = evt.executor_id || evt.details?.executor_id
       if (execId && execId !== executorId) return false
       const action = getEventAction(evt)
-      return shouldNotifyAction(action) || evt.type === 'order'
+      return CHART_MARKER_ACTIONS.has(action)
     })
     .slice(0, Math.min(8, chartData.length))
 
@@ -3212,13 +4222,8 @@ function normalizeExecution(executor, dataPlane = DEFAULT_DATA_PLANE) {
 }
 
 function getPriceLines(execution) {
-  const closePrice = Number(execution.close_price || 0)
-  const initialThreshold = Number(execution.initial_threshold || 0)
-  const longPercent = Number(execution.long_percent || 0)
-  const shortPercent = Number(execution.short_percent || 0)
-  const buyTrigger = closePrice ? closePrice * (1 + initialThreshold / 100) : null
-  const takeProfit = buyTrigger ? buyTrigger * (1 + longPercent / 100) : null
-  const stopLoss = buyTrigger ? buyTrigger * (1 - shortPercent / 100) : null
+  const levels = computeExecutionLevels(execution)
+  const { closePrice, buyTrigger, takeProfit, stopLoss } = levels
 
   return [
     closePrice && { price: closePrice, color: '#8899a6', lineStyle: 2, lineWidth: 1, title: 'CLOSE', axisLabelVisible: true },

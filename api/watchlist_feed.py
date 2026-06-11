@@ -90,18 +90,8 @@ class _BrokerFeed:
         self.subscriptions = {str(s.token): s for s in subscriptions}
         if self.client is None:
             return
-        if self.broker == "etoro":
-            for sub in subscriptions:
-                try:
-                    await self.client.subscribe(sub.exchange, sub.symbol, sub.token)
-                except Exception as exc:
-                    log.warning(
-                        "[WATCHLIST] eToro subscribe failed symbol=%s token=%s: %s",
-                        sub.symbol,
-                        sub.token,
-                        exc,
-                    )
-            return
+        # Use sync_subscriptions for all brokers — it diffs old vs new and only
+        # sends Subscribe/Unsubscribe for the delta, preventing TopicAlreadySubscribed spam.
         await self.client.sync_subscriptions(subscriptions)
 
     async def stop(self) -> None:

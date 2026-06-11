@@ -4,6 +4,7 @@ from typing import Any
 from logzero import logger
 
 from brokers.interfaces import OrderActivity, OrderActivityListener, TickData
+from managers.bgp_log import bgp_info, summarize_etoro_position
 
 
 class OrderManager:
@@ -203,6 +204,21 @@ class OrderManager:
             self._rebuild_snapshot_state(status)
 
         for activity in activities:
+            if activity.source == "websocket" and activity.activity_type not in {
+                "position_snapshot",
+                "limit_order_snapshot",
+                "open_order_snapshot",
+                "close_order_snapshot",
+            }:
+                bgp_info(
+                    "order_manager",
+                    "websocket_activity",
+                    activity_type=activity.activity_type,
+                    order_id=activity.order_id,
+                    position_id=activity.position_id,
+                    status=activity.status,
+                    instrument_id=activity.instrument_id,
+                )
             self._apply_activity(activity)
             await self._dispatch(activity)
 
@@ -254,6 +270,11 @@ class OrderManager:
                     entry["position_id"] = activity.position_id
 
     def _rebuild_snapshot_state(self, snapshot: dict[str, Any]) -> None:
+        previous_position_summaries = {
+            position_id: summarize_etoro_position(position.get("raw") or position)
+            for position_id, position in self._positions_by_id.items()
+        }
+
         orders_by_id: dict[str, dict[str, Any]] = {}
         positions_by_id: dict[str, dict[str, Any]] = {}
         order_to_position_ids: dict[str, set[str]] = {}
@@ -325,6 +346,36 @@ class OrderManager:
                     },
                 )
                 order_to_position_ids.setdefault(str(order_id), set()).add(position_id)
+
+        current_position_summaries = {
+            position_id: summarize_etoro_position(position.get("raw") or position)
+            for position_id, position in positions_by_id.items()
+        }
+        for position_id, current in current_position_summaries.items():
+            previous = previous_position_summaries.get(position_id)
+            if previous is None:
+                bgp_info(
+                    "order_manager",
+                    "POSITION_ADDED",
+                    position_id=position_id,
+                    current=current,
+                )
+            elif previous != current:
+                bgp_info(
+                    "order_manager",
+                    "POSITION_UPDATED",
+                    position_id=position_id,
+                    previous=previous,
+                    current=current,
+                )
+        for position_id, previous in previous_position_summaries.items():
+            if position_id not in current_position_summaries:
+                bgp_info(
+                    "order_manager",
+                    "POSITION_REMOVED",
+                    position_id=position_id,
+                    previous=previous,
+                )
 
         self._orders_by_id = orders_by_id
         self._positions_by_id = positions_by_id

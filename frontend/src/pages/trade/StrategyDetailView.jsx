@@ -1,11 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import LiveLogPanel from '../../components/LiveLogPanel'
 import {
   EmptyState,
   StrategyChartPanel,
+  TAKE_PROFIT_MODE_ABSOLUTE,
+  TAKE_PROFIT_MODE_PERCENT,
+  TakeProfitModeToggle,
   computeExecutionLevels,
+  formatOrderQuantity,
 } from '../../ExecutionWorkspace'
 import {
   formatBrokerCompactMoney,
@@ -23,6 +27,78 @@ import { TradingActivityFeed } from '../../components/TradingActivityFeed'
 import { formatScheduledStart, scheduleSummary } from '../../lib/tradingSchedule'
 
 import './strategy-detail.css'
+
+const PRICE_CHANGE_WINDOWS = [
+  { id: '1m', label: '1m', ms: 60_000 },
+  { id: '5m', label: '5m', ms: 5 * 60_000 },
+  { id: '10m', label: '10m', ms: 10 * 60_000 },
+  { id: '30m', label: '30m', ms: 30 * 60_000 },
+]
+
+function computePriceWindowChanges(tickHistory, nowMs = Date.now()) {
+  if (!tickHistory?.length) return []
+  const current = tickHistory[tickHistory.length - 1]?.value
+  if (!current) return []
+  return PRICE_CHANGE_WINDOWS.map(win => {
+    const cutoff = nowMs / 1000 - win.ms / 1000
+    let pastVal = null
+    for (let i = tickHistory.length - 1; i >= 0; i--) {
+      if (tickHistory[i].time <= cutoff) { pastVal = tickHistory[i].value; break }
+    }
+    if (pastVal == null && tickHistory.length > 1) {
+      pastVal = tickHistory[0].value
+    }
+    const pct = pastVal != null && pastVal > 0
+      ? Math.round(((current - pastVal) / pastVal) * 10000) / 100
+      : null
+    return { ...win, pct }
+  })
+}
+
+function PriceChangeBadges({ tickHistory }) {
+  const [windows, setWindows] = useState(() => computePriceWindowChanges(tickHistory))
+  const tickRef = useRef(tickHistory)
+  tickRef.current = tickHistory
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setWindows(computePriceWindowChanges(tickRef.current))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    setWindows(computePriceWindowChanges(tickHistory))
+  }, [tickHistory])
+
+  const visible = windows.filter(w => w.pct != null)
+  if (!visible.length) return null
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {windows.map(win => {
+        if (win.pct == null) return (
+          <span key={win.id} className="rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums bg-muted/15 text-text-secondary/60">
+            {win.label} —
+          </span>
+        )
+        const up = win.pct > 0
+        const flat = win.pct === 0
+        return (
+          <span
+            key={win.id}
+            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums whitespace-nowrap ${
+              up ? 'bg-green/12 text-[var(--sd-green)]' : flat ? 'bg-muted/25 text-text-secondary' : 'bg-red/12 text-[var(--sd-red)]'
+            }`}
+            title={`${win.label} change from session start`}
+          >
+            {win.label} {win.pct > 0 ? '+' : ''}{win.pct.toFixed(2)}%
+          </span>
+        )
+      })}
+    </div>
+  )
+}
 
 function strategyTitle(execution) {
   if (!execution) return 'Strategy'
@@ -74,10 +150,13 @@ function DetailChip({ children }) {
   return <span className="sd-chip">{children}</span>
 }
 
-function MetricTile({ label, value, valueClass = '' }) {
+function MetricTile({ label, value, valueClass = '', headerAction = null }) {
   return (
     <div className="sd-stat">
-      <div className="label">{label}</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="label">{label}</div>
+        {headerAction}
+      </div>
       <div className={`value ${valueClass}`}>{value}</div>
     </div>
   )
@@ -119,13 +198,347 @@ function RuntimePills({ port, apiBaseUrl, wsUrl, logFile, pending }) {
   )
 }
 
-function ActivityFeed({ executorId, realtimeEvents }) {
+// Derive realtime P&L for a position from the live feed price already streaming
+// into the chart, so we don't need a backend round-trip for rates.
+function computeLivePnl(p, livePrice) {
+  if (livePrice == null || !(livePrice > 0)) return null
+  const pos = p.position || {}
+  const opening = pos.openingData || {}
+  const openRate = Number(opening.avgPrice ?? pos.openRate ?? pos.OpenRate ?? 0)
+  const units = Number(p.remaining_units ?? pos.remainingUnits ?? pos.units ?? pos.Units ?? 0)
+  if (!(openRate > 0) || !(units > 0)) return null
+  const isBuy = pos.isBuy ?? pos.IsBuy ?? true
+  const direction = isBuy ? 1 : -1
+  const pnl = (livePrice - openRate) * units * direction
+  const pnlPct = ((livePrice - openRate) / openRate) * 100 * direction
+  return { pnl, pnl_pct: pnlPct, current_rate: livePrice }
+}
+
+function PositionsPanel({ executorId, execution, livePrice = null }) {
+  const [positions, setPositions] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [unitInputs, setUnitInputs] = useState({})
+  const [closing, setClosing] = useState({})
+  const [closeErrors, setCloseErrors] = useState({})
+  const [closedIds, setClosedIds] = useState(new Set())
+
+  const broker = execution?.broker
+  const accountEnv = execution?.account_env || 'demo'
+
+  const fetchPositions = useCallback(async () => {
+    if (!executorId) return
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`/api/control/executions/${encodeURIComponent(executorId)}/positions`)
+      const data = await res.json()
+      if (data.status) setPositions(data.data || [])
+      else setError(data.message || 'Failed to load positions')
+    } catch (e) {
+      setError('Network error loading positions')
+    } finally {
+      setLoading(false)
+    }
+  }, [executorId])
+
+  useEffect(() => { fetchPositions() }, [fetchPositions])
+
+  const handleClose = useCallback(async (positionId, maxUnits) => {
+    const raw = unitInputs[positionId]
+    const units = raw !== '' && raw != null ? parseFloat(raw) : null
+
+    if (units !== null && (isNaN(units) || units <= 0 || units > maxUnits)) {
+      setCloseErrors(prev => ({ ...prev, [positionId]: `Units must be between 0 and ${maxUnits}` }))
+      return
+    }
+
+    setClosing(prev => ({ ...prev, [positionId]: true }))
+    setCloseErrors(prev => ({ ...prev, [positionId]: null }))
+
+    try {
+      const res = await fetch(
+        `/api/control/executions/${encodeURIComponent(executorId)}/positions/${encodeURIComponent(positionId)}/close`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ units: units || null }),
+        },
+      )
+      const data = await res.json()
+      if (res.ok && data.status) {
+        setClosedIds(prev => new Set([...prev, positionId]))
+        fetchPositions()
+      } else {
+        setCloseErrors(prev => ({
+          ...prev,
+          [positionId]: data.detail || data.message || 'Close failed',
+        }))
+      }
+    } catch (e) {
+      setCloseErrors(prev => ({ ...prev, [positionId]: 'Network error' }))
+    } finally {
+      setClosing(prev => ({ ...prev, [positionId]: false }))
+    }
+  }, [executorId, unitInputs, fetchPositions])
+
+  if (!executorId) return (
+    <div className="py-8 text-center text-sm" style={{ color: 'var(--sd-text-muted)' }}>
+      No execution selected.
+    </div>
+  )
+
+  if (loading && !positions.length) return (
+    <div className="py-8 text-center text-sm" style={{ color: 'var(--sd-text-muted)' }}>
+      Loading positions…
+    </div>
+  )
+
+  if (error) return (
+    <div className="py-4 text-center text-sm" style={{ color: 'var(--sd-red)' }}>
+      {error}
+      <button type="button" className="ml-2 underline" onClick={fetchPositions}>Retry</button>
+    </div>
+  )
+
+  const open = positions.filter(p => (p.state || p.position?.state) !== 'closed' && !closedIds.has(p.position_id))
+  const closed = positions.filter(p => (p.state || p.position?.state) === 'closed' || closedIds.has(p.position_id))
+
+  const openLive = open.map(p => computeLivePnl(p, livePrice)).filter(Boolean)
+  const totalPnl = openLive.length ? openLive.reduce((sum, l) => sum + l.pnl, 0) : null
+
+  if (!positions.length) return (
+    <div className="py-8 text-center text-sm" style={{ color: 'var(--sd-text-muted)' }}>
+      No positions tracked for this execution yet.
+    </div>
+  )
+
+  const formatPrice = (v) => v != null ? `$${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}` : '—'
+  const formatPnl = (v) => {
+    if (v == null) return null
+    const n = Number(v)
+    const sign = n >= 0 ? '+' : ''
+    return `${sign}$${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  }
+
+  const renderRow = (p) => {
+    const pos = p.position || {}
+    const posId = p.position_id
+    const state = p.state || pos.state || '?'
+    const isOpen = state !== 'closed' && !closedIds.has(posId)
+    const remaining = p.remaining_units ?? pos.remainingUnits ?? null
+    const opening = pos.openingData || {}
+    const avgPrice = opening.avgPrice ?? pos.openRate ?? null
+    const sl = pos.stopLossRate ?? null
+    const tp = pos.takeProfitRate ?? null
+    const isBusy = closing[posId]
+    const live = isOpen ? computeLivePnl(p, livePrice) : null
+
+    return (
+      <div
+        key={posId}
+        className="rounded-lg border p-3"
+        style={{
+          borderColor: isOpen ? 'var(--sd-border)' : 'rgba(139,156,176,0.25)',
+          background: isOpen ? 'var(--sd-bg-elevated)' : 'transparent',
+          opacity: isOpen ? 1 : 0.55,
+        }}
+      >
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <span className="font-mono text-[11px]" style={{ color: 'var(--sd-text-muted)' }}>
+            #{posId}
+          </span>
+          <div className="flex items-center gap-2">
+            {isOpen && live != null && (
+              <span
+                className="font-mono text-[13px] font-bold"
+                style={{ color: live.pnl >= 0 ? 'var(--sd-green)' : 'var(--sd-red)' }}
+              >
+                {formatPnl(live.pnl)}
+                <span className="ml-1 text-[10px] font-normal opacity-70">
+                  ({live.pnl >= 0 ? '+' : ''}{live.pnl_pct?.toFixed(2)}%)
+                </span>
+              </span>
+            )}
+            <span
+              className="rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest"
+              style={
+                isOpen
+                  ? { background: 'var(--sd-green-soft)', color: 'var(--sd-green)' }
+                  : { background: 'rgba(139,156,176,0.15)', color: 'var(--sd-text-muted)' }
+              }
+            >
+              {isOpen ? 'Open' : 'Closed'}
+            </span>
+          </div>
+        </div>
+
+        <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] sm:grid-cols-4">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>Units</div>
+            <div className="font-mono font-semibold">{remaining != null ? Number(remaining).toFixed(6) : '—'}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>Avg price</div>
+            <div className="font-mono font-semibold">{formatPrice(avgPrice)}</div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>
+              {live ? 'Current price' : 'Stop loss'}
+            </div>
+            <div className="font-mono" style={{ color: live ? 'var(--sd-text)' : 'var(--sd-red)' }}>
+              {live ? formatPrice(live.current_rate) : formatPrice(sl)}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>
+              {live ? 'Stop loss' : 'Take profit'}
+            </div>
+            <div className="font-mono" style={{ color: live ? 'var(--sd-red)' : 'var(--sd-green)' }}>
+              {live ? formatPrice(sl) : formatPrice(tp)}
+            </div>
+          </div>
+        </div>
+
+        {/* Second row when live data is present: show SL, TP plus P&L bar */}
+        {live && isOpen && (
+          <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] sm:grid-cols-4">
+            <div />
+            <div />
+            <div>
+              <div className="text-[10px] uppercase tracking-wider" style={{ color: 'var(--sd-text-muted)' }}>Take profit</div>
+              <div className="font-mono" style={{ color: 'var(--sd-green)' }}>{formatPrice(tp)}</div>
+            </div>
+            <div />
+          </div>
+        )}
+
+        {isOpen && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              type="number"
+              min="0.000001"
+              max={remaining ?? undefined}
+              step="0.001"
+              placeholder={`Units (max ${remaining != null ? Number(remaining).toFixed(4) : '?'})`}
+              value={unitInputs[posId] ?? ''}
+              onChange={e => setUnitInputs(prev => ({ ...prev, [posId]: e.target.value }))}
+              className="h-8 w-44 rounded-md border bg-transparent px-2 text-[12px] font-mono outline-none focus:border-[var(--sd-accent)]"
+              style={{ borderColor: 'var(--sd-border)', color: 'var(--sd-text)' }}
+              disabled={isBusy}
+            />
+            <button
+              type="button"
+              className="sd-btn h-8 px-3 text-[12px]"
+              style={isBusy ? {} : { borderColor: 'var(--sd-red)', color: 'var(--sd-red)' }}
+              disabled={isBusy}
+              onClick={() => handleClose(posId, remaining ?? Infinity)}
+            >
+              {isBusy ? 'Closing…' : 'Close position'}
+            </button>
+            {closeErrors[posId] && (
+              <span className="text-[11px]" style={{ color: 'var(--sd-red)' }}>{closeErrors[posId]}</span>
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const hasOpenWithLive = open.length > 0 && totalPnl != null
+
   return (
-    <TradingActivityFeed
+    <div className="space-y-2">
+      {/* Total P&L banner across all open positions */}
+      {hasOpenWithLive && (
+        <div
+          className="flex items-center justify-between rounded-lg px-3 py-2 text-[12px]"
+          style={{
+            background: totalPnl >= 0 ? 'rgba(0,200,83,0.08)' : 'rgba(255,23,68,0.08)',
+            border: `1px solid ${totalPnl >= 0 ? 'rgba(0,200,83,0.25)' : 'rgba(255,23,68,0.25)'}`,
+          }}
+        >
+          <span style={{ color: 'var(--sd-text-muted)' }}>
+            P&amp;L across {open.length} open position{open.length !== 1 ? 's' : ''}
+          </span>
+          <span
+            className="font-mono text-[16px] font-bold"
+            style={{ color: totalPnl >= 0 ? 'var(--sd-green)' : 'var(--sd-red)' }}
+          >
+            {formatPnl(totalPnl)}
+          </span>
+        </div>
+      )}
+
+      {open.length > 0 && (
+        <div className="space-y-2">
+          {open.map(renderRow)}
+        </div>
+      )}
+      {closed.length > 0 && (
+        <details className="mt-1">
+          <summary
+            className="cursor-pointer text-[11px] uppercase tracking-wider"
+            style={{ color: 'var(--sd-text-muted)' }}
+          >
+            {closed.length} closed position{closed.length !== 1 ? 's' : ''}
+          </summary>
+          <div className="mt-2 space-y-2">{closed.map(renderRow)}</div>
+        </details>
+      )}
+    </div>
+  )
+}
+
+const PANEL_TABS = ['Activity', 'Positions']
+
+function ActivityAndPositionsPanel({ executorId, execution, realtimeEvents, livePrice = null }) {
+  const [tab, setTab] = useState('Activity')
+  return (
+    <div
+      className="sd-card flex h-full min-h-[360px] flex-col overflow-hidden"
+      style={{ borderColor: 'var(--sd-border)', background: 'var(--sd-bg-card)' }}
+    >
+      <div className="flex items-center gap-0 border-b" style={{ borderColor: 'var(--sd-border)' }}>
+        {PANEL_TABS.map(t => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTab(t)}
+            className="px-4 py-3 text-[13px] font-semibold transition-colors"
+            style={
+              tab === t
+                ? { color: 'var(--sd-accent)', borderBottom: '2px solid var(--sd-accent)', marginBottom: -1 }
+                : { color: 'var(--sd-text-muted)', borderBottom: '2px solid transparent', marginBottom: -1 }
+            }
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-auto px-4 py-3">
+        {tab === 'Activity' ? (
+          <TradingActivityFeed
+            executorId={executorId}
+            realtimeEvents={realtimeEvents}
+            viewAllHref="/trade/activity"
+            className="!border-0 !bg-transparent !rounded-none !shadow-none -mx-4 -my-3"
+          />
+        ) : (
+          <PositionsPanel executorId={executorId} execution={execution} livePrice={livePrice} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ActivityFeed({ executorId, execution, realtimeEvents, livePrice = null }) {
+  return (
+    <ActivityAndPositionsPanel
       executorId={executorId}
+      execution={execution}
       realtimeEvents={realtimeEvents}
-      viewAllHref="/trade/activity"
-      className="sd-card h-full min-h-[360px] border-[var(--sd-border)] bg-[var(--sd-bg-card)]"
+      livePrice={livePrice}
     />
   )
 }
@@ -151,10 +564,79 @@ export default function StrategyDetailView({
   actionError,
 }) {
   const [logOpen, setLogOpen] = useState(false)
+  const [filledQty, setFilledQty] = useState(null)
+  const [takeProfitMode, setTakeProfitMode] = useState(TAKE_PROFIT_MODE_PERCENT)
   const levels = useMemo(() => computeExecutionLevels(execution || {}), [execution])
   const broker = execution?.broker
+
+  const activeTickHistory = useMemo(() => {
+    if (!planeStreams || !execution?.data_plane_id) return []
+    const stream = planeStreams[execution.data_plane_id]
+    if (!stream) return []
+    const token = execution.token
+    const planeId = execution.data_plane_id
+    if (!token || !planeId) return []
+    const key = `${planeId}:${token}`
+    const hist = stream.tickHistory?.[key]
+    if (hist?.length) return hist
+    // fallback: scan for matching symbol
+    const symbol = String(execution.symbol || '').trim().toUpperCase()
+    for (const [k, h] of Object.entries(stream.tickHistory || {})) {
+      if (k.startsWith(`${planeId}:`) && Array.isArray(h) && h.length) {
+        const tick = stream.ticks?.[k]
+        if (String(tick?.symbol || '').trim().toUpperCase() === symbol) return h
+      }
+    }
+    return []
+  }, [planeStreams, execution?.data_plane_id, execution?.token, execution?.symbol, selectedTick])
+  const livePrice = useMemo(() => {
+    const last = activeTickHistory?.[activeTickHistory.length - 1]?.value
+    return Number.isFinite(last) && last > 0 ? Number(last) : null
+  }, [activeTickHistory])
+  const takeProfitMetricLabel = takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? 'Potential profit' : 'Take profit %'
+  const takeProfitMetricValue = takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE
+    ? (levels.potentialProfitAbsolute != null
+      ? formatBrokerCompactMoney(broker, levels.potentialProfitAbsolute)
+      : '—')
+    : (execution?.long_percent != null ? `${execution.long_percent}%` : '—')
   const port = execution?.data_plane_port || queuedItem?.engine?.port
   const pnl = 0
+  const qtyDecimals = execution?.allow_partial_stocks ? 2 : 0
+  const displayQty = filledQty ?? levels.orderQuantity
+  const qtyLabel = filledQty != null || execution?.is_in_position ? 'Qty bought' : 'Order qty'
+
+  useEffect(() => {
+    if (!executionId) return
+    let cancelled = false
+
+    ;(async () => {
+      try {
+        const res = await fetch(`/api/control/executions/${encodeURIComponent(executionId)}/positions`)
+        const data = await res.json()
+        if (cancelled || !data.status) return
+
+        const totalUnits = (data.data || []).reduce((sum, row) => {
+          const position = row.position || {}
+          const units = Number(
+            row.remaining_units
+            ?? position.remainingUnits
+            ?? position.units
+            ?? position.Units
+            ?? 0,
+          )
+          return Number.isFinite(units) && units > 0 ? sum + units : sum
+        }, 0)
+
+        setFilledQty(totalUnits > 0 ? totalUnits : null)
+      } catch {
+        if (!cancelled) setFilledQty(null)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [executionId, execution?.is_in_position, strategyActivityEvents?.length])
   const runtimePending = !execution?.log_file && !execution?.data_plane_port && !port
   const env = String(execution?.account_env || 'live').toLowerCase()
   const badgeTone = statusBadgeTone(isLive, engineStatus)
@@ -264,6 +746,11 @@ export default function StrategyDetailView({
               {execution?.symbol ? <DetailChip>{execution.symbol}</DetailChip> : null}
               {port ? <DetailChip>Runtime :{port}</DetailChip> : null}
             </div>
+            {activeTickHistory.length > 1 ? (
+              <div className="mt-2">
+                <PriceChangeBadges tickHistory={activeTickHistory} />
+              </div>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Link to="/trade/strategies" className="sd-btn">
@@ -324,7 +811,7 @@ export default function StrategyDetailView({
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-5">
-        <div className="mb-4 grid grid-cols-2 gap-2.5 xl:grid-cols-5">
+        <div className="mb-4 grid grid-cols-2 gap-2.5 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7">
           <MetricTile
             label="Entry trigger"
             value={levels.buyTrigger != null ? formatBrokerPrice(broker, levels.buyTrigger) : '—'}
@@ -346,6 +833,25 @@ export default function StrategyDetailView({
               : '—'}
           />
           <MetricTile
+            label={qtyLabel}
+            value={displayQty != null
+              ? (filledQty != null
+                ? displayQty.toFixed(qtyDecimals)
+                : formatOrderQuantity(execution, displayQty))
+              : '—'}
+          />
+          <MetricTile
+            label={takeProfitMetricLabel}
+            value={takeProfitMetricValue}
+            valueClass="text-[var(--sd-green)]"
+            headerAction={(
+              <TakeProfitModeToggle
+                mode={takeProfitMode}
+                onChange={setTakeProfitMode}
+              />
+            )}
+          />
+          <MetricTile
             label="P&L"
             value={formatBrokerSignedMoney(broker, pnl)}
             valueClass={pnl >= 0 ? 'text-[var(--sd-green)]' : 'text-[var(--sd-red)]'}
@@ -358,7 +864,7 @@ export default function StrategyDetailView({
             planeStreams={planeStreams}
             selectedTick={selectedTick}
           />
-          <ActivityFeed executorId={executionId} realtimeEvents={strategyActivityEvents} />
+          <ActivityFeed executorId={executionId} execution={execution} realtimeEvents={strategyActivityEvents} livePrice={livePrice} />
         </div>
 
         <div className="space-y-3">
@@ -389,9 +895,19 @@ export default function StrategyDetailView({
                 ['Broker', execution?.broker || '—'],
                 ['Instrument ID', execution?.token || '—'],
                 ['Close price', levels.closePrice != null ? formatBrokerPrice(broker, levels.closePrice) : '—'],
+                ['Order qty', displayQty != null
+                  ? (filledQty != null
+                    ? displayQty.toFixed(qtyDecimals)
+                    : formatOrderQuantity(execution, displayQty))
+                  : '—'],
+                ['Potential profit', levels.potentialProfitAbsolute != null
+                  ? formatBrokerCompactMoney(broker, levels.potentialProfitAbsolute)
+                  : '—'],
                 ['Entry threshold', execution?.initial_threshold != null ? `${execution.initial_threshold}%` : '—'],
                 ['Take profit %', execution?.long_percent != null ? `${execution.long_percent}%` : '—'],
-                ['Stop loss %', execution?.short_percent != null ? `${execution.short_percent}%` : '—'],
+                ['Stop loss', levels.stopLossUsesAmount
+                  ? `${formatBrokerCompactMoney(broker, levels.stopLossAmount)} max loss`
+                  : execution?.short_percent != null ? `${execution.short_percent}%` : '—'],
                 ['Client mode', execution?.is_bracket_order_client ? 'Bracket orders' : 'Feed TP/SL'],
                 ['Partial stocks', execution?.allow_partial_stocks ? 'Yes (2 dp)' : 'No (whole shares)'],
                 ['Tick sampling', execution?.tick_sample_every != null ? `Every ${execution.tick_sample_every} tick(s)` : 'Every tick'],

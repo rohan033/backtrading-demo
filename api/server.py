@@ -10,7 +10,7 @@ from fastapi import Body, FastAPI, HTTPException, Request, WebSocket, WebSocketD
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 import asyncio
@@ -32,14 +32,20 @@ from api.watchlist_feed import get_watchlist_feed_hub
 from control_plane.client_mode import normalize_client_mode
 from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
+from control_plane.live_engine_proxy import forward_live_json
 from control_plane.ops_logging import configure_control_plane_logging, quiet_uvicorn_poll_access_logs
+from managers.bgp_log import bgp_error, bgp_info
 from control_plane.log_stream import (
     resolve_engine_log_path,
     sse_encode,
     stream_engine_log_events,
 )
 from control_plane.execution_scheduler import ExecutionScheduler
-from control_plane.execution_sources import DEFAULT_EXECUTION_SOURCE, EXECUTION_SOURCE_AI_RESEARCH
+from control_plane.execution_sources import (
+    DEFAULT_EXECUTION_SOURCE,
+    EXECUTION_SOURCE_AI_RESEARCH,
+    EXECUTION_SOURCE_MOMENTUM_TRADE,
+)
 from control_plane.execution_source_links import ensure_research_source_on_engine
 from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
 from brokers.angel.adapters.portfolio import angel_portfolio_rows_from_holdings
@@ -53,7 +59,7 @@ from brokers.etoro.adapters.portfolio import (
     mock_search_rows as _mock_search_rows,
 )
 from brokers.fake.adapters.portfolio import fake_portfolio_rows
-from event.db_event_consumer import DbEventWriter
+from event.db_event_consumer import DbEventWriter, resolve_live_events_db_path
 from event.platform_notifier import emit_strategy_event, shutdown_platform_notifier
 from event.telegram_env import load_telegram_env
 from event.telegram_inbound import start_telegram_inbound_services, stop_telegram_inbound_services
@@ -121,8 +127,7 @@ _live_events_db: Optional[DbEventWriter] = None
 def get_live_events_db() -> DbEventWriter:
     global _live_events_db
     if _live_events_db is None:
-        db_path = os.getenv("LIVE_EVENTS_DB") or str(REPO_ROOT / "live_events.db")
-        _live_events_db = DbEventWriter(db_path=db_path)
+        _live_events_db = DbEventWriter(db_path=resolve_live_events_db_path())
     return _live_events_db
 
 # ── Global client ──
@@ -235,7 +240,8 @@ class DataPlaneEngineUpdate(BaseModel):
     metadata: Optional[dict] = None
 
 
-ExecutionSourceId = Literal["user", "ai_research", "ai_chatbot_panel"]
+ExecutionSourceId = Literal["user", "ai_research", "ai_chatbot_panel", "momentum-trade"]
+InstrumentClass = Literal["equity", "crypto"]
 
 
 class ControlPlaneExecutionRequest(BaseModel):
@@ -251,16 +257,19 @@ class ControlPlaneExecutionRequest(BaseModel):
     close_price: float
     long_percent: float = 1.0
     short_percent: float = 10.0
+    stop_loss_amount: Optional[float] = None
     initial_threshold: float = 0.2
     max_available_capital: float = 100000
     allow_partial_stocks: bool = False
     use_fake_client: bool = False
     client_mode: Optional[str] = None
     feed_mode: str = "websocket"
+    feed_tick_sample_every: int = Field(default=0, ge=0, le=300)
     tick_sample_every: int = Field(default=1, ge=1, le=300)
     schedule_enabled: bool = False
     scheduled_date: Optional[str] = None
     start_immediately: bool = False
+    instrument_class: InstrumentClass = "equity"
 
     @model_validator(mode="after")
     def normalize_source_meta_id(self):
@@ -272,7 +281,28 @@ class ControlPlaneExecutionRequest(BaseModel):
         else:
             self.source_meta_id = None
         self.client_mode = normalize_client_mode(self.broker, self.client_mode)
+        if self.broker != "etoro":
+            self.instrument_class = "equity"
+        elif self.instrument_class not in {"equity", "crypto"}:
+            self.instrument_class = "equity"
         return self
+
+
+class MomentumEnterRequest(BaseModel):
+    broker: str = "etoro"
+    account_env: str = "demo"
+    symbol: str
+    token: str
+    exchange: str = "ETORO"
+    close_price: float
+    long_percent: float = 5.0
+    short_percent: float = 1.0
+    no_take_profit: bool = False
+    stop_loss_amount: Optional[float] = None
+    max_available_capital: float = 100000
+    allow_partial_stocks: bool = True
+    instrument_class: InstrumentClass = "equity"
+    watchlist_id: Optional[int] = None
 
 
 # ── Endpoints ──
@@ -515,10 +545,7 @@ async def control_plane_search(
             return {"status": True, "data": rows}
 
         if broker_name == "etoro":
-            from brokers.etoro.trading_client import EtoroTradingClient
-
-            client = EtoroTradingClient(account_env=account_env)
-            client.generate_session()
+            client = await _etoro_trading_client(account_env)
             instruments = await client.asearch_instruments(q)
             rows = [_etoro_instrument_to_search_row(item) for item in instruments]
             if rows:
@@ -608,11 +635,13 @@ def _controlled_execution_payload(req: ControlPlaneExecutionRequest) -> tuple[st
         "close_price": req.close_price,
         "long_percent": req.long_percent,
         "short_percent": req.short_percent,
+        "stop_loss_amount": req.stop_loss_amount,
         "initial_threshold": req.initial_threshold,
         "max_available_capital": req.max_available_capital,
         "allow_partial_stocks": req.allow_partial_stocks,
         "tick_sample_every": max(1, int(req.tick_sample_every or 1)),
         "strategy_type": req.strategy_name,
+        "instrument_class": req.instrument_class,
     }
     broker = "fake" if req.use_fake_client else req.broker
     label = f"{req.broker}-{req.symbol}-strategy-{req.strategy_name}"
@@ -700,6 +729,209 @@ def create_controlled_execution(req: ControlPlaneExecutionRequest):
             "execution_id": execution_id,
             "engine": engine,
             "executor": executor_payload,
+        },
+    }
+
+
+@app.post(
+    "/api/control/momentum/enter",
+    operation_id="momentum_enter",
+    summary="Momentum entry: check balance, place a bracket order immediately, then attach a monitor-only strategy",
+)
+async def momentum_enter(req: MomentumEnterRequest):
+    """Fast-path entry for momentum trades.
+
+    Unlike the normal strategy flow (which spawns an engine that waits for a
+    threshold cross before buying), this:
+      1. Checks available cash for the account environment.
+      2. Sizes the position (scaling down to available cash when needed).
+      3. Places the bracket order (entry + take-profit + stop-loss) immediately
+         from the warm server-side client — no per-deploy websocket auth.
+      4. Registers an order poll job so the monitor engine tracks the position.
+      5. Spins up a monitor-only strategy (initial_threshold set very high so it
+         never places its own orders) purely to observe / manage the position.
+    """
+    if req.broker != "etoro":
+        raise HTTPException(
+            status_code=400,
+            detail="Momentum entry currently supports eToro bracket orders only",
+        )
+
+    env = _normalize_etoro_account_env(req.account_env)
+
+    from brokers.etoro.order_client import EtoroV2BracketOrderClient
+    from brokers.etoro.order_helpers import compute_stop_loss_price
+    from utils import order_quantity_from_capital
+
+    # 1. Balance check.
+    try:
+        order_client = EtoroV2BracketOrderClient(account_env=env)
+        order_client.generate_session()
+        available_cash = await order_client.aget_available_cash()
+    except Exception as exc:
+        log.error("[MOMENTUM] balance fetch failed env=%s: %s", env, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Could not fetch account balance: {exc}") from exc
+
+    if available_cash <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient funds in {env} account (available ${available_cash:.2f})",
+        )
+
+    # 2. Size the position — scale down to what's actually available.
+    capital = min(float(req.max_available_capital), available_cash)
+
+    # The entry is a market order, so the actual fill price comes from eToro.
+    # TP/SL are computed off close_price as an approximation — that's acceptable
+    # for our app; the exact levels can be verified on eToro.
+    entry_price = float(req.close_price)
+    if entry_price <= 0:
+        raise HTTPException(status_code=400, detail="Invalid entry price")
+
+    # No-take-profit mode (high-growth: let the winner run) leaves TP unset.
+    take_profit_price = (
+        None if req.no_take_profit else round(entry_price * (1 + req.long_percent / 100), 2)
+    )
+    stop_loss_price = compute_stop_loss_price(
+        entry_price,
+        capital,
+        stop_loss_amount=req.stop_loss_amount,
+        short_percent=req.short_percent,
+    )
+    quantity = order_quantity_from_capital(
+        capital, entry_price, allow_partial=req.allow_partial_stocks
+    )
+    if quantity <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Available cash ${capital:.2f} too small to buy {req.symbol} at ${entry_price:.2f}",
+        )
+
+    log.info(
+        "[MOMENTUM] enter symbol=%s env=%s capital=%.2f (avail=%.2f) entry=%.2f qty=%s TP=%s SL=%.2f",
+        req.symbol, env, capital, available_cash, entry_price, quantity,
+        "none" if take_profit_price is None else f"{take_profit_price:.2f}", stop_loss_price,
+    )
+
+    # 3. Place the bracket order immediately.
+    try:
+        buy_result = await order_client.abuy_with_take_profit_stop_loss(
+            ltp=entry_price,
+            available_capital=capital,
+            symbol=req.symbol,
+            token=req.token,
+            exchange=req.exchange,
+            take_profit_rate=take_profit_price,
+            stop_loss_rate=stop_loss_price,
+            instrument_class=req.instrument_class,
+            quantity=quantity,
+        )
+    except Exception as exc:
+        log.error("[MOMENTUM] bracket order failed symbol=%s: %s", req.symbol, exc, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Order placement failed: {exc}") from exc
+
+    order_id = (buy_result or {}).get("order_id")
+    if not order_id:
+        raise HTTPException(
+            status_code=502,
+            detail=(buy_result or {}).get("error_message") or "eToro did not return an order id",
+        )
+
+    # 4. Create the monitor-only strategy and register the poll job so the
+    #    engine tracks the position we just opened.
+    monitor_req = ControlPlaneExecutionRequest(
+        source_id=EXECUTION_SOURCE_MOMENTUM_TRADE,
+        broker="etoro",
+        account_env=env,
+        strategy_name="one-percent",
+        symbol=req.symbol,
+        token=req.token,
+        exchange=req.exchange,
+        close_price=entry_price,
+        long_percent=req.long_percent,
+        short_percent=req.short_percent,
+        stop_loss_amount=req.stop_loss_amount,
+        # Monitor-only: an unreachable threshold means the strategy never
+        # generates its own BUY signal — it only observes the open position.
+        initial_threshold=10000,
+        max_available_capital=req.max_available_capital,
+        allow_partial_stocks=req.allow_partial_stocks,
+        use_fake_client=False,
+        client_mode="bracket",
+        feed_mode="websocket",
+        tick_sample_every=1,
+        schedule_enabled=False,
+        start_immediately=True,
+        instrument_class=req.instrument_class,
+    )
+
+    try:
+        execution_id, executor_payload, engine_config = _controlled_execution_payload(monitor_req)
+        engine_registry.upsert_engine(engine_config)
+    except Exception as exc:
+        log.error("[MOMENTUM] monitor execution create failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Order placed but monitor setup failed: {exc}") from exc
+
+    db = get_live_events_db()
+    db.upsert_order_poll_job(
+        executor_id=execution_id,
+        order_id=order_id,
+        broker="etoro",
+        account_env=env,
+        engine_id=execution_id,
+        status="RUNNING",
+    )
+    db.log_event(
+        str(order_id),
+        "BUY_ORDER_PLACED",
+        {
+            "executor_id": execution_id,
+            "source": EXECUTION_SOURCE_MOMENTUM_TRADE,
+            "symbol": req.symbol,
+            "token": req.token,
+            "exchange": req.exchange,
+            "entry_price": entry_price,
+            "quantity": quantity,
+            "take_profit_price": take_profit_price,
+            "stop_loss_price": buy_result.get("stop_loss_rate", stop_loss_price),
+            "account_env": env,
+        },
+    )
+
+    # 5. Spin up the monitor engine.
+    try:
+        _start_controlled_execution(execution_id, trigger="momentum")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error("[MOMENTUM] monitor engine start failed execution=%s: %s", execution_id, exc, exc_info=True)
+        # The order is already live and tracked via the poll job; surface a soft warning.
+        return {
+            "status": True,
+            "data": {
+                "execution_id": execution_id,
+                "order_id": order_id,
+                "quantity": quantity,
+                "capital": round(capital, 2),
+                "available_cash": round(available_cash, 2),
+                "take_profit_price": take_profit_price,
+                "stop_loss_price": buy_result.get("stop_loss_rate", stop_loss_price),
+                "monitor_started": False,
+                "warning": f"Order placed and tracked, but monitor engine failed to start: {exc}",
+            },
+        }
+
+    return {
+        "status": True,
+        "data": {
+            "execution_id": execution_id,
+            "order_id": order_id,
+            "quantity": quantity,
+            "capital": round(capital, 2),
+            "available_cash": round(available_cash, 2),
+            "take_profit_price": take_profit_price,
+            "stop_loss_price": buy_result.get("stop_loss_rate", stop_loss_price),
+            "monitor_started": True,
         },
     }
 
@@ -847,6 +1079,11 @@ def _start_controlled_execution(execution_id: str, *, trigger: str = "manual"):
                     metadata.get("client_mode") or config.get("client_mode"),
                 ),
                 "feed_mode": config.get("feed_mode") or metadata.get("feed_mode") or "websocket",
+                "feed_tick_sample_every": int(
+                    config.get("feed_tick_sample_every")
+                    if config.get("feed_tick_sample_every") is not None
+                    else metadata.get("feed_tick_sample_every", 0)
+                ),
                 "symbol": engine.get("symbol") or config.get("symbol"),
                 "token": engine.get("token") or config.get("token"),
                 "label": engine.get("label"),
@@ -941,10 +1178,14 @@ def duplicate_execution_template(execution_id: str):
             "close_price": executor_payload.get("close_price"),
             "long_percent": executor_payload.get("long_percent"),
             "short_percent": executor_payload.get("short_percent"),
+            "stop_loss_amount": executor_payload.get("stop_loss_amount"),
             "initial_threshold": executor_payload.get("initial_threshold"),
             "max_available_capital": executor_payload.get("max_available_capital"),
             "allow_partial_stocks": executor_payload.get("allow_partial_stocks", False),
             "tick_sample_every": executor_payload.get("tick_sample_every", 1),
+            "instrument_class": config.get("instrument_class")
+            or executor_payload.get("instrument_class")
+            or "equity",
         }
     broker = config.get("broker") or engine.get("broker") or "angel"
     symbol = config.get("symbol") or engine.get("symbol") or "symbol"
@@ -1087,6 +1328,337 @@ def get_control_orders(executor_id: Optional[str] = None, limit: int = 100):
     return {"status": True, "data": orders}
 
 
+def _resolve_execution_order_poll_job(execution_id: str) -> dict[str, Any] | None:
+    db = get_live_events_db()
+    job = db.get_order_poll_job(execution_id)
+    if job:
+        return job
+    orders = db.query_orders_snapshot(executor_id=execution_id, limit=5)
+    for order in orders.values():
+        order_id = order.get("order_id")
+        if order_id:
+            return {
+                "executor_id": execution_id,
+                "order_id": str(order_id),
+                "status": "STOPPED",
+            }
+    return None
+
+
+class ClosePositionRequest(BaseModel):
+    units: Optional[float] = None
+    instrument_id: Optional[int] = None
+    max_positions: Optional[int] = None
+
+
+def _execution_engine(execution_id: str) -> dict[str, Any]:
+    engine = engine_registry.get_engine(execution_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    return engine
+
+
+@app.get(
+    "/api/control/executions/{execution_id}/positions",
+    operation_id="get_execution_positions",
+    summary="List persisted open and closed positions for an execution",
+)
+def get_execution_positions(execution_id: str):
+    positions = get_live_events_db().get_executor_positions(execution_id)
+    return {"status": True, "data": positions}
+
+
+@app.get(
+    "/api/control/executions/{execution_id}/candles",
+    operation_id="get_execution_candles",
+    summary="Fetch 1-minute OHLCV candles for an execution chart (eToro)",
+)
+async def get_execution_candles(execution_id: str, count: int = 100):
+    engine = _execution_engine(execution_id)
+    broker = str(engine.get("broker") or "").lower()
+    if broker != "etoro":
+        raise HTTPException(status_code=400, detail="Candles endpoint is only available for eToro executions")
+
+    metadata = engine.get("metadata") or {}
+    executor_payload = metadata.get("executor_payload") or {}
+    symbol = engine.get("symbol") or executor_payload.get("symbol")
+    token = engine.get("token") or executor_payload.get("token")
+    account_env = engine.get("account_env") or "demo"
+    if not symbol or not token:
+        raise HTTPException(status_code=400, detail="Execution is missing symbol or token")
+
+    from brokers.etoro.candles import (
+        BOOTSTRAP_CANDLE_COUNT,
+        CANDLE_INTERVAL_ONE_MINUTE,
+        aget_historical_candles,
+    )
+
+    safe_count = max(1, min(int(count or BOOTSTRAP_CANDLE_COUNT), BOOTSTRAP_CANDLE_COUNT))
+    try:
+        client = await _etoro_trading_client(account_env)
+        instrument_id = await client._instrument_id(symbol, str(token))
+        if instrument_id is None:
+            raise HTTPException(status_code=404, detail="Could not resolve eToro instrument id")
+
+        candles = await aget_historical_candles(
+            client,
+            instrument_id,
+            interval=CANDLE_INTERVAL_ONE_MINUTE,
+            count=safe_count,
+            direction="desc",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        log.error(
+            "[CONTROL_ETORO] candles failed execution=%s symbol=%s token=%s: %s",
+            execution_id,
+            symbol,
+            token,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    from managers.candle_store import CandleStore
+
+    store = CandleStore()
+    store.bootstrap(candles)
+    # Skip LTP here — live engine WS owns the forming bar; avoids a second rates API call and 429s.
+
+    return {
+        "status": True,
+        "data": store.bars(),
+        "meta": {
+            "interval": CANDLE_INTERVAL_ONE_MINUTE,
+            "count": safe_count,
+            "broker": broker,
+            "symbol": symbol,
+            "token": str(token),
+        },
+    }
+
+
+@app.get(
+    "/api/watchlist/candles",
+    operation_id="get_watchlist_symbol_candles",
+    summary="Fetch recent 1-minute OHLCV candles for a watchlist symbol (used to pre-seed local price history)",
+)
+async def get_watchlist_symbol_candles(
+    broker: str,
+    account_env: str,
+    symbol: str,
+    token: str,
+    count: int = 250,
+):
+    """Returns up to `count` recent 1-minute candles for the symbol so the frontend
+    can pre-populate its local price-change windows (1m/2m/5m/10m/…) immediately
+    on page load instead of waiting for the WebSocket feed to accumulate enough data.
+    Currently only supports eToro; Angel returns an empty list."""
+    broker_lower = broker.lower()
+    if broker_lower != "etoro":
+        # Graceful no-op for unsupported brokers; frontend falls back to live-only mode
+        return {"status": True, "data": []}
+
+    from brokers.etoro.candles import (
+        CANDLE_INTERVAL_ONE_MINUTE,
+        aget_historical_candles,
+    )
+
+    safe_count = max(10, min(int(count), 1000))
+    try:
+        client = await _etoro_trading_client(account_env)
+        instrument_id = await client._instrument_id(symbol, str(token))
+        if instrument_id is None:
+            return {"status": True, "data": []}
+
+        candles = await aget_historical_candles(
+            client,
+            instrument_id,
+            interval=CANDLE_INTERVAL_ONE_MINUTE,
+            count=safe_count,
+            direction="desc",
+        )
+        log.info(
+            "[WATCHLIST_CANDLES] symbol=%s token=%s env=%s candles=%d",
+            symbol, token, account_env, len(candles),
+        )
+        return {"status": True, "data": candles}
+    except Exception as exc:
+        log.warning("[WATCHLIST_CANDLES] failed symbol=%s: %s", symbol, exc)
+        # Return empty gracefully — frontend falls back to live-only mode
+        return {"status": True, "data": []}
+
+
+@app.post(
+    "/api/control/executions/{execution_id}/positions/{position_id}/close",
+    operation_id="close_execution_position",
+    summary="Close a position directly via eToro (works even when the live engine is stopped)",
+)
+async def close_execution_position(
+    execution_id: str,
+    position_id: str,
+    req: ClosePositionRequest,
+):
+    db = get_live_events_db()
+    poll_job = db.get_order_poll_job(execution_id)
+    order_id = str(poll_job.get("order_id")) if poll_job else None
+
+    # Resolve account_env: prefer what the live engine registered, fall back to DB poll job.
+    engine = engine_registry.get_engine(execution_id)
+    account_env = (
+        (engine or {}).get("account_env")
+        or (poll_job or {}).get("account_env")
+        or "demo"
+    )
+
+    request_details = {
+        "executor_id": execution_id,
+        "position_id": str(position_id),
+        "units": req.units,
+        "instrument_id": req.instrument_id,
+        "source": "control_plane_direct",
+        "account_env": account_env,
+    }
+    db.log_event(order_id, "POSITION_CLOSE_REQUESTED", request_details)
+    bgp_info(
+        "control_plane_position_close",
+        "close_requested",
+        **request_details,
+        order_id=order_id,
+    )
+
+    try:
+        client = await _etoro_trading_client(account_env)
+        closed = await client.aclose_position(
+            position_id,
+            units=req.units,
+            instrument_id=req.instrument_id,
+        )
+    except Exception as exc:
+        log.error(
+            "[CONTROL_ETORO] close_position failed execution=%s position=%s env=%s: %s",
+            execution_id, position_id, account_env, exc, exc_info=True,
+        )
+        bgp_error(
+            "control_plane_position_close",
+            "close_failed",
+            **request_details,
+            order_id=order_id,
+            error=str(exc),
+        )
+        db.log_event(
+            order_id,
+            "POSITION_CLOSE_FAILED",
+            {**request_details, "error": str(exc)},
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if not closed:
+        bgp_error(
+            "control_plane_position_close",
+            "close_not_confirmed",
+            **request_details,
+            order_id=order_id,
+        )
+        db.log_event(
+            order_id,
+            "POSITION_CLOSE_FAILED",
+            {**request_details, "error": "eToro returned failure without exception"},
+        )
+        raise HTTPException(status_code=502, detail="eToro did not confirm position close")
+
+    bgp_info(
+        "control_plane_position_close",
+        "close_confirmed",
+        **request_details,
+        order_id=order_id,
+    )
+    db.log_event(order_id, "POSITION_CLOSED", {**request_details, "source": "control_plane_direct"})
+
+    # Mark the position as closed in the local DB immediately so the next GET /positions
+    # reflects the new state without waiting for the next remote poll.
+    db.mark_position_closed(str(position_id), execution_id)
+
+    log.info(
+        "[CONTROL_ETORO] close_position OK execution=%s position=%s env=%s units=%s",
+        execution_id, position_id, account_env, req.units,
+    )
+    return {"status": True, "position_id": position_id, "closed": True}
+
+
+@app.get(
+    "/api/control/executions/{execution_id}/order-poll",
+    operation_id="get_execution_order_poll",
+    summary="Read persisted order-status poll job state for the orders UI",
+)
+def get_execution_order_poll(execution_id: str):
+    job = _resolve_execution_order_poll_job(execution_id)
+    if not job:
+        return {"status": True, "data": None}
+    return {"status": True, "data": job}
+
+
+@app.post(
+    "/api/control/executions/{execution_id}/order-poll/start",
+    operation_id="start_execution_order_poll",
+    summary="Mark order-status polling RUNNING in SQLite for the live engine poller",
+)
+def start_execution_order_poll(execution_id: str):
+    db = get_live_events_db()
+    job = _resolve_execution_order_poll_job(execution_id)
+    if not job or not job.get("order_id"):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No order found to poll for execution '{execution_id}'",
+        )
+
+    engine = engine_registry.get_engine(execution_id)
+    account_env = (engine or {}).get("account_env") or "live"
+    db.upsert_order_poll_job(
+        executor_id=execution_id,
+        order_id=str(job["order_id"]),
+        broker="etoro",
+        account_env=account_env,
+        engine_id=execution_id,
+        status="RUNNING",
+    )
+    return {"status": True, "data": db.get_order_poll_job(execution_id, job["order_id"])}
+
+
+@app.post(
+    "/api/control/executions/{execution_id}/order-poll/stop",
+    operation_id="stop_execution_order_poll",
+    summary="Mark order-status polling STOPPED in SQLite for the live engine poller",
+)
+def stop_execution_order_poll(execution_id: str):
+    db = get_live_events_db()
+    job = db.get_order_poll_job(execution_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"No poll job for execution '{execution_id}'")
+    db.set_order_poll_job_status(execution_id, job["order_id"], "STOPPED")
+    return {"status": True, "data": db.get_order_poll_job(execution_id, job["order_id"])}
+
+
+@app.get("/api/control/orders/{order_id}", operation_id="get_control_order_detail", summary="Get v2 order lookup and positions")
+def get_control_order_detail(order_id: str):
+    db = get_live_events_db()
+    lookup_row = db.get_order_lookup(order_id)
+    positions = db.get_order_positions(order_id)
+    if not lookup_row and not positions:
+        raise HTTPException(status_code=404, detail=f"No v2 lookup data for order '{order_id}'")
+    return {
+        "status": True,
+        "data": {
+            "order_id": order_id,
+            "lookup": lookup_row.get("lookup") if lookup_row else None,
+            "lookup_updated_at": lookup_row.get("updated_at") if lookup_row else None,
+            "account_env": lookup_row.get("account_env") if lookup_row else None,
+            "positions": positions,
+        },
+    }
+
+
 @app.get("/api/control/event-sessions", operation_id="get_event_sessions", summary="List live event sessions")
 def get_control_event_sessions(limit: int = 100):
     sessions = get_live_events_db().query_event_sessions(limit=limit)
@@ -1139,10 +1711,7 @@ async def control_plane_portfolio(
             return {"status": True, "broker": broker_name, "account_env": account_env, "data": rows}
 
         if broker_name == "etoro":
-            from brokers.etoro.trading_client import EtoroTradingClient
-
-            client = EtoroTradingClient(account_env=account_env)
-            client.generate_session()
+            client = await _etoro_trading_client(account_env)
             positions = await client.aget_positions()
             symbol_map = await _etoro_symbol_map_for_records(client, positions)
             rows = [_etoro_position_to_portfolio_row(item, symbol_map) for item in positions]
@@ -1178,11 +1747,24 @@ async def control_plane_portfolio(
         return {"status": False, "broker": broker_name, "account_env": account_env, "message": str(e), "data": []}
 
 
+_etoro_trading_clients: dict[str, Any] = {}
+
+
+def _normalize_etoro_account_env(account_env: str | None) -> str:
+    return "demo" if (account_env or "demo").lower() == "demo" else "live"
+
+
 async def _etoro_trading_client(account_env: str):
     from brokers.etoro.trading_client import EtoroTradingClient
 
-    client = EtoroTradingClient(account_env=account_env)
+    env = _normalize_etoro_account_env(account_env)
+    cached = _etoro_trading_clients.get(env)
+    if cached is not None:
+        return cached
+
+    client = EtoroTradingClient(account_env=env)
     client.generate_session()
+    _etoro_trading_clients[env] = client
     return client
 
 

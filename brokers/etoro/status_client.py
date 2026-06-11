@@ -5,6 +5,12 @@ from typing import Awaitable, Callable, Any
 
 from logzero import logger
 
+from managers.bgp_log import (
+    bgp_info,
+    diff_summaries,
+    summarize_etoro_position,
+    summarize_v2_order_lookup,
+)
 from brokers.etoro.env import ETORO_HTTP_USER_AGENT
 from brokers.etoro.trading_client import EtoroTradingClient
 from brokers.etoro.ws_order_events import (
@@ -40,12 +46,16 @@ class EtoroPortfolioStatusClient(EtoroTradingClient):
         self.latest_order_statuses: dict[str, dict[str, Any]] = {}
         self._running = False
         self._task: asyncio.Task | None = None
+        self._prev_position_summaries: dict[str, dict[str, Any]] = {}
+        self._prev_tracked_order_summaries: dict[str, dict[str, Any]] = {}
 
     def track_order(self, order_id: str | int) -> None:
         self._order_ids.add(str(order_id))
+        bgp_info("portfolio_status_poller", "track_order", order_id=str(order_id))
 
     def untrack_order(self, order_id: str | int) -> None:
         self._order_ids.discard(str(order_id))
+        bgp_info("portfolio_status_poller", "untrack_order", order_id=str(order_id))
 
     def add_status_callback(self, callback: StatusCallback) -> None:
         self._callbacks.append(callback)
@@ -58,6 +68,38 @@ class EtoroPortfolioStatusClient(EtoroTradingClient):
 
     def get_latest_order_status(self, order_id: str | int) -> dict[str, Any] | None:
         return self.latest_order_statuses.get(str(order_id))
+
+    def _log_snapshot_diffs(
+        self,
+        *,
+        positions: list[dict[str, Any]],
+        order_statuses: dict[str, dict[str, Any]],
+    ) -> None:
+        current_positions = {
+            str(summary["position_id"]): summary
+            for position in positions
+            if (summary := summarize_etoro_position(position)).get("position_id")
+        }
+        for change in diff_summaries(
+            self._prev_position_summaries,
+            current_positions,
+            entity="POSITION",
+        ):
+            bgp_info("portfolio_status_poller", change["change"], **change)
+
+        current_orders = {
+            order_id: summarize_v2_order_lookup(order_id, status)
+            for order_id, status in order_statuses.items()
+        }
+        for change in diff_summaries(
+            self._prev_tracked_order_summaries,
+            current_orders,
+            entity="TRACKED_ORDER",
+        ):
+            bgp_info("portfolio_status_poller", change["change"], **change)
+
+        self._prev_position_summaries = current_positions
+        self._prev_tracked_order_summaries = current_orders
 
     async def start(self) -> None:
         if self._running:
@@ -106,6 +148,10 @@ class EtoroPortfolioStatusClient(EtoroTradingClient):
             if (position_id := position.get("positionID") or position.get("positionId")) is not None
         }
         self.latest_order_statuses = order_statuses
+        self._log_snapshot_diffs(
+            positions=snapshot["positions"],
+            order_statuses=order_statuses,
+        )
         await self._forward_status(snapshot)
         return snapshot
 
@@ -372,6 +418,24 @@ class EtoroWebsocketPortfolioStatusClient(EtoroTradingClient):
                     "[eToro] Order status websocket JSON: %s",
                     json.dumps(item, default=str),
                 )
+                bgp_info(
+                    "portfolio_status_websocket",
+                    "order_event",
+                    event_type=event_type,
+                    message_id=item.get("id"),
+                    order_id=content.get("OrderID") or content.get("orderID") or content.get("orderId"),
+                    position_id=content.get("positionID") or content.get("positionId") or content.get("PositionID"),
+                    content=content,
+                )
+            elif is_close_event(event_type) or "position" in event_type.lower():
+                bgp_info(
+                    "portfolio_status_websocket",
+                    "position_event",
+                    event_type=event_type,
+                    message_id=item.get("id"),
+                    position_id=content.get("positionID") or content.get("positionId") or content.get("PositionID"),
+                    content=content,
+                )
             else:
                 logger.debug("[eToro] WS private message type=%s", event_type)
             self.latest_update = status_update
@@ -412,15 +476,17 @@ class EtoroHybridPortfolioStatusClient(EtoroTradingClient):
         self.latest_order_statuses: dict[str, dict[str, Any]] = {}
         self._running = False
         self._poll_task: asyncio.Task | None = None
+        self._prev_tracked_order_summaries: dict[str, dict[str, Any]] = {}
 
     def track_order(self, order_id: str | int) -> None:
         self._order_ids.add(str(order_id))
-        logger.info("[eToro] Tracking order for status polling: %s", order_id)
+        bgp_info("hybrid_tracked_order_poller", "track_order", order_id=str(order_id))
         if self._running:
             asyncio.create_task(self._poll_tracked_orders_once())
 
     def untrack_order(self, order_id: str | int) -> None:
         self._order_ids.discard(str(order_id))
+        bgp_info("hybrid_tracked_order_poller", "untrack_order", order_id=str(order_id))
 
     def add_status_callback(self, callback: StatusCallback) -> None:
         self._callbacks.append(callback)
@@ -474,15 +540,29 @@ class EtoroHybridPortfolioStatusClient(EtoroTradingClient):
             order_statuses[str(order_id)] = status
             action = map_tracked_order_status(status)
             if action in TERMINAL_ACTIONS:
-                logger.info(
-                    "[eToro] Tracked order reached terminal state order=%s action=%s; untracking",
-                    order_id,
-                    action,
+                bgp_info(
+                    "hybrid_tracked_order_poller",
+                    "tracked_order_terminal",
+                    order_id=str(order_id),
+                    action=action,
+                    lookup=summarize_v2_order_lookup(str(order_id), status),
                 )
                 self._order_ids.discard(str(order_id))
 
         if not order_statuses:
             return
+
+        current_orders = {
+            order_id: summarize_v2_order_lookup(order_id, status)
+            for order_id, status in order_statuses.items()
+        }
+        for change in diff_summaries(
+            self._prev_tracked_order_summaries,
+            current_orders,
+            entity="TRACKED_ORDER",
+        ):
+            bgp_info("hybrid_tracked_order_poller", change["change"], **change)
+        self._prev_tracked_order_summaries = current_orders
 
         self.latest_order_statuses.update(order_statuses)
         snapshot = {

@@ -23,7 +23,7 @@ sys.path.insert(0, _repo_root)
 sys.path.insert(0, os.path.join(_repo_root, "src"))
 
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,8 +34,10 @@ from control_plane.client_mode import normalize_client_mode
 from control_plane.ops_logging import live_engine_log_path, quiet_uvicorn_live_engine_access_logs
 from brokers.interfaces import TickData
 from brokers.etoro.env import load_etoro_env
-from event.db_event_consumer import DbEventWriter
+from event.db_event_consumer import DbEventWriter, resolve_live_events_db_path
 from event.event_manager import EventManager, create_event_manager
+from managers.candle_store import CandleStore
+from managers.market_candle_provider import MarketCandleProvider
 from managers.strategy_executor import StrategyExecutor
 from managers.order_manager import OrderManager
 from managers.tick_provider import TickProvider
@@ -92,6 +94,7 @@ class LiveEngine:
         strategy_name: str = "default",
         client_mode: str = "standard",
         feed_mode: str = "websocket",
+        feed_tick_sample_every: int = 0,
     ):
         self.use_fake_client = use_fake_client or broker == "fake"
         self.account_env = "demo" if account_env == "demo" else "live"
@@ -104,15 +107,22 @@ class LiveEngine:
         self.strategy_name = strategy_name
         self.client_mode = normalize_client_mode(self.broker, client_mode)
         from brokers.angel.feed_config import normalize_angel_feed_mode
+        from brokers.etoro.feed_config import normalize_etoro_feed_mode, normalize_feed_tick_sample_every
 
-        self.feed_mode = normalize_angel_feed_mode(feed_mode)
+        if self.broker == "etoro":
+            self.feed_mode = normalize_etoro_feed_mode(feed_mode)
+        else:
+            self.feed_mode = normalize_angel_feed_mode(feed_mode)
+        self.feed_tick_sample_every = normalize_feed_tick_sample_every(feed_tick_sample_every)
         self.client = None
         self.db_writer: Optional[DbEventWriter] = None
         self.event_manager: Optional[EventManager] = None
         self.trading_manager: Optional[TradingManager] = None
         self.order_manager: Optional[OrderManager] = None
+        self.order_status_poller = None
         self.tick_provider: Optional[TickProvider] = None
         self.angel_feed = None
+        self.etoro_feed = None
         self.executors: dict[str, StrategyExecutor] = {}
         self.ws_manager = ConnectionManager()
         self.ws_manager.engine_id = self.engine_id
@@ -123,6 +133,9 @@ class LiveEngine:
         self._tick_stats = {"generated": 0, "broadcast": 0, "dropped_no_clients": 0}
         self._last_flow_log_at = 0.0
         self._last_no_client_warn_at = 0.0
+        self._candle_stores: dict[str, CandleStore] = {}
+        self._candle_token_meta: dict[str, dict[str, str]] = {}
+        self._market_candle_provider: MarketCandleProvider | None = None
 
     async def start(self):
         if self.use_fake_client:
@@ -131,8 +144,8 @@ class LiveEngine:
             self.client = FakeTradingClient(tick_gen)
             logger.info("[ENGINE] Using FakeTradingClient (test mode)")
         elif self.broker == "etoro":
-            from brokers.etoro.trading_client import EtoroBracketTradingClient, EtoroTradingClient
-            client_cls = EtoroBracketTradingClient if self.client_mode == "bracket" else EtoroTradingClient
+            from brokers.etoro.order_client import EtoroV2BracketOrderClient, EtoroV2OrderClient
+            client_cls = EtoroV2BracketOrderClient if self.client_mode == "bracket" else EtoroV2OrderClient
             self.client = client_cls(account_env=self.account_env)
             self.client.generate_session()
             logger.info("[ENGINE] %s session established env=%s", client_cls.__name__, self.account_env)
@@ -144,7 +157,9 @@ class LiveEngine:
             self.client.generate_session()
             logger.info("[ENGINE] AngelOneTradingClient session established")
 
-        self.db_writer = DbEventWriter(db_path="live_events.db")
+        db_path = resolve_live_events_db_path()
+        self.db_writer = DbEventWriter(db_path=db_path)
+        logger.info("[ENGINE] Event DB path=%s", db_path)
         self.event_manager = create_event_manager(self.db_writer)
         status_client = self._create_status_client()
         self.order_manager = OrderManager(client=status_client)
@@ -154,21 +169,37 @@ class LiveEngine:
             order_manager=self.order_manager,
         )
         self.order_manager.register_listener("trading_manager", self.trading_manager)
+        if self.broker == "etoro" and not self.use_fake_client:
+            from brokers.etoro.ws_order_lookup_listener import EtoroWsOrderLookupListener
+
+            self.order_lookup_listener = EtoroWsOrderLookupListener(
+                lookup_client=self.client,
+                store=self.db_writer,
+                account_env=self.account_env,
+            )
+            self.order_manager.register_listener("etoro_order_lookup", self.order_lookup_listener)
         if status_client is not None:
             logger.info("[ENGINE] Portfolio status client wired (%s)", type(status_client).__name__)
 
         from brokers.angel.feed_config import angel_uses_websocket_feed
+        from brokers.etoro.feed_config import etoro_uses_websocket_feed
 
         use_angel_ws_feed = (
             self.broker == "angel"
             and not self.use_fake_client
             and angel_uses_websocket_feed(self.feed_mode)
         )
+        use_etoro_ws_feed = (
+            self.broker == "etoro"
+            and not self.use_fake_client
+            and etoro_uses_websocket_feed(self.feed_mode)
+        )
+        use_external_ws_feed = use_angel_ws_feed or use_etoro_ws_feed
         self.tick_provider = TickProvider(
             self.client,
             interval_seconds=1.0,
             on_tick=self._on_tick,
-            polling_enabled=not use_angel_ws_feed,
+            polling_enabled=not use_external_ws_feed,
         )
         if use_angel_ws_feed:
             from brokers.angel.feed_client import AngelWebsocketFeedClient
@@ -177,21 +208,53 @@ class LiveEngine:
             self.angel_feed.add_tick_callback(self._forward_angel_tick)
             self.tick_provider.set_subscription_listener(self._schedule_angel_feed_sync)
             await self.angel_feed.start()
+        elif use_etoro_ws_feed:
+            from brokers.etoro.feed_client import EtoroWebsocketFeedClient
+
+            self.etoro_feed = EtoroWebsocketFeedClient(
+                account_env=self.account_env,
+                sample_every=self.feed_tick_sample_every,
+            )
+            self.etoro_feed.api_key = self.client.api_key
+            self.etoro_feed.user_key = self.client.user_key
+            self.etoro_feed.add_tick_callback(self._forward_etoro_tick)
+            self.tick_provider.set_subscription_listener(self._schedule_etoro_feed_sync)
+            await self.etoro_feed.start()
 
         await self.trading_manager.start()
         await self.order_manager.start()
         await self.tick_provider.start()
 
+        if self.broker == "etoro" and not self.use_fake_client:
+            from managers.order_status_poller import LiveOrderStatusPoller
+
+            poll_interval = float(os.getenv("ORDER_STATUS_POLL_SECONDS", "5"))
+            self.order_status_poller = LiveOrderStatusPoller(
+                self,
+                poll_interval_seconds=poll_interval,
+            )
+            await self.order_status_poller.start()
+
         self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+        if self.broker == "etoro" and not self.use_fake_client:
+            self._market_candle_provider = MarketCandleProvider(
+                fetch_candles=self._fetch_etoro_candles,
+                get_tokens=self._tracked_candle_tokens,
+                on_sync=self._on_candle_sync,
+                interval_seconds=60.0,
+            )
+            await self._market_candle_provider.start()
         if self.engine_id and self.control_url:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         logger.info(
-            "[ENGINE] Live engine started engine_id=%s broker=%s env=%s client_mode=%s feed_mode=%s fake=%s",
+            "[ENGINE] Live engine started engine_id=%s broker=%s env=%s client_mode=%s "
+            "feed_mode=%s feed_tick_sample_every=%s fake=%s",
             self.engine_id or "-",
             self.broker,
             self.account_env,
             self.client_mode,
             self.feed_mode,
+            self.feed_tick_sample_every,
             self.use_fake_client,
         )
 
@@ -226,7 +289,17 @@ class LiveEngine:
             return
         asyncio.create_task(self.angel_feed.sync_subscriptions(subscriptions))
 
+    def _schedule_etoro_feed_sync(self, subscriptions) -> None:
+        if self.etoro_feed is None:
+            return
+        asyncio.create_task(self.etoro_feed.sync_subscriptions(subscriptions))
+
     async def _forward_angel_tick(self, tick) -> None:
+        self._on_tick(tick)
+        if self.tick_provider is not None:
+            self.tick_provider.ingest_tick(tick)
+
+    async def _forward_etoro_tick(self, tick) -> None:
         self._on_tick(tick)
         if self.tick_provider is not None:
             self.tick_provider.ingest_tick(tick)
@@ -239,11 +312,20 @@ class LiveEngine:
                 await self._heartbeat_task
             except asyncio.CancelledError:
                 pass
+        if self.order_status_poller is not None:
+            await self.order_status_poller.stop()
+            self.order_status_poller = None
         if self.tick_provider:
             await self.tick_provider.stop()
         if self.angel_feed is not None:
             await self.angel_feed.stop()
             self.angel_feed = None
+        if self.etoro_feed is not None:
+            await self.etoro_feed.stop()
+            self.etoro_feed = None
+        if self._market_candle_provider is not None:
+            await self._market_candle_provider.stop()
+            self._market_candle_provider = None
         if self.order_manager:
             await self.order_manager.stop()
         if self.trading_manager:
@@ -297,7 +379,282 @@ class LiveEngine:
         except asyncio.QueueFull:
             pass
 
+        candle_msg = self._apply_tick_to_candles(tick)
+        if candle_msg is not None:
+            try:
+                self._broadcast_queue.put_nowait(candle_msg)
+            except asyncio.QueueFull:
+                pass
+
+    def _tracked_candle_tokens(self) -> list[tuple[str, str, str]]:
+        tokens: list[tuple[str, str, str]] = []
+        seen: set[str] = set()
+        for executor in self.executors.values():
+            cfg = executor.strategy_config
+            if not cfg:
+                continue
+            token = str(cfg.token)
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            tokens.append((cfg.exchange, cfg.symbol, token))
+        return tokens
+
+    def _candle_store_for(self, token: str) -> CandleStore:
+        key = str(token)
+        if key not in self._candle_stores:
+            self._candle_stores[key] = CandleStore()
+        return self._candle_stores[key]
+
+    async def _fetch_etoro_candles(self, exchange: str, symbol: str, token: str) -> list[dict]:
+        from brokers.etoro.candles import (
+            CANDLE_INTERVAL_ONE_MINUTE,
+            SYNC_CANDLE_COUNT,
+            aget_historical_candles,
+        )
+
+        instrument_id = await self.client._instrument_id(symbol, token)
+        if instrument_id is None:
+            return []
+        return await aget_historical_candles(
+            self.client,
+            instrument_id,
+            interval=CANDLE_INTERVAL_ONE_MINUTE,
+            count=SYNC_CANDLE_COUNT,
+            direction="desc",
+        )
+
+    def _apply_candle_snapshot(
+        self,
+        *,
+        token_key: str,
+        symbol: str,
+        exchange: str,
+        candles: list[dict],
+    ) -> list[dict]:
+        store = self._candle_store_for(token_key)
+        store.bootstrap(candles)
+        bars = store.bars()
+        self._queue_candle_message(
+            msg_type="candle_bootstrap",
+            token=token_key,
+            symbol=symbol,
+            exchange=exchange,
+            candles=bars,
+        )
+        return bars
+
+    async def _bootstrap_candles(self, *, exchange: str, symbol: str, token: str) -> None:
+        if self.broker != "etoro" or self.use_fake_client:
+            return
+
+        token_key = str(token)
+        self._candle_token_meta[token_key] = {
+            "exchange": exchange,
+            "symbol": symbol,
+        }
+        try:
+            candles = await self._fetch_etoro_candles(exchange, symbol, token)
+        except Exception as exc:
+            logger.warning(
+                "[CandleProvider] Bootstrap candles failed symbol=%s token=%s: %s",
+                symbol,
+                token,
+                exc,
+            )
+            return
+        if not candles:
+            return
+
+        instrument_id = await self.client._instrument_id(symbol, token)
+        ltp = None
+        if instrument_id is not None:
+            try:
+                rates = await self.client.aget_rates([instrument_id])
+                if rates:
+                    ltp = self.client._rate_ltp(rates[0])
+            except Exception as exc:
+                logger.warning(
+                    "[CandleProvider] Bootstrap LTP skipped symbol=%s token=%s: %s",
+                    symbol,
+                    token,
+                    exc,
+                )
+
+        store = self._candle_store_for(token_key)
+        store.bootstrap(candles)
+        if ltp is not None:
+            try:
+                store.apply_tick(float(ltp))
+            except ValueError:
+                pass
+        bars = store.bars()
+        self._queue_candle_message(
+            msg_type="candle_bootstrap",
+            token=token_key,
+            symbol=symbol,
+            exchange=exchange,
+            candles=bars,
+        )
+
+    def _apply_tick_to_candles(self, tick: TickData) -> dict | None:
+        token_key = str(tick.token)
+        self._candle_token_meta[token_key] = {
+            "exchange": tick.exchange,
+            "symbol": tick.symbol,
+        }
+        store = self._candle_store_for(token_key)
+
+        try:
+            candle = store.apply_tick(float(tick.ltp))
+        except ValueError:
+            return None
+
+        return {
+            "type": "candle_tick",
+            "symbol": tick.symbol,
+            "token": token_key,
+            "exchange": tick.exchange,
+            "candle": candle,
+        }
+
+    async def _on_candle_sync(
+        self,
+        exchange: str,
+        symbol: str,
+        token: str,
+        candles: list[dict],
+    ) -> None:
+        if not candles:
+            return
+        token_key = str(token)
+        self._candle_token_meta[token_key] = {
+            "exchange": exchange,
+            "symbol": symbol,
+        }
+        bars = self._apply_candle_snapshot(
+            token_key=token_key,
+            symbol=symbol,
+            exchange=exchange,
+            candles=candles,
+        )
+        logger.info(
+            "[CandleProvider] Synced snapshot symbol=%s token=%s bars=%d",
+            symbol,
+            token_key,
+            len(bars),
+        )
+
+    def _queue_candle_message(
+        self,
+        *,
+        msg_type: str,
+        token: str,
+        symbol: str,
+        exchange: str,
+        candles: list[dict],
+    ) -> None:
+        try:
+            self._broadcast_queue.put_nowait({
+                "type": msg_type,
+                "symbol": symbol,
+                "token": token,
+                "exchange": exchange,
+                "candles": candles,
+            })
+        except asyncio.QueueFull:
+            logger.warning("[CandleProvider] Broadcast queue full; dropping %s", msg_type)
+
+    def candles_by_token(self) -> dict[str, list[dict]]:
+        return {token: store.bars() for token, store in self._candle_stores.items()}
+
+    async def load_candle_history(
+        self,
+        token: str,
+        before: int,
+        *,
+        minutes: int = 120,
+    ) -> dict[str, Any]:
+        if self.broker != "etoro" or self.use_fake_client:
+            raise HTTPException(
+                status_code=400,
+                detail="Candle history is only available for eToro live engines",
+            )
+
+        from brokers.etoro.candles import (
+            CANDLE_HISTORY_2H_MINUTES,
+            aget_historical_candles_before,
+        )
+
+        token_key = str(token)
+        before_time = (int(before) // 60) * 60
+        safe_minutes = max(1, min(int(minutes or CANDLE_HISTORY_2H_MINUTES), 1000))
+
+        meta = self._candle_token_meta.get(token_key, {})
+        symbol = meta.get("symbol") or self.symbol
+        exchange = meta.get("exchange") or "US"
+        if not symbol:
+            raise HTTPException(status_code=400, detail="Unknown symbol for token")
+
+        instrument_id = await self.client._instrument_id(symbol, token_key)
+        if instrument_id is None:
+            raise HTTPException(status_code=404, detail="Could not resolve instrument id")
+
+        older_candles = await aget_historical_candles_before(
+            self.client,
+            instrument_id,
+            before_time=before_time,
+            minutes=safe_minutes,
+        )
+
+        store = self._candle_store_for(token_key)
+        loaded_count = store.prepend_older(older_candles)
+        all_bars = store.bars()
+
+        if loaded_count:
+            self._queue_candle_message(
+                msg_type="candle_history",
+                token=token_key,
+                symbol=symbol,
+                exchange=exchange,
+                candles=all_bars,
+            )
+
+        logger.info(
+            "[CandleProvider] Loaded history token=%s before=%d minutes=%d added=%d total=%d",
+            token_key,
+            before_time,
+            safe_minutes,
+            loaded_count,
+            len(all_bars),
+        )
+
+        return {
+            "loaded_count": loaded_count,
+            "oldest_time": store.oldest_time(),
+            "before_time": before_time,
+            "minutes": safe_minutes,
+            "candles": older_candles,
+            "all_candles": all_bars,
+        }
+
     def _on_engine_event(self, event: dict):
+        if (
+            self.broker == "etoro"
+            and not self.use_fake_client
+            and event.get("action") == "BUY_ORDER_PLACED"
+            and event.get("order_id")
+            and event.get("executor_id")
+            and self.db_writer is not None
+        ):
+            self.db_writer.upsert_order_poll_job(
+                executor_id=str(event["executor_id"]),
+                order_id=str(event["order_id"]),
+                broker="etoro",
+                account_env=self.account_env,
+                engine_id=self.engine_id,
+                status="RUNNING",
+            )
         try:
             self._broadcast_queue.put_nowait(event)
         except asyncio.QueueFull:
@@ -305,7 +662,7 @@ class LiveEngine:
 
     def _log_broadcast(self, msg: dict) -> None:
         msg_type = msg.get("type")
-        if msg_type == "tick":
+        if msg_type in {"tick", "candle_tick"}:
             return
         logger.info(
             "[WS] Broadcasting type=%s action=%s executor=%s order=%s event=%s clients=%d",
@@ -338,7 +695,7 @@ class LiveEngine:
         while True:
             msg = await self._broadcast_queue.get()
             client_count = len(self.ws_manager.active_connections)
-            if msg.get("type") != "tick":
+            if msg.get("type") not in {"tick", "candle_tick"}:
                 self._log_broadcast(msg)
                 if client_count:
                     await self.ws_manager.broadcast(msg)
@@ -400,6 +757,7 @@ class LiveEngine:
                 "use_fake_client": self.use_fake_client,
                 "client_mode": self.client_mode,
                 "feed_mode": self.feed_mode,
+                "feed_tick_sample_every": self.feed_tick_sample_every,
                 "is_bracket_order_client": self.is_bo_client(),
                 "ws_connections": len(self.ws_manager.active_connections),
             },
@@ -417,6 +775,7 @@ class LiveEngine:
         config = StrategyConfig(
             long_percent=req.long_percent,
             short_percent=req.short_percent,
+            stop_loss_amount=req.stop_loss_amount,
             initial_threshold=req.initial_threshold,
             symbol=req.symbol,
             token=req.token,
@@ -429,6 +788,7 @@ class LiveEngine:
             bb_period=req.bb_period,
             bb_std=req.bb_std,
             rsi_oversold=req.rsi_oversold,
+            instrument_class=req.instrument_class,
         )
 
         executor = StrategyExecutor(
@@ -444,9 +804,102 @@ class LiveEngine:
         await executor.start()
         self.tick_provider.register_listener(req.token, executor)
         self.executors[req.executor_id] = executor
+        await self._bootstrap_candles(
+            exchange=req.exchange,
+            symbol=req.symbol,
+            token=str(req.token),
+        )
 
         self._on_executor_status(req.executor_id, "RUNNING", False)
         logger.info("[ENGINE] Registered executor: %s for %s", req.executor_id, req.symbol)
+        return self._executor_state(executor)
+
+    async def close_position(
+        self,
+        executor_id: str,
+        position_id: str,
+        *,
+        units: float | None = None,
+        instrument_id: int | None = None,
+        max_positions: int | None = None,
+    ) -> dict:
+        if executor_id not in self.executors:
+            raise ValueError(f"Executor '{executor_id}' not found")
+        if self.client is None or not hasattr(self.client, "aclose_position"):
+            raise ValueError("Broker client cannot close positions")
+
+        poll_job = self.db_writer.get_order_poll_job(executor_id) if self.db_writer else None
+        order_id = str(poll_job.get("order_id")) if poll_job else None
+        request_details = {
+            "executor_id": executor_id,
+            "position_id": str(position_id),
+            "units": units,
+            "instrument_id": instrument_id,
+            "max_positions": max_positions,
+            "source": "control_plane",
+        }
+        if self.db_writer:
+            self.db_writer.log_event(order_id, "POSITION_CLOSE_REQUESTED", request_details)
+        self._on_engine_event({
+            "type": "position_status_update",
+            "action": "POSITION_CLOSE_REQUESTED",
+            "executor_id": executor_id,
+            "order_id": order_id,
+            "position_id": str(position_id),
+            "details": request_details,
+        })
+
+        closed = await self.client.aclose_position(
+            position_id,
+            units=units,
+            instrument_id=instrument_id,
+        )
+        action = "POSITION_CLOSED" if closed else "POSITION_CLOSE_FAILED"
+        result_details = {
+            **request_details,
+            "success": closed,
+        }
+        if self.db_writer:
+            self.db_writer.log_event(order_id, action, result_details)
+        self._on_engine_event({
+            "type": "position_status_update",
+            "action": action,
+            "executor_id": executor_id,
+            "order_id": order_id,
+            "position_id": str(position_id),
+            "details": result_details,
+        })
+        if not closed:
+            raise ValueError(f"Failed to close position '{position_id}'")
+        return result_details
+
+    async def stop_executor(self, executor_id: str, *, reason: str = "manual") -> dict:
+        executor = self.executors.get(executor_id)
+        if not executor:
+            raise ValueError(f"Executor '{executor_id}' not found")
+
+        executor.is_active = False
+        # Keep the tick listener registered so price streaming continues for the
+        # chart/UI even when the strategy stops trading (order filled/rejected/etc).
+
+        if reason == "order_fulfilled":
+            status = "ORDER_FULFILLED"
+            action = "ORDER_FULFILLED"
+        elif reason == "order_rejected":
+            status = "ORDER_REJECTED"
+            action = "ORDER_REJECTED"
+        else:
+            status = "STOPPED"
+            action = "EXECUTOR_STOPPED"
+        executor._set_status(status)
+        self._on_executor_status(executor_id, status, executor.is_in_position)
+        self._on_engine_event({
+            "type": "order",
+            "action": action,
+            "executor_id": executor_id,
+            "reason": reason,
+        })
+        logger.info("[ENGINE] Stopped executor: %s reason=%s", executor_id, reason)
         return self._executor_state(executor)
 
     async def remove_executor(self, executor_id: str):
@@ -471,6 +924,7 @@ class LiveEngine:
             "use_fake_client": self.use_fake_client,
             "client_mode": self.client_mode,
             "feed_mode": self.feed_mode,
+            "feed_tick_sample_every": self.feed_tick_sample_every,
             "is_bracket_order_client": self.is_bo_client(),
             "executor_count": len(self.executors),
             "symbol": self.symbol,
@@ -494,6 +948,12 @@ class LiveEngine:
 
 # ─── Request Models ───────────────────────────────────────────────────────────
 
+class ClosePositionRequest(BaseModel):
+    units: Optional[float] = None
+    instrument_id: Optional[int] = None
+    max_positions: Optional[int] = None
+
+
 class RegisterExecutorRequest(BaseModel):
     executor_id: str
     symbol: str
@@ -501,6 +961,7 @@ class RegisterExecutorRequest(BaseModel):
     exchange: str = "NSE"
     long_percent: float = 1.0
     short_percent: float = 10.0
+    stop_loss_amount: float | None = None
     initial_threshold: float = 0.2
     max_available_capital: float = 100000
     allow_partial_stocks: bool = False
@@ -512,6 +973,7 @@ class RegisterExecutorRequest(BaseModel):
     bb_period: int = Field(default=20, ge=2, le=200)
     bb_std: float = Field(default=2.0, ge=0.5, le=5.0)
     rsi_oversold: float = Field(default=30.0, ge=5.0, le=50.0)
+    instrument_class: str = "equity"
 
 
 # ─── App Setup ────────────────────────────────────────────────────────────────
@@ -543,6 +1005,7 @@ async def lifespan(app: FastAPI):
         strategy_name=_arg_value("--strategy-name", "default"),
         client_mode=_arg_value("--client-mode", normalize_client_mode(broker)),
         feed_mode=_arg_value("--feed-mode", "websocket"),
+        feed_tick_sample_every=int(_arg_value("--feed-tick-sample-every", "0") or 0),
     )
     await engine.start()
     yield
@@ -732,6 +1195,36 @@ async def register_executor(req: RegisterExecutorRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/live/executors/{executor_id}/stop")
+async def stop_executor(executor_id: str):
+    eng = get_engine()
+    try:
+        state = await eng.stop_executor(executor_id, reason="order_fulfilled")
+        return {"status": True, "data": state}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/live/executors/{executor_id}/positions/{position_id}/close")
+async def close_position(executor_id: str, position_id: str, req: ClosePositionRequest):
+    eng = get_engine()
+    try:
+        result = await eng.close_position(
+            executor_id,
+            position_id,
+            units=req.units,
+            instrument_id=req.instrument_id,
+            max_positions=req.max_positions,
+        )
+        return {"status": True, "data": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/api/live/executors/{executor_id}")
 async def remove_executor(executor_id: str):
     eng = get_engine()
@@ -795,6 +1288,30 @@ async def get_summary():
     return {"status": True, "data": summary}
 
 
+@app.get("/api/live/candles/history")
+async def load_candle_history(
+    token: str,
+    before: int,
+    minutes: int = 120,
+):
+    """Load older 1-minute candles ending just before `before` (oldest bar unix time)."""
+    eng = get_engine()
+    try:
+        payload = await eng.load_candle_history(token, before, minutes=minutes)
+        return {"status": True, "data": payload}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(
+            "[CandleProvider] History load failed token=%s before=%s: %s",
+            token,
+            before,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 # ─── WebSocket ────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/live")
@@ -807,6 +1324,7 @@ async def websocket_live(ws: WebSocket):
         'type': 'snapshot',
         'engine': eng.engine_info(),
         'executors': [eng._executor_state(ex) for ex in eng.executors.values()],
+        'candles_by_token': eng.candles_by_token(),
     }
     await ws.send_json(snapshot)
 
@@ -838,7 +1356,13 @@ if __name__ == "__main__":
         "--feed-mode",
         choices=["websocket", "rest"],
         default="websocket",
-        help="Angel price feed: SmartAPI websocket stream or REST polling",
+        help="Price feed: websocket stream or REST polling (Angel and eToro)",
+    )
+    parser.add_argument(
+        "--feed-tick-sample-every",
+        type=int,
+        default=0,
+        help="Websocket tick sampling: 0=forward every tick, N=forward every Nth tick",
     )
     parser.add_argument("--heartbeat-interval", type=float, default=5.0, help="Seconds between control-plane heartbeats")
     args = parser.parse_args()

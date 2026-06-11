@@ -10,12 +10,16 @@ export type ExecutionLike = {
   scheduled_start_at?: string | null
   is_in_position?: boolean | null
   log_file?: string | null
+  account_env?: string | null
+  source_id?: string | null
 }
 
 export type StockGroupSummary = {
   symbolKey: string
   symbol: string
   brokers: string[]
+  accountEnvs: string[]
+  sources: string[]
   strategyCount: number
   runningCount: number
   scheduledCount: number
@@ -45,10 +49,15 @@ export function groupExecutionsBySymbol(executions: ExecutionLike[]): StockGroup
     const isScheduled = status === 'scheduled'
     const broker = String(execution.broker || '').trim()
 
+    const accountEnv = String(execution.account_env || '').trim()
+    const sourceId = String(execution.source_id || '').trim()
+
     const existing = groups.get(symbolKey) || {
       symbolKey,
       symbol,
       brokers: [],
+      accountEnvs: [],
+      sources: [],
       strategyCount: 0,
       runningCount: 0,
       scheduledCount: 0,
@@ -64,6 +73,8 @@ export function groupExecutionsBySymbol(executions: ExecutionLike[]): StockGroup
     else existing.stoppedCount += 1
     if (execution.is_in_position) existing.inPositionCount += 1
     if (broker && !existing.brokers.includes(broker)) existing.brokers.push(broker)
+    if (accountEnv && !existing.accountEnvs.includes(accountEnv)) existing.accountEnvs.push(accountEnv)
+    if (sourceId && !existing.sources.includes(sourceId)) existing.sources.push(sourceId)
     existing.executionIds.push(execution.executor_id)
 
     const createdAt = execution.created_at || null

@@ -34,8 +34,15 @@ def _first_value(data: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def _nested_status(content: dict[str, Any]) -> dict[str, Any]:
+    status = content.get("status")
+    return status if isinstance(status, dict) else {}
+
+
 def parse_status_id(content: dict[str, Any]) -> int | None:
     raw = _first_value(content, "StatusID", "StatusId", "statusID", "statusId")
+    if raw is None:
+        raw = _nested_status(content).get("id")
     if raw is None:
         return None
     try:
@@ -44,8 +51,19 @@ def parse_status_id(content: dict[str, Any]) -> int | None:
         return None
 
 
+def parse_status_name(content: dict[str, Any]) -> str | None:
+    raw = _first_value(content, "StatusName", "statusName")
+    if raw is None:
+        raw = _nested_status(content).get("name")
+    if raw is None:
+        return None
+    return str(raw).strip()
+
+
 def parse_error_code(content: dict[str, Any]) -> int | None:
     raw = _first_value(content, "ErrorCode", "errorCode")
+    if raw is None:
+        raw = _nested_status(content).get("errorCode")
     if raw is None:
         return None
     try:
@@ -57,9 +75,28 @@ def parse_error_code(content: dict[str, Any]) -> int | None:
 def executed_units(content: dict[str, Any]) -> float:
     raw = _first_value(content, "ExecutedUnits", "executedUnits", "ExecutedLots", "executedLots")
     try:
-        return float(raw or 0)
+        direct = float(raw or 0)
     except (TypeError, ValueError):
-        return 0.0
+        direct = 0.0
+    if direct > 0:
+        return direct
+
+    total = 0.0
+    for execution in content.get("positionExecutions") or []:
+        opening = execution.get("openingData") or {}
+        for candidate in (
+            opening.get("units"),
+            execution.get("remainingUnits"),
+            execution.get("executedUnits"),
+        ):
+            try:
+                units = float(candidate or 0)
+            except (TypeError, ValueError):
+                units = 0.0
+            if units > 0:
+                total += units
+                break
+    return total
 
 
 def is_close_event(event_type: str | None) -> bool:
@@ -97,16 +134,24 @@ def map_status_update_to_action(
     """Return a terminal trading action or None when the update is not terminal."""
     content = content or {}
 
+    status_name = (parse_status_name(content) or "").lower()
+
     if error_code not in (None, 0):
         return "ORDER_REJECTED"
 
-    if status_id == STATUS_REJECTED:
+    if status_name in {"cancelled", "canceled"}:
+        return "ORDER_CANCELLED"
+    if status_name == "rejected":
         return "ORDER_REJECTED"
+
     if status_id == STATUS_CANCELLED:
         return "ORDER_CANCELLED"
+    if status_id == STATUS_REJECTED and status_name in {"", "rejected"}:
+        return "ORDER_REJECTED"
 
     executed = executed_units(content)
-    is_executed = status_id in (STATUS_EXECUTED, STATUS_PARTIALLY_EXECUTED)
+    filled_names = {"filled", "executed", "partially executed", "partially filled"}
+    is_executed = status_id in (STATUS_EXECUTED, STATUS_PARTIALLY_EXECUTED) or status_name in filled_names
     has_execution = executed > 0
 
     if is_executed or (has_execution and status_id not in (STATUS_PENDING, STATUS_CANCELLED, STATUS_REJECTED)):

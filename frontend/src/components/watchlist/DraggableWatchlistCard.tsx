@@ -1,12 +1,13 @@
 import { useCallback, useRef, type ReactNode } from 'react'
 
 import type { WatchlistCardLayout } from '../../lib/watchlistLayout'
-import { cardHeightForContent, clampWidth } from '../../lib/watchlistLayout'
+import { cardHeightForContent, clampWidth, MIN_CARD_WIDTH } from '../../lib/watchlistLayout'
 
 type Props = {
   layout: WatchlistCardLayout
   symbolCount: number
   searchOpen: boolean
+  minTableWidth?: number
   onLayoutChange: (next: WatchlistCardLayout) => void
   children: ReactNode
 }
@@ -15,6 +16,7 @@ export default function DraggableWatchlistCard({
   layout,
   symbolCount,
   searchOpen,
+  minTableWidth = MIN_CARD_WIDTH,
   onLayoutChange,
   children,
 }: Props) {
@@ -45,7 +47,7 @@ export default function DraggableWatchlistCard({
 
       onLayoutChange({
         ...drag.origin,
-        width: clampWidth(drag.origin.width + dx),
+        width: Math.max(minTableWidth, clampWidth(drag.origin.width + dx)),
       })
     },
     [onLayoutChange],
@@ -74,7 +76,8 @@ export default function DraggableWatchlistCard({
       style={{
         left: layout.x,
         top: layout.y,
-        width: layout.width,
+        width: Math.max(layout.width, minTableWidth),
+        minWidth: minTableWidth,
         minHeight: cardHeight,
       }}
       onPointerDown={event => {

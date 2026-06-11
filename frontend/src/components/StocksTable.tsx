@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 
 import { formatDbTimestamp } from '../lib/datetime'
+import { executionSourceLabel } from '../lib/executionSources'
 import type { StockGroupSummary } from '../lib/groupExecutionsBySymbol'
 
 function CountBadge({ count, tone }: { count: number; tone: 'green' | 'accent' | 'muted' }) {
@@ -57,6 +58,12 @@ export function StocksTable({
               In position
             </th>
             <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
+              Env
+            </th>
+            <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
+              Source
+            </th>
+            <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
               Latest strategy
             </th>
           </tr>
@@ -104,6 +111,40 @@ export function StocksTable({
                 </td>
                 <td className="px-3.5 py-2.5">
                   <CountBadge count={row.inPositionCount} tone="muted" />
+                </td>
+                <td className="px-3.5 py-2.5">
+                  <div className="flex flex-wrap gap-1">
+                    {row.accountEnvs.length ? row.accountEnvs.map(env => (
+                      <span
+                        key={env}
+                        className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${
+                          env === 'live'
+                            ? 'bg-green/20 text-green'
+                            : 'bg-text-secondary/15 text-text-secondary'
+                        }`}
+                      >
+                        {env}
+                      </span>
+                    )) : <span className="text-text-secondary">—</span>}
+                  </div>
+                </td>
+                <td className="px-3.5 py-2.5">
+                  <div className="flex flex-wrap gap-1">
+                    {row.sources.length ? row.sources.map(src => (
+                      <span
+                        key={src}
+                        className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                          src === 'momentum-trade'
+                            ? 'bg-amber-500/20 text-amber-400'
+                            : src === 'ai_research' || src === 'ai_chatbot_panel'
+                              ? 'bg-accent/20 text-accent'
+                              : 'bg-text-secondary/15 text-text-secondary'
+                        }`}
+                      >
+                        {executionSourceLabel(src)}
+                      </span>
+                    )) : <span className="text-text-secondary">—</span>}
+                  </div>
                 </td>
                 <td className="px-3.5 py-2.5 whitespace-nowrap text-text-secondary">
                   {formatDbTimestamp(row.latestCreatedAt)}

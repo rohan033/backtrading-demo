@@ -3,6 +3,12 @@ import json
 from typing import Any
 
 from brokers.etoro.client import EtoroClient
+from brokers.etoro.order_helpers import (
+    apply_v1_bracket_fields,
+    normalize_etoro_order_payload,
+    resolve_bracket_stop_loss_rate,
+    round_etoro_price,
+)
 from brokers.interfaces import TickClient, Subscription, LTPData
 from logzero import logger
 
@@ -73,7 +79,7 @@ class EtoroTradingClient(EtoroClient, TickClient):
             "InstrumentID": instrument_id,
             "IsBuy": True,
             "Leverage": self._default_leverage(),
-            "Amount": float(available_capital),
+            "Amount": round_etoro_price(available_capital),
         }
         return await self._place_market_open_by_amount(payload, "BUY")
 
@@ -160,6 +166,38 @@ class EtoroTradingClient(EtoroClient, TickClient):
                 return portfolio
         return {}
 
+    async def aget_available_cash(self) -> float:
+        """Return USD cash available to open new positions.
+
+        Per eToro: Available Cash = credit
+            - Σ(ordersForOpen[i].amount where mirrorID == 0)
+            - Σ(orders[i].amount)
+        """
+        portfolio = await self.aget_client_portfolio()
+        credit = float(portfolio.get("credit") or 0.0)
+
+        pending_open = 0.0
+        for order in portfolio.get("ordersForOpen") or []:
+            if not isinstance(order, dict):
+                continue
+            mirror_id = order.get("mirrorID", order.get("mirrorId", 0)) or 0
+            if int(mirror_id) != 0:
+                continue
+            pending_open += float(order.get("amount") or 0.0)
+
+        pending_close = 0.0
+        for order in portfolio.get("orders") or []:
+            if not isinstance(order, dict):
+                continue
+            pending_close += float(order.get("amount") or 0.0)
+
+        available = credit - pending_open - pending_close
+        logger.info(
+            "[eToro] available cash credit=%.2f pending_open=%.2f pending_orders=%.2f -> available=%.2f",
+            credit, pending_open, pending_close, available,
+        )
+        return max(0.0, available)
+
     async def aget_orders_snapshot(self) -> dict[str, list[dict[str, Any]]]:
         """Return pending/active orders from eToro /pnl."""
         portfolio = await self.aget_client_portfolio()
@@ -169,29 +207,58 @@ class EtoroTradingClient(EtoroClient, TickClient):
             "orders_for_close": portfolio.get("ordersForClose", []) or [],
         }
 
-    async def aclose_position(self, position_id):
-        """Close a specific position on eToro."""
-        logger.info("[eToro] Closing position: %s", position_id)
+    async def aclose_position(
+        self,
+        position_id,
+        *,
+        units: float | None = None,
+        instrument_id: int | None = None,
+    ):
+        """Close a specific position on eToro.
 
-        position = await self._find_position(position_id)
-        instrument_id = None
-        if position:
-            instrument_id = position.get("instrumentID") or position.get("instrumentId")
+        When units is omitted or <= 0, eToro closes the full position.
+        """
+        logger.info("[eToro] close_position START position=%s units=%s", position_id, units)
 
-        if instrument_id is None:
-            logger.error("[eToro] Cannot close position %s; instrument ID not found", position_id)
+        resolved_instrument_id = instrument_id
+        if resolved_instrument_id is None:
+            position = await self._find_position(position_id)
+            if position:
+                resolved_instrument_id = position.get("instrumentID") or position.get("instrumentId")
+
+        if resolved_instrument_id is None:
+            logger.error("[eToro] close_position ABORT position=%s reason=instrument_id_not_found", position_id)
             return False
 
+        units_to_deduct = None
+        if units is not None:
+            try:
+                parsed_units = float(units)
+                if parsed_units > 0:
+                    units_to_deduct = parsed_units
+            except (TypeError, ValueError):
+                units_to_deduct = None
+
+        path = f"{self.execution_base_path()}/market-close-orders/positions/{position_id}"
+        payload = normalize_etoro_order_payload({
+            "InstrumentID": int(resolved_instrument_id),
+            "UnitsToDeduct": units_to_deduct,
+        })
+
+        logger.info(
+            "[eToro] close_position REQUEST position=%s path=%s payload=%s",
+            position_id, path, json.dumps(payload, default=str),
+        )
+
         try:
-            await self.arequest(
-                "POST",
-                f"{self.execution_base_path()}/market-close-orders/positions/{position_id}",
-                json_body={"InstrumentID": int(instrument_id), "UnitsToDeduct": None},
-                trade_execution=True,
+            response = await self.arequest("POST", path, json_body=payload, trade_execution=True)
+            logger.info(
+                "[eToro] close_position RESPONSE position=%s response=%s",
+                position_id, json.dumps(response, default=str) if response else "(empty)",
             )
             return True
         except Exception as e:
-            logger.error("[eToro] Error closing position %s: %s", position_id, e)
+            logger.error("[eToro] close_position ERROR position=%s error=%s", position_id, e, exc_info=True)
             return False
 
     async def aget_position_ids_for_order(self, order_id):
@@ -259,22 +326,23 @@ class EtoroTradingClient(EtoroClient, TickClient):
 
     async def _place_market_open_by_amount(self, payload, side_label):
         endpoint = f"{self.execution_base_path()}/market-open-orders/by-amount"
+        normalized_payload = normalize_etoro_order_payload(payload)
         logger.info(
             "[eToro] %s request endpoint=%s payload=%s",
             side_label,
             endpoint,
-            json.dumps(payload, sort_keys=True),
+            json.dumps(normalized_payload, sort_keys=True),
         )
         try:
             response = await self.arequest(
                 "POST",
                 endpoint,
-                json_body=payload,
+                json_body=normalized_payload,
                 trade_execution=True,
             )
             return self._order_result(response)
         except Exception as e:
-            logger.error("[eToro] Exception placing %s order: %s", side_label, e)
+            logger.error("[eToro] Exception placing %s order: %s", side_label, e, exc_info=True)
             return {}
 
     async def _find_position(self, position_id):
@@ -309,38 +377,46 @@ class EtoroBracketTradingClient(EtoroTradingClient):
             logger.warning("[eToro] Capital %.2f too low for bracket BUY", available_capital)
             return {}
 
-        if take_profit_rate is None or stop_loss_rate is None:
-            logger.error("[eToro] Bracket BUY requires both take_profit_rate and stop_loss_rate")
-            return {}
-
         instrument_id = await self._instrument_id(symbol, token)
         if instrument_id is None:
             logger.error("[eToro] Cannot place bracket BUY; unresolved instrument: %s/%s", symbol, token)
             return {}
 
+        try:
+            resolved_stop_loss_rate = resolve_bracket_stop_loss_rate(
+                ltp,
+                stop_loss_rate,
+                invested_amount=available_capital,
+            )
+        except ValueError as exc:
+            logger.error("[eToro] %s", exc)
+            return {}
+
         logger.info(
-            "[eToro] Placing bracket BUY: symbol=%s amount=%.2f ref_price=%.2f TP=%.2f SL=%.2f",
+            "[eToro] Placing bracket BUY: symbol=%s amount=%.2f ref_price=%.2f TP=%s SL=%.2f",
             symbol,
             available_capital,
             ltp,
             take_profit_rate,
-            stop_loss_rate,
+            resolved_stop_loss_rate,
         )
 
         payload = {
             "InstrumentID": instrument_id,
             "IsBuy": True,
             "Leverage": self._default_leverage(),
-            "Amount": float(available_capital),
-            "TakeProfitRate": float(take_profit_rate),
-            "StopLossRate": float(stop_loss_rate),
-            "IsTslEnabled": bool(trailing_stop_loss),
-            "IsNoTakeProfit": False,
-            "IsNoStopLoss": False,
+            "Amount": round_etoro_price(available_capital),
         }
+        apply_v1_bracket_fields(
+            payload,
+            stop_loss_rate=resolved_stop_loss_rate,
+            take_profit_rate=take_profit_rate,
+            trailing_stop_loss=trailing_stop_loss,
+        )
         result = await self._place_market_open_by_amount(payload, "bracket BUY")
         if result.get("order_id"):
-            result["take_profit_rate"] = float(take_profit_rate)
-            result["stop_loss_rate"] = float(stop_loss_rate)
+            result["stop_loss_rate"] = float(resolved_stop_loss_rate)
+            if take_profit_rate is not None:
+                result["take_profit_rate"] = float(take_profit_rate)
         return result
 

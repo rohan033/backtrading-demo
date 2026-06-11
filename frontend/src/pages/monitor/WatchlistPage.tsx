@@ -1,14 +1,41 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Plus } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Archive, Plus, X } from 'lucide-react'
 
 import DraggableWatchlistCard from '../../components/watchlist/DraggableWatchlistCard'
 import WatchlistColumn from '../../components/watchlist/WatchlistColumn'
+import WatchlistColumnPicker from '../../components/watchlist/WatchlistColumnPicker'
+import WatchlistAutoSort from '../../components/watchlist/WatchlistAutoSort'
+import WatchlistMomentumSettings from '../../components/watchlist/WatchlistMomentumSettings'
 import { Button } from '../../components/ui/button'
+import {
+  useMomentumNotificationPermission,
+  useWatchlistMomentumAlerts,
+  type SymbolArchivedCallback,
+} from '../../hooks/useWatchlistMomentumAlerts'
+import type { DeployAllContext } from '../../components/watchlist/WatchlistColumn'
+import { showPlatformToast } from '../../lib/platform-toast'
+import { createAndStartMomentumStrategy } from '../../lib/watchlistMomentumStrategy'
+import { watchlistTickKey } from '../../lib/watchlists'
+import { useWatchlistHistorySeeder } from '../../hooks/useWatchlistHistorySeeder'
+import { useWatchlistPriceHistory } from '../../hooks/useWatchlistPriceHistory'
 import { useWatchlistTicks } from '../../hooks/useWatchlistTicks'
+import {
+  loadWatchlistAutoSortConfig,
+  sortSymbolsByWindowChange,
+  type WatchlistAutoSortConfig,
+} from '../../lib/watchlistAutoSort'
+import { loadMomentumConfig, type MomentumConfig } from '../../lib/watchlistMomentum'
+import {
+  loadVisibleChangeColumns,
+  saveVisibleChangeColumns,
+  watchlistTableMinWidthPx,
+  type WatchlistChangeWindowId,
+} from '../../lib/watchlistChangeColumns'
 import type { WatchlistBroker } from '../../lib/watchlistBrokers'
 import { defaultAccountEnv } from '../../lib/watchlistBrokers'
 import {
   canvasMinSize,
+  cardWidthForTable,
   layoutForNewWatchlist,
   loadWatchlistLayouts,
   mergeLayouts,
@@ -26,7 +53,25 @@ import {
   removeWatchlistSymbol,
   updateWatchlist,
   type Watchlist,
+  type WatchlistSymbol,
 } from '../../lib/watchlists'
+import {
+  applySymbolOrder,
+  archiveSymbol,
+  clearArchivedSymbols,
+  loadArchivedSymbols,
+  loadMomentumLiveSymbolKeys,
+  loadMomentumNoTpSymbolKeys,
+  loadMomentumSymbolKeys,
+  loadMomentumWatchlistIds,
+  loadSymbolOrder,
+  removeArchivedSymbol,
+  saveSymbolOrder,
+  setMomentumSymbolMode,
+  toggleMomentumLiveSymbolKey,
+  toggleMomentumWatchlistId,
+  type ArchivedMomentumSymbol,
+} from '../../lib/watchlistMomentumState'
 
 export default function WatchlistPage() {
   const [watchlists, setWatchlists] = useState<Watchlist[]>([])
@@ -35,9 +80,164 @@ export default function WatchlistPage() {
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [cardMetrics, setCardMetrics] = useState<Record<string, WatchlistCardMetrics>>({})
+  const [visibleChangeColumns, setVisibleChangeColumns] = useState<WatchlistChangeWindowId[]>(
+    () => loadVisibleChangeColumns(),
+  )
+  const [momentumConfig, setMomentumConfig] = useState<MomentumConfig>(() => loadMomentumConfig())
+  const [autoSortConfig, setAutoSortConfig] = useState<WatchlistAutoSortConfig>(
+    () => loadWatchlistAutoSortConfig(),
+  )
+
+  // Momentum-trade watchlist state (all persisted in localStorage)
+  const [momentumWatchlistIds, setMomentumWatchlistIds] = useState<Set<string>>(
+    () => loadMomentumWatchlistIds(),
+  )
+  const [momentumSymbolKeys, setMomentumSymbolKeys] = useState<Set<string>>(
+    () => loadMomentumSymbolKeys(),
+  )
+  const [momentumNoTpSymbolKeys, setMomentumNoTpSymbolKeys] = useState<Set<string>>(
+    () => loadMomentumNoTpSymbolKeys(),
+  )
+  const [momentumLiveSymbolKeys, setMomentumLiveSymbolKeys] = useState<Set<string>>(
+    () => loadMomentumLiveSymbolKeys(),
+  )
+  const [symbolOrders, setSymbolOrders] = useState<Record<string, string[]>>(() => {
+    // Pre-load any saved orders when the component mounts (watchlists aren't loaded yet,
+    // but we keep a partial map and fill it in after load)
+    return {}
+  })
+  const [archivedSymbols, setArchivedSymbols] = useState<ArchivedMomentumSymbol[]>(
+    () => loadArchivedSymbols(),
+  )
 
   const hasSymbols = watchlists.some(wl => wl.symbols.length > 0)
   const { ticks, connected } = useWatchlistTicks(watchlists, hasSymbols)
+  const { windowChanges, historyRef, forceRecompute } = useWatchlistPriceHistory(ticks)
+
+  // Pre-seed local price history from candle data so % changes are visible immediately on load
+  useWatchlistHistorySeeder(watchlists, historyRef, forceRecompute)
+
+  /** Returns symbols for a watchlist — auto-sorted or manual drag order. */
+  const orderedSymbolsFor = useCallback(
+    (wl: Watchlist): WatchlistSymbol[] => {
+      if (autoSortConfig.enabled) {
+        const broker = (wl.broker || 'angel') as WatchlistBroker
+        const accountEnv = wl.account_env || defaultAccountEnv(broker)
+        return sortSymbolsByWindowChange(
+          wl.symbols,
+          broker,
+          accountEnv,
+          windowChanges,
+          autoSortConfig.column,
+        )
+      }
+      return applySymbolOrder(wl.symbols, symbolOrders[wl.id] ?? null)
+    },
+    [autoSortConfig, symbolOrders, windowChanges],
+  )
+
+  /** Stable map of ordered symbols used by the momentum hook — only recomputes when watchlists or orders change. */
+  const allOrderedSymbols = useMemo(
+    () => Object.fromEntries(watchlists.map(wl => [wl.id, orderedSymbolsFor(wl)])),
+    [watchlists, orderedSymbolsFor],
+  )
+
+  const handleToggleMomentum = useCallback((watchlistId: string) => {
+    setMomentumWatchlistIds(prev => toggleMomentumWatchlistId(prev, watchlistId))
+  }, [])
+
+  const handleToggleSymbolMomentum = useCallback((watchlistId: string, symboltoken: string) => {
+    const { normal, noTp } = setMomentumSymbolMode(
+      momentumSymbolKeys, momentumNoTpSymbolKeys, watchlistId, symboltoken, 'normal',
+    )
+    setMomentumSymbolKeys(normal)
+    setMomentumNoTpSymbolKeys(noTp)
+  }, [momentumSymbolKeys, momentumNoTpSymbolKeys])
+
+  const handleToggleSymbolMomentumNoTp = useCallback((watchlistId: string, symboltoken: string) => {
+    const { normal, noTp } = setMomentumSymbolMode(
+      momentumSymbolKeys, momentumNoTpSymbolKeys, watchlistId, symboltoken, 'no-tp',
+    )
+    setMomentumSymbolKeys(normal)
+    setMomentumNoTpSymbolKeys(noTp)
+  }, [momentumSymbolKeys, momentumNoTpSymbolKeys])
+
+  const handleToggleSymbolMomentumLive = useCallback((watchlistId: string, symboltoken: string) => {
+    setMomentumLiveSymbolKeys(prev => toggleMomentumLiveSymbolKey(prev, watchlistId, symboltoken))
+  }, [])
+
+  const handleSymbolsReordered = useCallback((watchlistId: string, tokens: string[]) => {
+    saveSymbolOrder(watchlistId, tokens)
+    setSymbolOrders(prev => ({ ...prev, [watchlistId]: tokens }))
+  }, [])
+
+  const handleMetricsChange = useCallback((watchlistId: string, next: WatchlistCardMetrics) => {
+    setCardMetrics(prev => {
+      const current = prev[watchlistId]
+      if (current?.symbolCount === next.symbolCount && current?.searchOpen === next.searchOpen) {
+        return prev
+      }
+      return { ...prev, [watchlistId]: next }
+    })
+  }, [])
+
+  const handleSymbolArchived: SymbolArchivedCallback = useCallback(params => {
+    const archived = archiveSymbol({ ...params, archivedAt: Date.now() })
+    setArchivedSymbols(archived)
+    // Remove the symbol from the watchlist (backend + state)
+    void removeWatchlistSymbol(params.watchlistId, params.symboltoken).then(updated => {
+      setWatchlists(prev => prev.map(wl => (wl.id === params.watchlistId ? updated : wl)))
+    }).catch(() => {
+      // Still update local state even if the API call fails
+      setWatchlists(prev =>
+        prev.map(wl =>
+          wl.id === params.watchlistId
+            ? { ...wl, symbols: wl.symbols.filter(s => s.symboltoken !== params.symboltoken) }
+            : wl,
+        ),
+      )
+    })
+  }, [])
+
+  const { monitoredSymbols } = useWatchlistMomentumAlerts({
+    watchlists,
+    momentumWatchlistIds,
+    momentumSymbolKeys,
+    momentumNoTpSymbolKeys,
+    momentumLiveSymbolKeys,
+    orderedSymbols: allOrderedSymbols,
+    ticks,
+    windowChanges,
+    historyRef,
+    enabled: hasSymbols && connected,
+    config: momentumConfig,
+    onSymbolArchived: handleSymbolArchived,
+  })
+  useMomentumNotificationPermission(momentumConfig.enabled && hasSymbols)
+
+  const tableMinWidth = watchlistTableMinWidthPx(visibleChangeColumns.length)
+
+  const handleVisibleChangeColumns = useCallback((next: WatchlistChangeWindowId[]) => {
+    setVisibleChangeColumns(next)
+    saveVisibleChangeColumns(next)
+  }, [])
+
+  useEffect(() => {
+    setLayouts(prev => {
+      let changed = false
+      const next: WatchlistLayoutMap = { ...prev }
+      for (const [id, layout] of Object.entries(next)) {
+        const width = cardWidthForTable(visibleChangeColumns.length, layout.width)
+        if (width !== layout.width) {
+          next[id] = { ...layout, width }
+          changed = true
+        }
+      }
+      if (!changed) return prev
+      saveWatchlistLayouts(next)
+      return next
+    })
+  }, [visibleChangeColumns])
 
   const persistLayouts = useCallback((next: WatchlistLayoutMap) => {
     setLayouts(next)
@@ -49,8 +249,23 @@ export default function WatchlistPage() {
     try {
       const rows = await fetchWatchlists()
       setWatchlists(rows)
+      // Restore saved symbol orders for all watchlists
+      const orders: Record<string, string[]> = {}
+      for (const wl of rows) {
+        const order = loadSymbolOrder(wl.id)
+        if (order) orders[wl.id] = order
+      }
+      setSymbolOrders(orders)
       const stored = loadWatchlistLayouts()
-      persistLayouts(mergeLayouts(rows.map(r => r.id), stored))
+      const merged = mergeLayouts(rows.map(r => r.id), stored)
+      const columns = loadVisibleChangeColumns()
+      const sized = Object.fromEntries(
+        Object.entries(merged).map(([id, layout]) => [
+          id,
+          { ...layout, width: cardWidthForTable(columns.length, layout.width) },
+        ]),
+      )
+      persistLayouts(sized)
     } catch (e) {
       setError(errorMessage(e, 'Failed to load watchlists'))
     } finally {
@@ -81,7 +296,10 @@ export default function WatchlistPage() {
       })
       const nextLayouts = {
         ...layouts,
-        [created.id]: layoutForNewWatchlist(layouts, cardMetrics, created.id),
+        [created.id]: {
+          ...layoutForNewWatchlist(layouts, cardMetrics, created.id),
+          width: cardWidthForTable(visibleChangeColumns.length),
+        },
       }
       setWatchlists(prev => [...prev, created])
       persistLayouts(nextLayouts)
@@ -128,8 +346,51 @@ export default function WatchlistPage() {
       setWatchlists(prev => prev.map(wl => (wl.id === watchlistId ? updated : wl)))
     })
 
+  const handleDeployAll = async (ctx: DeployAllContext) => {
+    const accountEnv = ctx.accountEnv as 'live' | 'demo'
+    let ok = 0
+    let fail = 0
+    await Promise.allSettled(
+      ctx.symbols.map(async sym => {
+        const tickKey = watchlistTickKey(ctx.broker, accountEnv, sym.symboltoken)
+        const ltp = ctx.ticks[tickKey]?.ltp
+        if (!ltp) { fail++; return }
+        try {
+          await createAndStartMomentumStrategy(
+            {
+              broker: ctx.broker,
+              tradingsymbol: sym.tradingsymbol,
+              token: sym.symboltoken,
+              exchange: sym.exchange,
+              closePrice: ltp,
+            },
+            accountEnv,
+            momentumConfig,
+          )
+          ok++
+        } catch {
+          fail++
+        }
+      }),
+    )
+    showPlatformToast({
+      variant: fail === 0 ? 'success' : ok > 0 ? 'warning' : 'error',
+      title: `Deploy All · ${accountEnv}`,
+      message: fail === 0
+        ? `${ok} strateg${ok === 1 ? 'y' : 'ies'} started`
+        : `${ok} started · ${fail} failed (no live price?)`,
+      duration: 8000,
+    })
+  }
+
   const handleLayoutChange = (id: string, next: WatchlistCardLayout) => {
-    persistLayouts({ ...layouts, [id]: next })
+    persistLayouts({
+      ...layouts,
+      [id]: {
+        ...next,
+        width: cardWidthForTable(visibleChangeColumns.length, next.width),
+      },
+    })
   }
 
   return (
@@ -140,14 +401,29 @@ export default function WatchlistPage() {
           <p className="mt-0.5 text-[11px] text-text-secondary">
             Cards grow with your symbols · drag to rearrange · resize width on the right edge
             {hasSymbols && (
-              <span className="ml-2">{connected ? '· Live' : '· Connecting…'}</span>
+              <span className="ml-2">
+                {connected ? '· Live' : '· Connecting…'}
+                {momentumConfig.enabled ? ' · Momentum on' : ''}
+                {autoSortConfig.enabled ? ` · Auto-sort ${autoSortConfig.column}` : ''}
+              </span>
             )}
           </p>
         </div>
-        <Button type="button" size="sm" onClick={handleCreate} disabled={busy} className="gap-1.5">
-          <Plus className="h-3.5 w-3.5" />
-          New watchlist
-        </Button>
+        <div className="flex items-center gap-2">
+          <WatchlistMomentumSettings
+            onChange={setMomentumConfig}
+            monitoredSymbols={monitoredSymbols}
+          />
+          <WatchlistAutoSort config={autoSortConfig} onChange={setAutoSortConfig} />
+          <WatchlistColumnPicker
+            visibleColumns={visibleChangeColumns}
+            onChange={handleVisibleChangeColumns}
+          />
+          <Button type="button" size="sm" onClick={handleCreate} disabled={busy} className="gap-1.5">
+            <Plus className="h-3.5 w-3.5" />
+            New watchlist
+          </Button>
+        </div>
       </div>
 
       {error && (
@@ -182,6 +458,57 @@ export default function WatchlistPage() {
               minHeight: Math.max(480, canvasMinSize(layouts, cardMetrics).height),
             }}
           >
+            {archivedSymbols.length > 0 && (
+              <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/5">
+                <div className="flex items-center justify-between border-b border-amber-500/20 px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <Archive className="h-3.5 w-3.5 text-amber-400" />
+                    <span className="text-xs font-semibold text-amber-300">
+                      Momentum Archive · {archivedSymbols.length} deployed
+                    </span>
+                    <span className="text-[10px] text-text-secondary">
+                      read-only · strategies running
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setArchivedSymbols(clearArchivedSymbols())}
+                    className="text-[10px] text-text-secondary hover:text-red"
+                  >
+                    Clear all
+                  </button>
+                </div>
+                <div className="flex flex-wrap gap-2 px-3 py-2">
+                  {archivedSymbols.map(sym => (
+                    <div
+                      key={`${sym.watchlistId}-${sym.symboltoken}`}
+                      className="flex items-center gap-1.5 rounded-md border border-amber-500/20 bg-secondary/60 px-2.5 py-1.5"
+                    >
+                      <span className="font-sans text-[13px] font-semibold text-text-primary">
+                        {sym.tradingsymbol}
+                      </span>
+                      <span className="text-[11px] text-text-secondary">
+                        @ {sym.entryPrice.toFixed(2)}
+                      </span>
+                      <span className="text-[10px] text-amber-400/70">
+                        {new Date(sym.archivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      <button
+                        type="button"
+                        title="Remove from archive"
+                        onClick={() =>
+                          setArchivedSymbols(removeArchivedSymbol(sym.symboltoken, sym.watchlistId))
+                        }
+                        className="ml-0.5 text-text-secondary/50 hover:text-red"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {watchlists.map(wl => {
               const layout = layouts[wl.id] ?? mergeLayouts([wl.id], layouts)[wl.id]
               const metrics = cardMetrics[wl.id] ?? {
@@ -194,6 +521,7 @@ export default function WatchlistPage() {
                   layout={layout}
                   symbolCount={metrics.symbolCount}
                   searchOpen={metrics.searchOpen}
+                  minTableWidth={tableMinWidth}
                   onLayoutChange={next => handleLayoutChange(wl.id, next)}
                 >
                   <WatchlistColumn
@@ -202,15 +530,27 @@ export default function WatchlistPage() {
                       broker: (wl.broker || 'angel') as WatchlistBroker,
                       account_env: wl.account_env || defaultAccountEnv((wl.broker || 'angel') as WatchlistBroker),
                     }}
+                    orderedSymbols={allOrderedSymbols[wl.id]}
+                    autoSortEnabled={autoSortConfig.enabled}
                     ticks={ticks}
+                    windowChanges={windowChanges}
+                    visibleChangeColumns={visibleChangeColumns}
+                    isMomentumWatchlist={momentumWatchlistIds.has(wl.id)}
+                    onToggleMomentum={handleToggleMomentum}
+                    momentumSymbolKeys={momentumSymbolKeys}
+                    onToggleSymbolMomentum={handleToggleSymbolMomentum}
+                    momentumNoTpSymbolKeys={momentumNoTpSymbolKeys}
+                    onToggleSymbolMomentumNoTp={handleToggleSymbolMomentumNoTp}
+                    momentumLiveSymbolKeys={momentumLiveSymbolKeys}
+                    onToggleSymbolMomentumLive={handleToggleSymbolMomentumLive}
                     onRename={handleRename}
                     onDelete={handleDelete}
                     onBrokerChange={handleBrokerChange}
+                    onDeployAll={handleDeployAll}
                     onAddSymbol={handleAddSymbol}
                     onRemoveSymbol={handleRemoveSymbol}
-                    onMetricsChange={next =>
-                      setCardMetrics(prev => ({ ...prev, [wl.id]: next }))
-                    }
+                    onSymbolsReordered={handleSymbolsReordered}
+                    onMetricsChange={handleMetricsChange}
                   />
                 </DraggableWatchlistCard>
               )
