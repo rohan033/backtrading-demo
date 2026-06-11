@@ -7,11 +7,11 @@ import { useSidebar } from './sidebar-context'
 
 function navClass({ isActive }: { isActive: boolean }, collapsed: boolean) {
   return [
-    'flex items-center rounded text-[11px] font-medium transition-colors',
-    collapsed ? 'group relative justify-center px-2 py-2.5' : 'gap-2.5 px-3 py-2',
+    'group/nav relative flex items-center rounded-md text-[12.5px] font-medium transition-all duration-150',
+    collapsed ? 'group justify-center px-2 py-2.5' : 'gap-2.5 px-2.5 py-2',
     isActive
-      ? 'bg-accent/15 text-accent'
-      : 'text-text-secondary hover:bg-card hover:text-text-primary',
+      ? 'bg-accent/[0.12] text-accent shadow-[inset_0_0_0_1px_rgb(var(--c-accent)/0.18)]'
+      : 'text-text-secondary hover:bg-card-hi/70 hover:text-text-primary',
   ].join(' ')
 }
 
@@ -26,9 +26,9 @@ function SidebarTooltip({ label, show }: { label: string; show: boolean }) {
       <span className="relative inline-flex items-center">
         <span
           aria-hidden="true"
-          className="absolute -left-1 top-1/2 h-0 w-0 -translate-y-1/2 border-y-[6px] border-y-transparent border-r-[7px] border-r-accent drop-shadow-[0_0_6px_rgba(29,161,242,0.55)]"
+          className="absolute -left-1 top-1/2 h-0 w-0 -translate-y-1/2 border-y-[6px] border-y-transparent border-r-[7px] border-r-accent drop-shadow-[0_0_6px_rgb(var(--c-accent)/0.55)]"
         />
-        <span className="whitespace-nowrap rounded-full bg-gradient-to-r from-accent via-sky-400 to-indigo-400 px-3.5 py-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-white shadow-[0_6px_18px_rgba(29,161,242,0.45)] ring-1 ring-white/20">
+        <span className="whitespace-nowrap rounded-md bg-accent px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.14em] text-primary shadow-[0_6px_18px_rgb(var(--c-accent)/0.35)]">
           {label}
         </span>
       </span>
@@ -64,20 +64,21 @@ export default function Sidebar() {
 
   return (
     <aside
-      className={`flex shrink-0 flex-col border-r border-border bg-secondary transition-[width] duration-200 ease-in-out ${
-        collapsed ? 'w-[72px] overflow-visible' : 'w-[260px]'
+      className={`relative z-30 flex shrink-0 flex-col border-r border-border bg-secondary transition-[width] duration-200 ease-in-out ${
+        collapsed ? 'w-[72px] overflow-visible' : 'w-[264px]'
       }`}
     >
-      <div className={`border-b border-border ${collapsed ? 'px-2 py-3' : 'px-4 py-4'}`}>
+      <div className={`flex h-16 items-center border-b border-border ${collapsed ? 'justify-center px-2' : 'px-4'}`}>
         <div className={`flex items-center ${collapsed ? 'flex-col gap-2' : 'gap-3'}`}>
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-accent to-indigo-500 text-sm font-bold text-white">
+          <div className="relative flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-accent to-amber-600 font-display text-base font-extrabold text-primary shadow-[0_4px_14px_rgb(var(--c-accent)/0.35)]">
             RS
+            <span className="absolute bottom-0.5 right-0.5 h-2.5 w-2.5 rounded-full border-2 border-secondary bg-green" />
           </div>
           {!collapsed ? (
             <div className="min-w-0">
-              <div className="truncate text-sm font-semibold">Rohan Saraf</div>
-              <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-text-secondary">
-                <span className="h-1.5 w-1.5 rounded-full bg-green shadow-[0_0_0_2px_rgba(0,200,83,0.15)]" />
+              <div className="truncate font-display text-[15px] font-bold tracking-tightest text-text-primary">Rohan Saraf</div>
+              <div className="mt-0.5 flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-text-secondary">
+                <span className="inline-flex h-1.5 w-1.5 rounded-full bg-green shadow-[0_0_0_3px_rgb(var(--c-up)/0.15)]" />
                 Demo · eToro
               </div>
             </div>
@@ -85,12 +86,13 @@ export default function Sidebar() {
         </div>
       </div>
 
-      <nav className={`flex-1 py-4 ${collapsed ? 'overflow-visible px-2' : 'overflow-auto px-3'}`}>
+      <nav className={`stagger-rise flex-1 py-4 ${collapsed ? 'overflow-visible px-2' : 'overflow-auto px-3'}`}>
         {NAV_GROUPS.map(group => (
           <div key={group.title} className={collapsed ? 'mb-3' : 'mb-5'}>
             {!collapsed ? (
-              <div className="mb-2 px-3 text-[8px] font-bold uppercase tracking-[1.5px] text-text-secondary">
-                {group.title}
+              <div className="mb-2 flex items-center gap-2 px-2.5 text-[10px] font-bold uppercase tracking-[0.18em] text-text-secondary/70">
+                <span>{group.title}</span>
+                <span className="h-px flex-1 bg-border/70" />
               </div>
             ) : null}
             <div className="space-y-0.5">
@@ -106,17 +108,17 @@ export default function Sidebar() {
                     className={props => navClass(props, collapsed)}
                   >
                     <span
-                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${item.iconBg}`}
+                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ring-1 ring-inset ring-white/[0.04] transition-colors ${item.iconBg}`}
                     >
                       {item.iconText ? (
                         <span className={`text-[10px] font-black tracking-tight ${item.iconFg}`}>
                           {item.iconText}
                         </span>
                       ) : Icon ? (
-                        <Icon className={`h-3.5 w-3.5 ${item.iconFg}`} aria-hidden="true" />
+                        <Icon className={`h-[15px] w-[15px] ${item.iconFg}`} aria-hidden="true" />
                       ) : null}
                     </span>
-                    {!collapsed ? <span>{item.label}</span> : null}
+                    {!collapsed ? <span className="truncate">{item.label}</span> : null}
                   </CollapsedNavItem>
                 )
               })}
@@ -144,8 +146,8 @@ export default function Sidebar() {
           type="button"
           onClick={toggleCollapsed}
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          className={`group relative flex w-full items-center rounded border border-border/60 bg-card/40 text-text-secondary transition-colors hover:bg-card hover:text-text-primary ${
-            collapsed ? 'justify-center px-2 py-2' : 'gap-2 px-3 py-2 text-[11px] font-medium'
+          className={`group relative flex w-full items-center rounded-md border border-border/60 bg-card/40 text-text-secondary transition-colors hover:border-border hover:bg-card-hi hover:text-text-primary ${
+            collapsed ? 'justify-center px-2 py-2' : 'gap-2 px-3 py-2 text-[11.5px] font-medium'
           }`}
         >
           {collapsed ? (

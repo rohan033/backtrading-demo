@@ -284,29 +284,37 @@ export default function PortfolioPage() {
   const lastRefreshLabel = fmtLastRefresh(lastRefreshedAt)
 
   return (
-    <div className="h-full overflow-auto p-6">
-      <p className="mb-4 max-w-3xl text-sm text-text-secondary">
-        Holdings are loaded per broker. Angel One shows your SmartAPI portfolio; eToro shows open positions for the selected Demo/Live environment.
-      </p>
+    <div className="h-full overflow-auto p-6 animate-fade-in">
+      <div className="mb-5 flex items-start gap-3">
+        <span className="mt-0.5 h-9 w-1 rounded-full bg-accent" aria-hidden="true" />
+        <div>
+          <h1 className="font-display text-xl font-bold tracking-tightest text-text-primary">Portfolio</h1>
+          <p className="mt-1 max-w-3xl text-sm text-text-secondary">
+            Holdings are loaded per broker. Angel One shows your SmartAPI portfolio; eToro shows open positions for the selected Demo/Live environment.
+          </p>
+        </div>
+      </div>
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {BROKER_TABS.map(tab => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => {
-              setActiveBroker(tab.id)
-              setAccountEnv(tab.accountEnv)
-            }}
-            className={`rounded px-3 py-1.5 text-[11px] font-bold transition-colors ${
-              activeBroker === tab.id
-                ? 'bg-accent text-white'
-                : 'bg-card text-text-secondary hover:text-text-primary'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+        <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-card p-1">
+          {BROKER_TABS.map(tab => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => {
+                setActiveBroker(tab.id)
+                setAccountEnv(tab.accountEnv)
+              }}
+              className={`rounded-md px-3.5 py-1.5 text-[12px] font-bold transition-colors ${
+                activeBroker === tab.id
+                  ? 'bg-accent text-primary shadow-[0_2px_10px_rgb(var(--c-accent)/0.3)]'
+                  : 'text-text-secondary hover:bg-card-hi hover:text-text-primary'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
 
         {activeBroker === 'etoro' ? (
           <>
@@ -367,22 +375,26 @@ export default function PortfolioPage() {
         {fromCache ? <span className="rounded bg-card px-2 py-0.5">Cached · avoids broker rate limits</span> : null}
       </div>
 
-      <div className="mb-5 grid gap-3 md:grid-cols-4">
-        <div className="rounded border border-border bg-card px-4 py-3">
-          <div className="text-[9px] uppercase tracking-widest text-text-secondary">Positions</div>
-          <div className="mt-1 text-lg font-bold">{summary.count}</div>
+      <div className="mb-5 grid gap-3 stagger-rise md:grid-cols-4">
+        <div className="group relative overflow-hidden rounded-lg border border-border bg-card px-4 py-4 shadow-panel transition-colors hover:border-accent/30">
+          <span className="absolute inset-y-0 left-0 w-0.5 bg-accent/0 transition-colors group-hover:bg-accent/60" aria-hidden="true" />
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-secondary">Positions</div>
+          <div className="mt-2 font-display text-[26px] font-bold leading-none tracking-tightest tabular-nums">{summary.count}</div>
         </div>
-        <div className="rounded border border-border bg-card px-4 py-3">
-          <div className="text-[9px] uppercase tracking-widest text-text-secondary">Invested</div>
-          <div className="mt-1 text-lg font-bold">{fmtMoney(summary.invested, activeBroker)}</div>
+        <div className="group relative overflow-hidden rounded-lg border border-border bg-card px-4 py-4 shadow-panel transition-colors hover:border-accent/30">
+          <span className="absolute inset-y-0 left-0 w-0.5 bg-accent/0 transition-colors group-hover:bg-accent/60" aria-hidden="true" />
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-secondary">Invested</div>
+          <div className="mt-2 font-display text-[26px] font-bold leading-none tracking-tightest tabular-nums">{fmtMoney(summary.invested, activeBroker)}</div>
         </div>
-        <div className="rounded border border-border bg-card px-4 py-3">
-          <div className="text-[9px] uppercase tracking-widest text-text-secondary">Market value</div>
-          <div className="mt-1 text-lg font-bold">{fmtMoney(summary.marketValue, activeBroker)}</div>
+        <div className="group relative overflow-hidden rounded-lg border border-border bg-card px-4 py-4 shadow-panel transition-colors hover:border-accent/30">
+          <span className="absolute inset-y-0 left-0 w-0.5 bg-accent/0 transition-colors group-hover:bg-accent/60" aria-hidden="true" />
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-secondary">Market value</div>
+          <div className="mt-2 font-display text-[26px] font-bold leading-none tracking-tightest tabular-nums">{fmtMoney(summary.marketValue, activeBroker)}</div>
         </div>
-        <div className="rounded border border-border bg-card px-4 py-3">
-          <div className="text-[9px] uppercase tracking-widest text-text-secondary">Unrealized P&L</div>
-          <div className={`mt-1 text-lg font-bold ${pnlClass(summary.pnl)}`}>
+        <div className="group relative overflow-hidden rounded-lg border border-border bg-card px-4 py-4 shadow-panel transition-colors hover:border-accent/30">
+          <span className={`absolute inset-y-0 left-0 w-0.5 ${summary.pnl > 0 ? 'bg-green/70' : summary.pnl < 0 ? 'bg-red/70' : 'bg-accent/0'}`} aria-hidden="true" />
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-text-secondary">Unrealized P&amp;L</div>
+          <div className={`mt-2 font-display text-[26px] font-bold leading-none tracking-tightest tabular-nums ${pnlClass(summary.pnl)}`}>
             {fmtPnl(summary.pnl, summary.pnlPct, activeBroker)}
           </div>
         </div>
@@ -394,9 +406,9 @@ export default function PortfolioPage() {
       {error ? <p className="mb-4 text-sm text-red">{error}</p> : null}
 
       {activeBroker === 'etoro' && (ordersLoading || ordersError || etoroOrders.length > 0 || ordersFetchedAt) ? (
-        <div className="mb-5 overflow-auto rounded border border-border">
+        <div className="mb-5 overflow-auto rounded-lg border border-border shadow-panel">
           <div className="flex flex-wrap items-center gap-2 border-b border-border bg-secondary px-4 py-3">
-            <div className="text-[10px] font-bold uppercase tracking-wider text-text-secondary">eToro orders</div>
+            <div className="font-display text-[12px] font-bold uppercase tracking-[0.14em] text-text-primary">eToro orders</div>
             {ordersFetchedAt ? (
               <span className="text-[10px] text-text-secondary">
                 Last fetch · {fmtLastRefresh(ordersFetchedAt)}
@@ -438,9 +450,9 @@ export default function PortfolioPage() {
       ) : null}
 
       {!loading && holdings.length > 0 ? (
-        <div className="overflow-auto rounded border border-border">
+        <div className="overflow-auto rounded-lg border border-border shadow-panel">
           <table className="w-full min-w-[720px] text-left text-xs">
-            <thead className="bg-secondary text-[10px] uppercase tracking-wider text-text-secondary">
+            <thead className="bg-secondary text-[10px] font-semibold uppercase tracking-[0.12em] text-text-secondary">
               <tr>
                 <SortHeader label="Symbol" column="tradingsymbol" sort={sort} onSort={handleSort} />
                 <SortHeader label="Exchange" column="exchange" sort={sort} onSort={handleSort} />

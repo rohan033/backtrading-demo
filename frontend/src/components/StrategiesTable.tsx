@@ -97,7 +97,7 @@ export function StrategiesTable({
     <div className="overflow-auto">
       <table className="w-full border-collapse text-xs">
         <thead>
-          <tr className="bg-black/15 text-left">
+          <tr className="bg-secondary text-left">
             <th className="px-3.5 py-2.5 text-[10px] font-semibold uppercase tracking-widest text-text-secondary">
               Strategy
             </th>
@@ -144,7 +144,7 @@ export function StrategiesTable({
               <td className="px-3.5 py-2.5">
                 <StatusBadge status={row.status} />
                 {row.inPosition ? (
-                  <span className="ml-1.5 rounded-full bg-amber-400/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-400">
+                  <span className="ml-1.5 rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-accent">
                     In position
                   </span>
                 ) : null}
@@ -173,11 +173,11 @@ export function StrategiesTable({
               <td className="px-3.5 py-2.5">
                 {row.source ? (
                   <span
-                    className={`rounded px-1.5 py-0.5 text-[9px] font-bold ${
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
                       row.source === 'momentum-trade'
-                        ? 'bg-amber-500/20 text-amber-400'
+                        ? 'bg-accent/20 text-accent'
                         : row.source === 'ai_research' || row.source === 'ai_chatbot_panel'
-                          ? 'bg-accent/20 text-accent'
+                          ? 'bg-accent-2/20 text-accent-2'
                           : 'bg-text-secondary/15 text-text-secondary'
                     }`}
                   >

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Archive, Plus, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Archive, LayoutGrid, Plus, Undo2, X } from 'lucide-react'
 
 import DraggableWatchlistCard from '../../components/watchlist/DraggableWatchlistCard'
 import WatchlistColumn from '../../components/watchlist/WatchlistColumn'
@@ -29,7 +29,13 @@ import type { WatchlistBroker } from '../../lib/watchlistBrokers'
 import { defaultAccountEnv } from '../../lib/watchlistBrokers'
 import {
   canvasMinSize,
+  cardHeightForContent,
   cardWidthForTable,
+  clampWidth,
+  GRID_GAP_X,
+  GRID_GAP_Y,
+  GRID_ORIGIN_X,
+  GRID_ORIGIN_Y,
   layoutForNewWatchlist,
   loadWatchlistLayouts,
   mergeLayouts,
@@ -113,6 +119,7 @@ export default function WatchlistPage() {
   const [archivedSymbols, setArchivedSymbols] = useState<ArchivedMomentumSymbol[]>(
     () => loadArchivedSymbols(),
   )
+  const canvasScrollRef = useRef<HTMLDivElement | null>(null)
 
   /** Returns symbols for a watchlist — auto-sorted or manual drag order. */
   const orderedSymbolsFor = useCallback(
@@ -354,6 +361,68 @@ export default function WatchlistPage() {
       setWatchlists(prev => prev.map(wl => (wl.id === watchlistId ? updated : wl)))
     })
 
+  /** Re-adds one archived symbol to its original watchlist, then drops it from the archive. */
+  const handleRestoreArchived = (sym: ArchivedMomentumSymbol) =>
+    wrap(async () => {
+      const target = watchlists.find(wl => wl.id === sym.watchlistId)
+      if (!target) {
+        showPlatformToast({
+          variant: 'error',
+          title: 'Restore failed',
+          message: `Original watchlist for ${sym.tradingsymbol} no longer exists.`,
+          duration: 6000,
+        })
+        return
+      }
+      const updated = await addWatchlistSymbol(sym.watchlistId, {
+        symboltoken: sym.symboltoken,
+        tradingsymbol: sym.tradingsymbol,
+        exchange: sym.exchange,
+      })
+      setWatchlists(prev => prev.map(wl => (wl.id === sym.watchlistId ? updated : wl)))
+      setArchivedSymbols(removeArchivedSymbol(sym.symboltoken, sym.watchlistId))
+      showPlatformToast({
+        variant: 'success',
+        title: 'Restored to watchlist',
+        message: `${sym.tradingsymbol} added back to ${target.name}.`,
+        duration: 4000,
+      })
+    })
+
+  /** Restores every archived symbol back to its watchlist (skips lists that were deleted). */
+  const handleRestoreAllArchived = () =>
+    wrap(async () => {
+      let ok = 0
+      let fail = 0
+      for (const sym of archivedSymbols) {
+        const target = watchlists.find(wl => wl.id === sym.watchlistId)
+        if (!target) {
+          fail++
+          continue
+        }
+        try {
+          const updated = await addWatchlistSymbol(sym.watchlistId, {
+            symboltoken: sym.symboltoken,
+            tradingsymbol: sym.tradingsymbol,
+            exchange: sym.exchange,
+          })
+          setWatchlists(prev => prev.map(wl => (wl.id === sym.watchlistId ? updated : wl)))
+          setArchivedSymbols(removeArchivedSymbol(sym.symboltoken, sym.watchlistId))
+          ok++
+        } catch {
+          fail++
+        }
+      }
+      showPlatformToast({
+        variant: fail === 0 ? 'success' : ok > 0 ? 'warning' : 'error',
+        title: 'Restore archive',
+        message: fail === 0
+          ? `${ok} symbol${ok === 1 ? '' : 's'} restored to their watchlists`
+          : `${ok} restored · ${fail} skipped (watchlist removed)`,
+        duration: 6000,
+      })
+    })
+
   const handleDeployAll = async (ctx: DeployAllContext) => {
     const accountEnv = ctx.accountEnv as 'live' | 'demo'
     let ok = 0
@@ -391,6 +460,43 @@ export default function WatchlistPage() {
     })
   }
 
+  /**
+   * Re-packs every watchlist into a tidy masonry grid that fills the full canvas
+   * width — no blank gutter on the right. Fits as many columns as possible at the
+   * minimum table width, then stretches the column width so the row spans edge to
+   * edge. Each card stacks under the currently-shortest column so heights stay
+   * balanced and nothing overlaps.
+   */
+  const handleAutoArrange = useCallback(() => {
+    if (watchlists.length === 0) return
+    const minWidth = tableMinWidth
+    const fallback = minWidth * 3 + GRID_GAP_X * 2 + GRID_ORIGIN_X * 2
+    const clientWidth = canvasScrollRef.current?.clientWidth || fallback
+    const available = Math.max(minWidth, clientWidth - GRID_ORIGIN_X * 2)
+
+    const fit = Math.floor((available + GRID_GAP_X) / (minWidth + GRID_GAP_X))
+    const columns = Math.max(1, Math.min(fit || 1, watchlists.length))
+    const width = clampWidth(
+      Math.max(minWidth, Math.floor((available - (columns - 1) * GRID_GAP_X) / columns)),
+    )
+    const columnHeights = new Array<number>(columns).fill(GRID_ORIGIN_Y)
+
+    const next: WatchlistLayoutMap = {}
+    for (const wl of watchlists) {
+      const metrics = cardMetrics[wl.id] ?? { symbolCount: wl.symbols.length, searchOpen: false }
+      const shortest = columnHeights.indexOf(Math.min(...columnHeights))
+      const y = columnHeights[shortest]
+      next[wl.id] = {
+        x: GRID_ORIGIN_X + shortest * (width + GRID_GAP_X),
+        y,
+        width,
+      }
+      columnHeights[shortest] = y + cardHeightForContent(metrics.symbolCount, metrics.searchOpen) + GRID_GAP_Y
+    }
+    persistLayouts(next)
+    canvasScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: 'smooth' })
+  }, [watchlists, cardMetrics, tableMinWidth, persistLayouts])
+
   const handleLayoutChange = (id: string, next: WatchlistCardLayout) => {
     persistLayouts({
       ...layouts,
@@ -403,19 +509,35 @@ export default function WatchlistPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center justify-between border-b border-border px-5 py-4">
-        <div>
-          <h1 className="text-sm font-semibold">Watchlists</h1>
-          <p className="mt-0.5 text-[11px] text-text-secondary">
-            Cards grow with your symbols · drag to rearrange · resize width on the right edge
-            {hasSymbols && (
-              <span className="ml-2">
-                {connected ? '· Live' : '· Connecting…'}
-                {momentumConfig.enabled ? ' · Momentum on' : ''}
-                {autoSortConfig.enabled ? ` · Auto-sort ${autoSortConfig.column}` : ''}
-              </span>
-            )}
-          </p>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
+        <div className="flex items-center gap-3">
+          <span className="h-9 w-1 rounded-full bg-accent" aria-hidden="true" />
+          <div>
+            <div className="flex items-center gap-2.5">
+              <h1 className="font-display text-xl font-bold tracking-tightest text-text-primary">Watchlists</h1>
+              {hasSymbols && (
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em] ${
+                    connected
+                      ? 'border-green/30 bg-green/10 text-green'
+                      : 'border-accent/30 bg-accent/10 text-accent'
+                  }`}
+                >
+                  <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-green' : 'bg-accent'}`} />
+                  {connected ? 'Live' : 'Connecting…'}
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-xs text-text-secondary">
+              Cards grow with your symbols · drag to rearrange · resize on the right edge
+              {hasSymbols && (
+                <span className="ml-1.5 text-text-secondary/80">
+                  {momentumConfig.enabled ? '· Momentum on' : ''}
+                  {autoSortConfig.enabled ? ` · Auto-sort ${autoSortConfig.column}` : ''}
+                </span>
+              )}
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <WatchlistMomentumSettings
@@ -427,6 +549,18 @@ export default function WatchlistPage() {
             visibleColumns={visibleChangeColumns}
             onChange={handleVisibleChangeColumns}
           />
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={handleAutoArrange}
+            disabled={busy || watchlists.length === 0}
+            className="gap-1.5"
+            title="Re-arrange watchlists into a tidy grid"
+          >
+            <LayoutGrid className="h-3.5 w-3.5" />
+            Tidy grid
+          </Button>
           <Button type="button" size="sm" onClick={handleCreate} disabled={busy} className="gap-1.5">
             <Plus className="h-3.5 w-3.5" />
             New watchlist
@@ -447,7 +581,87 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      <div className="relative min-h-0 flex-1 overflow-auto bg-primary/30">
+      {archivedSymbols.length > 0 && (
+        <div className="shrink-0 border-b border-accent/20 bg-accent/[0.05] px-5 py-3">
+          <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="grid h-6 w-6 place-items-center rounded-md bg-accent/15 text-accent">
+                <Archive className="h-3.5 w-3.5" />
+              </span>
+              <span className="font-display text-sm font-bold tracking-tightest text-text-primary">
+                Momentum Archive
+              </span>
+              <span className="rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-accent">
+                {archivedSymbols.length} deployed
+              </span>
+              <span className="hidden text-[11px] text-text-secondary sm:inline">
+                strategies running · restore to add back to its list
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                onClick={handleRestoreAllArchived}
+                disabled={busy}
+                className="gap-1.5 text-accent hover:text-accent"
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+                Restore all
+              </Button>
+              <Button
+                type="button"
+                size="xs"
+                variant="tertiary"
+                onClick={() => setArchivedSymbols(clearArchivedSymbols())}
+                disabled={busy}
+                className="hover:text-red"
+              >
+                Clear all
+              </Button>
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {archivedSymbols.map(sym => (
+              <div
+                key={`${sym.watchlistId}-${sym.symboltoken}`}
+                className="group flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 shadow-panel transition-colors hover:border-accent/40"
+              >
+                <div className="flex flex-col">
+                  <span className="font-display text-[13px] font-bold leading-tight tracking-tightest text-text-primary">
+                    {sym.tradingsymbol}
+                  </span>
+                  <span className="font-mono text-[10px] leading-tight text-text-secondary tabular-nums">
+                    @ {sym.entryPrice.toFixed(2)} · {new Date(sym.archivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  title="Restore to watchlist"
+                  onClick={() => handleRestoreArchived(sym)}
+                  disabled={busy}
+                  className="grid h-7 w-7 place-items-center rounded-md border border-accent/30 bg-accent/10 text-accent transition-colors hover:bg-accent hover:text-primary disabled:opacity-50"
+                >
+                  <Undo2 className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  title="Remove from archive"
+                  onClick={() =>
+                    setArchivedSymbols(removeArchivedSymbol(sym.symboltoken, sym.watchlistId))
+                  }
+                  className="grid h-7 w-7 place-items-center rounded-md text-text-secondary/60 transition-colors hover:bg-card-hi hover:text-red"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div ref={canvasScrollRef} className="relative min-h-0 flex-1 overflow-auto bg-primary/30">
         {loading ? (
           <p className="p-5 text-xs text-text-secondary">Loading watchlists…</p>
         ) : watchlists.length === 0 ? (
@@ -466,57 +680,6 @@ export default function WatchlistPage() {
               minHeight: Math.max(480, canvasMinSize(layouts, cardMetrics).height),
             }}
           >
-            {archivedSymbols.length > 0 && (
-              <div className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/5">
-                <div className="flex items-center justify-between border-b border-amber-500/20 px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <Archive className="h-3.5 w-3.5 text-amber-400" />
-                    <span className="text-xs font-semibold text-amber-300">
-                      Momentum Archive · {archivedSymbols.length} deployed
-                    </span>
-                    <span className="text-[10px] text-text-secondary">
-                      read-only · strategies running
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setArchivedSymbols(clearArchivedSymbols())}
-                    className="text-[10px] text-text-secondary hover:text-red"
-                  >
-                    Clear all
-                  </button>
-                </div>
-                <div className="flex flex-wrap gap-2 px-3 py-2">
-                  {archivedSymbols.map(sym => (
-                    <div
-                      key={`${sym.watchlistId}-${sym.symboltoken}`}
-                      className="flex items-center gap-1.5 rounded-md border border-amber-500/20 bg-secondary/60 px-2.5 py-1.5"
-                    >
-                      <span className="font-sans text-[13px] font-semibold text-text-primary">
-                        {sym.tradingsymbol}
-                      </span>
-                      <span className="text-[11px] text-text-secondary">
-                        @ {sym.entryPrice.toFixed(2)}
-                      </span>
-                      <span className="text-[10px] text-amber-400/70">
-                        {new Date(sym.archivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                      <button
-                        type="button"
-                        title="Remove from archive"
-                        onClick={() =>
-                          setArchivedSymbols(removeArchivedSymbol(sym.symboltoken, sym.watchlistId))
-                        }
-                        className="ml-0.5 text-text-secondary/50 hover:text-red"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
             {watchlists.map(wl => {
               const layout = layouts[wl.id] ?? mergeLayouts([wl.id], layouts)[wl.id]
               const metrics = cardMetrics[wl.id] ?? {

@@ -89,13 +89,15 @@ function Toggle({
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative h-5 w-9 rounded-full transition-colors disabled:opacity-40 ${
-        checked ? 'bg-accent' : 'bg-border'
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-40 ${
+        checked
+          ? 'bg-accent ring-1 ring-inset ring-accent/60'
+          : 'bg-border ring-1 ring-inset ring-white/5'
       }`}
     >
       <span
-        className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
-          checked ? 'translate-x-4' : 'translate-x-0.5'
+        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform duration-200 ease-out ${
+          checked ? 'translate-x-[18px]' : 'translate-x-[2px]'
         }`}
       />
     </button>
@@ -139,9 +141,9 @@ export default function WatchlistMomentumSettings({ onChange, monitoredSymbols =
       <button
         type="button"
         onClick={() => setOpen(v => !v)}
-        className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-medium ${
+        className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-colors ${
           config.enabled
-            ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
+            ? 'border-accent/40 bg-accent/10 text-accent'
             : 'border-border bg-card text-text-secondary hover:text-text-primary'
         }`}
         title="Momentum filter settings"

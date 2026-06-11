@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type MouseEvent } from 'react'
-import { ChevronDown, ChevronUp, Zap } from 'lucide-react'
+import { ChevronDown, ChevronUp, ListOrdered, Timer, Zap } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 import { useStickyWatchlistFeed } from '../../hooks/useStickyWatchlistFeed'
@@ -17,26 +17,26 @@ import type { WatchlistChangeWindowId } from '../../lib/watchlistChangeColumns'
 import type { RankedWatchlistSymbol } from '../../lib/watchlistTopPerformers'
 
 const STICKY_BAR_CLASS =
-  'shrink-0 border-b border-slate-300/15 bg-slate-200/[0.06]'
+  'shrink-0 border-b border-border bg-secondary/70 backdrop-blur-xl'
 const SELECT_WRAP_CLASS =
-  'inline-flex items-center overflow-hidden rounded-md border border-slate-300/25 bg-card shadow-sm'
+  'inline-flex h-9 items-center gap-1 rounded-md border border-border bg-card pl-2 shadow-sm transition-colors focus-within:border-accent/40'
 const SELECT_CLASS =
-  'h-10 min-w-[9rem] cursor-pointer border-0 bg-card px-3 pr-8 text-xs font-semibold text-text-primary outline-none [color-scheme:dark]'
+  'h-9 cursor-pointer border-0 bg-transparent pl-0.5 pr-6 text-xs font-semibold text-text-primary outline-none [color-scheme:dark]'
 
 const ACTION_CELL_BASE =
-  'flex h-full min-w-[2.5rem] items-center justify-center rounded-md border border-black/15 text-sm font-bold shadow-sm transition-colors'
+  'flex h-full min-w-[2.5rem] items-center justify-center rounded-md border text-sm font-bold transition-colors'
 const DEMO_CELL =
-  'bg-[#C8F0C8] text-black hover:bg-[#B4E8B4]'
-const DEMO_CELL_ACTIVE = 'bg-[#9FE09F] text-black ring-2 ring-inset ring-green-700/30'
+  'border-green/25 bg-green/10 text-green hover:bg-green/20'
+const DEMO_CELL_ACTIVE = 'border-green/50 bg-green/20 text-green ring-1 ring-inset ring-green/40'
 const LIVE_CELL =
-  'bg-[#FFC8C8] text-black hover:bg-[#FFB4B4]'
-const LIVE_CELL_ACTIVE = 'bg-[#FFAAAA] text-black ring-2 ring-inset ring-red-700/30'
+  'border-red/25 bg-red/10 text-red hover:bg-red/20'
+const LIVE_CELL_ACTIVE = 'border-red/50 bg-red/20 text-red ring-1 ring-inset ring-red/40'
 const MOMENTUM_TP_CELL =
-  'bg-[#FFE566] text-amber-950 hover:bg-[#FFD84D]'
-const MOMENTUM_TP_CELL_ACTIVE = 'bg-[#F5C518] ring-2 ring-inset ring-amber-700/35'
+  'border-accent/25 bg-accent/10 text-accent hover:bg-accent/20'
+const MOMENTUM_TP_CELL_ACTIVE = 'border-accent/50 bg-accent/20 text-accent ring-1 ring-inset ring-accent/45'
 const MOMENTUM_NO_TP_CELL =
-  'bg-[#B8D4FF] text-blue-950 hover:bg-[#A3C8FF]'
-const MOMENTUM_NO_TP_CELL_ACTIVE = 'bg-[#7EB3FF] ring-2 ring-inset ring-blue-700/35'
+  'border-accent-2/25 bg-accent-2/10 text-accent-2 hover:bg-accent-2/20'
+const MOMENTUM_NO_TP_CELL_ACTIVE = 'border-accent-2/50 bg-accent-2/20 text-accent-2 ring-1 ring-inset ring-accent-2/45'
 
 function changeTextClass(change: number | null): string {
   const tone = windowChangeTone(change)
@@ -73,12 +73,12 @@ function TickerCell({
 
   return (
     <div
-      className="flex h-20 min-w-[12.5rem] shrink-0 overflow-hidden border-x border-[#E8D48A]/80 bg-card/90"
+      className="flex h-[4.25rem] min-w-[13rem] shrink-0 overflow-hidden rounded-lg border border-border bg-card/80 shadow-panel ring-1 ring-inset ring-white/[0.02]"
       title={`${label} · ${row.watchlistName}`}
     >
       <Link
         to="/watchlist"
-        className="flex min-w-0 flex-1 flex-col justify-center border-r border-[#E8D48A]/80 px-3 transition-colors hover:bg-card"
+        className="flex min-w-0 flex-1 flex-col justify-center border-r border-border/70 px-3 transition-colors hover:bg-card-hi"
       >
         <div className="truncate text-sm font-bold leading-tight">{label}</div>
         <div className={`text-xs tabular-nums ${changeTextClass(change)}`}>
@@ -190,10 +190,10 @@ function DeployConfirmDialog({
       onClick={onCancel}
     >
       <div
-        className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-300/20 bg-card shadow-2xl"
+        className="w-full max-w-sm overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
         onClick={event => event.stopPropagation()}
       >
-        <div className="border-b border-slate-300/15 px-5 py-4">
+        <div className="border-b border-border px-5 py-4">
           <h2 id="deploy-confirm-title" className="text-base font-bold text-text-primary">
             Place momentum order?
           </h2>
@@ -213,8 +213,8 @@ function DeployConfirmDialog({
               <span
                 className={`rounded px-2 py-0.5 text-xs font-bold ${
                   env === 'LIVE'
-                    ? 'bg-[#FFC8C8] text-red-900'
-                    : 'bg-[#C8F0C8] text-green-900'
+                    ? 'border border-red/30 bg-red/15 text-red'
+                    : 'border border-green/30 bg-green/15 text-green'
                 }`}
               >
                 {env}
@@ -227,11 +227,11 @@ function DeployConfirmDialog({
           </div>
         </dl>
 
-        <div className="flex items-center justify-end gap-2 border-t border-slate-300/15 px-5 py-3">
+        <div className="flex items-center justify-end gap-2 border-t border-border px-5 py-3">
           <button
             type="button"
             onClick={onCancel}
-            className="rounded-md border border-slate-300/25 px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-background/60 hover:text-text-primary"
+            className="rounded-md border border-border px-3 py-2 text-sm font-semibold text-text-secondary transition-colors hover:bg-card-hi hover:text-text-primary"
           >
             Cancel
           </button>
@@ -239,7 +239,7 @@ function DeployConfirmDialog({
             type="button"
             onClick={onApprove}
             autoFocus
-            className="rounded-md bg-green-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition-colors hover:bg-green-500"
+            className="rounded-md bg-green px-4 py-2 text-sm font-bold text-primary shadow-[0_4px_14px_rgb(var(--c-up)/0.3)] transition-colors hover:brightness-110"
           >
             Approve ({secondsLeft}s)
           </button>
@@ -336,7 +336,7 @@ export default function StickyWatchlistFeed() {
       ) : null}
       <div className={`${STICKY_BAR_CLASS} overflow-hidden`}>
       <div className="flex h-20 min-h-20 items-stretch">
-        <div className="flex h-full min-h-0 min-w-0 flex-1 items-stretch gap-px overflow-x-auto">
+        <div className="flex h-full min-h-0 min-w-0 flex-1 items-center gap-2.5 overflow-x-auto px-2.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {topPerformers.length ? (
             topPerformers.map(row => (
               <TickerCell
@@ -356,8 +356,9 @@ export default function StickyWatchlistFeed() {
           )}
         </div>
 
-        <div className="flex h-full shrink-0 items-center gap-2 self-stretch border-l border-slate-300/20 px-2">
+        <div className="flex h-full shrink-0 items-center gap-2 self-stretch px-3">
           <div className={SELECT_WRAP_CLASS}>
+            <ListOrdered className="h-3.5 w-3.5 shrink-0 text-accent" />
             <label className="sr-only" htmlFor="sticky-feed-rank-window">Rank window</label>
             <select
               id="sticky-feed-rank-window"
@@ -370,12 +371,13 @@ export default function StickyWatchlistFeed() {
             >
               {STICKY_FEED_RANK_WINDOWS.map(window => (
                 <option key={window.id} value={window.id}>
-                  Top 5 by {window.label}
+                  {window.label}
                 </option>
               ))}
             </select>
           </div>
           <div className={SELECT_WRAP_CLASS}>
+            <Timer className="h-3.5 w-3.5 shrink-0 text-text-secondary" />
             <label className="sr-only" htmlFor="sticky-feed-sort-interval">Sort interval</label>
             <select
               id="sticky-feed-sort-interval"
@@ -388,7 +390,7 @@ export default function StickyWatchlistFeed() {
             >
               {STICKY_FEED_SORT_INTERVALS.map(option => (
                 <option key={option.ms} value={option.ms}>
-                  Sort {option.label}
+                  {option.label}
                 </option>
               ))}
             </select>
@@ -396,7 +398,7 @@ export default function StickyWatchlistFeed() {
           <button
             type="button"
             onClick={() => updateConfig({ expanded: false })}
-            className="inline-flex h-10 w-10 items-center justify-center rounded-md border border-slate-300/25 bg-card text-text-secondary transition-colors hover:border-slate-300/45 hover:text-text-primary"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-border bg-card text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
             title="Collapse sticky feed"
           >
             <ChevronUp className="h-4 w-4" />

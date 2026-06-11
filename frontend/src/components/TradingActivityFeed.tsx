@@ -7,12 +7,12 @@ const CONTROL_API = '/api/control'
 
 function ActivityRow({ item }: { item: ActivityItem }) {
   const iconStyle = item.type === 'buy'
-    ? { background: 'rgba(0, 200, 83, 0.15)', color: '#00c853' }
+    ? { background: 'rgba(45, 200, 130, 0.15)', color: '#2dc882' }
     : item.type === 'sell'
-      ? { background: 'rgba(255, 82, 82, 0.15)', color: '#ff5252' }
+      ? { background: 'rgba(255, 92, 110, 0.15)', color: '#ff5c6e' }
       : item.type === 'pending'
-        ? { background: 'rgba(251, 191, 36, 0.15)', color: '#fbbf24' }
-        : { background: 'rgba(29, 161, 242, 0.12)', color: '#1da1f2' }
+        ? { background: 'rgba(240, 184, 64, 0.15)', color: '#f0b840' }
+        : { background: 'rgba(96, 165, 214, 0.14)', color: '#60a5d6' }
 
   const icon = item.type === 'buy'
     ? '▲'

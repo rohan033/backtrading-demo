@@ -11,9 +11,11 @@ export default function AppShell() {
   return (
     <SidebarProvider>
       <WatchlistStreamProvider>
-        <div className="flex h-screen overflow-hidden bg-primary">
+        <div className="relative flex h-screen overflow-hidden bg-primary">
+          <div className="app-atmosphere z-0" aria-hidden="true" />
+          <div className="app-grain z-0" aria-hidden="true" />
           <Sidebar />
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div className="relative z-10 flex min-w-0 flex-1 flex-col overflow-hidden">
             <TopBar />
             <StickyWatchlistFeed />
             <main className="min-h-0 flex-1 overflow-hidden">

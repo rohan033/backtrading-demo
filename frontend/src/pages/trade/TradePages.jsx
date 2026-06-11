@@ -141,7 +141,7 @@ export function StrategiesListPage() {
   }, [panelExecutions])
 
   return (
-    <div className="h-full overflow-auto p-6">
+    <div className="h-full overflow-auto p-6 animate-fade-in">
       {logTarget ? (
         <>
           <button
@@ -162,16 +162,20 @@ export function StrategiesListPage() {
         </>
       ) : null}
 
-      <div className="mb-6 flex items-center justify-between gap-4">
-        <div>
-          <p className="text-sm text-text-secondary">
-            Saved broker-stock-strategy executions from the control plane, including stopped runs.
-          </p>
-          {!controlledExecutionsLoading && !controlledExecutionsError ? (
-            <p className="mt-1 text-[10px] text-text-secondary">
-              {counts.stocks} stocks · {counts.all} saved · {counts.running} running · {counts.scheduled} scheduled · {counts.stopped} stopped
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 h-9 w-1 rounded-full bg-accent" aria-hidden="true" />
+          <div>
+            <h1 className="font-display text-xl font-bold tracking-tightest text-text-primary">Strategies</h1>
+            <p className="mt-1 text-sm text-text-secondary">
+              Saved broker-stock-strategy executions from the control plane, including stopped runs.
             </p>
-          ) : null}
+            {!controlledExecutionsLoading && !controlledExecutionsError ? (
+              <p className="mt-1.5 text-[11px] text-text-secondary/80 tabular-nums">
+                {counts.stocks} stocks · {counts.all} saved · {counts.running} running · {counts.scheduled} scheduled · {counts.stopped} stopped
+              </p>
+            ) : null}
+          </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <UnscheduleAllStrategiesButton
@@ -184,58 +188,62 @@ export function StrategiesListPage() {
           />
           <Link
             to="/trade/strategies/new"
-            className="shrink-0 rounded-md bg-accent px-4 py-2 text-[11px] font-bold text-white"
+            className="shrink-0 rounded-md bg-accent px-4 py-2 text-[11.5px] font-bold text-primary shadow-[0_4px_14px_rgb(var(--c-accent)/0.3)] transition-transform hover:-translate-y-px"
           >
             New strategy
           </Link>
         </div>
       </div>
 
-      <div className="mb-4 flex flex-wrap gap-2">
-        {[
-          { id: 'stock', label: `By stock (${counts.stocks})` },
-          { id: 'strategy', label: `By strategy (${counts.all})` },
-        ].map(tab => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setViewMode(tab.id)}
-            className={`rounded px-3 py-1.5 text-[11px] font-bold transition-colors ${
-              viewMode === tab.id
-                ? 'bg-violet-500 text-white'
-                : 'bg-card text-text-secondary hover:text-text-primary'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="inline-flex items-center gap-1 rounded-lg border border-border bg-card p-1">
+          {[
+            { id: 'stock', label: `By stock (${counts.stocks})` },
+            { id: 'strategy', label: `By strategy (${counts.all})` },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setViewMode(tab.id)}
+              className={`rounded-md px-3.5 py-1.5 text-[12px] font-bold transition-colors ${
+                viewMode === tab.id
+                  ? 'bg-accent text-primary shadow-[0_2px_10px_rgb(var(--c-accent)/0.3)]'
+                  : 'text-text-secondary hover:bg-card-hi hover:text-text-primary'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="mb-4 flex flex-wrap gap-2">
-        {[
-          { id: 'all', label: `All (${counts.all})` },
-          { id: 'running', label: `Running (${counts.running})` },
-          { id: 'scheduled', label: `Scheduled (${counts.scheduled})` },
-          { id: 'stopped', label: `Stopped (${counts.stopped})` },
-        ].map(tab => (
-          <button
-            key={tab.id}
-            type="button"
-            onClick={() => setFilter(tab.id)}
-            className={`rounded px-3 py-1.5 text-[11px] font-bold transition-colors ${
-              filter === tab.id
-                ? 'bg-accent text-white'
-                : 'bg-card text-text-secondary hover:text-text-primary'
-            }`}
-          >
-            {tab.label}
-          </button>
-        ))}
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <div className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-border bg-card p-1">
+          {[
+            { id: 'all', label: `All (${counts.all})` },
+            { id: 'running', label: `Running (${counts.running})` },
+            { id: 'scheduled', label: `Scheduled (${counts.scheduled})` },
+            { id: 'stopped', label: `Stopped (${counts.stopped})` },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setFilter(tab.id)}
+              className={`rounded-md px-3.5 py-1.5 text-[12px] font-bold transition-colors ${
+                filter === tab.id
+                  ? 'bg-accent text-primary shadow-[0_2px_10px_rgb(var(--c-accent)/0.3)]'
+                  : 'text-text-secondary hover:bg-card-hi hover:text-text-primary'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
           onClick={() => refreshControlledExecutions()}
           disabled={controlledExecutionsLoading}
-          className="ml-auto rounded border border-border bg-card px-3 py-1.5 text-[11px] font-semibold text-text-secondary hover:text-text-primary disabled:opacity-50"
+          className="ml-auto rounded-md border border-border bg-card px-3 py-1.5 text-[12px] font-semibold text-text-secondary transition-colors hover:border-accent/40 hover:text-text-primary disabled:opacity-50"
         >
           {controlledExecutionsLoading ? 'Refreshing…' : 'Refresh'}
         </button>
@@ -253,8 +261,8 @@ export function StrategiesListPage() {
         </div>
       ) : viewMode === 'stock' ? (
         stockGroups.length ? (
-          <div className="overflow-hidden rounded-lg border border-border bg-card">
-            <StocksTable
+        <div className="overflow-hidden rounded-lg border border-border bg-card shadow-panel">
+          <StocksTable
               rows={pagedStockGroups}
               onRowClick={symbolKey => navigate(`/trade/stocks/${encodeURIComponent(symbolKey)}`)}
             />
@@ -276,7 +284,7 @@ export function StrategiesListPage() {
           </div>
         )
       ) : rows.length ? (
-        <div className="overflow-hidden rounded-lg border border-border bg-card">
+        <div className="overflow-hidden rounded-lg border border-border bg-card shadow-panel">
           <StrategiesTable
             rows={pagedRows}
             onRowClick={rowId => {
@@ -549,9 +557,12 @@ export function ActivityPage() {
   const { executionEvents } = useExecution()
 
   return (
-    <div className="h-full space-y-8 overflow-auto p-4">
+    <div className="h-full space-y-8 overflow-auto p-4 animate-fade-in">
       <section>
-        <h2 className="mb-3 text-sm font-semibold">Orders</h2>
+        <h2 className="mb-3 flex items-center gap-2 font-display text-base font-bold tracking-tightest text-text-primary">
+          <span className="h-4 w-0.5 rounded-full bg-accent" aria-hidden="true" />
+          Orders
+        </h2>
         <OrderManagementTab
           globalView
           liveApi=""
@@ -560,7 +571,10 @@ export function ActivityPage() {
         />
       </section>
       <section>
-        <h2 className="mb-3 text-sm font-semibold">Trading events</h2>
+        <h2 className="mb-3 flex items-center gap-2 font-display text-base font-bold tracking-tightest text-text-primary">
+          <span className="h-4 w-0.5 rounded-full bg-accent" aria-hidden="true" />
+          Trading events
+        </h2>
         <TradingEventsTab
           globalView
           liveApi=""
