@@ -1,10 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 
 import LiveLogPanel from '../../components/LiveLogPanel'
 import {
   EmptyState,
   StrategyChartPanel,
+  TAKE_PROFIT_MODE_ABSOLUTE,
+  TAKE_PROFIT_MODE_PERCENT,
+  TakeProfitModeToggle,
   computeExecutionLevels,
   formatOrderQuantity,
 } from '../../ExecutionWorkspace'
@@ -24,6 +27,78 @@ import { TradingActivityFeed } from '../../components/TradingActivityFeed'
 import { formatScheduledStart, scheduleSummary } from '../../lib/tradingSchedule'
 
 import './strategy-detail.css'
+
+const PRICE_CHANGE_WINDOWS = [
+  { id: '1m', label: '1m', ms: 60_000 },
+  { id: '5m', label: '5m', ms: 5 * 60_000 },
+  { id: '10m', label: '10m', ms: 10 * 60_000 },
+  { id: '30m', label: '30m', ms: 30 * 60_000 },
+]
+
+function computePriceWindowChanges(tickHistory, nowMs = Date.now()) {
+  if (!tickHistory?.length) return []
+  const current = tickHistory[tickHistory.length - 1]?.value
+  if (!current) return []
+  return PRICE_CHANGE_WINDOWS.map(win => {
+    const cutoff = nowMs / 1000 - win.ms / 1000
+    let pastVal = null
+    for (let i = tickHistory.length - 1; i >= 0; i--) {
+      if (tickHistory[i].time <= cutoff) { pastVal = tickHistory[i].value; break }
+    }
+    if (pastVal == null && tickHistory.length > 1) {
+      pastVal = tickHistory[0].value
+    }
+    const pct = pastVal != null && pastVal > 0
+      ? Math.round(((current - pastVal) / pastVal) * 10000) / 100
+      : null
+    return { ...win, pct }
+  })
+}
+
+function PriceChangeBadges({ tickHistory }) {
+  const [windows, setWindows] = useState(() => computePriceWindowChanges(tickHistory))
+  const tickRef = useRef(tickHistory)
+  tickRef.current = tickHistory
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setWindows(computePriceWindowChanges(tickRef.current))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  useEffect(() => {
+    setWindows(computePriceWindowChanges(tickHistory))
+  }, [tickHistory])
+
+  const visible = windows.filter(w => w.pct != null)
+  if (!visible.length) return null
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      {windows.map(win => {
+        if (win.pct == null) return (
+          <span key={win.id} className="rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums bg-muted/15 text-text-secondary/60">
+            {win.label} —
+          </span>
+        )
+        const up = win.pct > 0
+        const flat = win.pct === 0
+        return (
+          <span
+            key={win.id}
+            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums whitespace-nowrap ${
+              up ? 'bg-green/12 text-[var(--sd-green)]' : flat ? 'bg-muted/25 text-text-secondary' : 'bg-red/12 text-[var(--sd-red)]'
+            }`}
+            title={`${win.label} change from session start`}
+          >
+            {win.label} {win.pct > 0 ? '+' : ''}{win.pct.toFixed(2)}%
+          </span>
+        )
+      })}
+    </div>
+  )
+}
 
 function strategyTitle(execution) {
   if (!execution) return 'Strategy'
@@ -75,10 +150,13 @@ function DetailChip({ children }) {
   return <span className="sd-chip">{children}</span>
 }
 
-function MetricTile({ label, value, valueClass = '' }) {
+function MetricTile({ label, value, valueClass = '', headerAction = null }) {
   return (
     <div className="sd-stat">
-      <div className="label">{label}</div>
+      <div className="flex items-center justify-between gap-2">
+        <div className="label">{label}</div>
+        {headerAction}
+      </div>
       <div className={`value ${valueClass}`}>{value}</div>
     </div>
   )
@@ -322,6 +400,7 @@ function PositionsPanel({ executorId, execution, livePrice = null }) {
           </div>
         </div>
 
+        {/* Second row when live data is present: show SL, TP plus P&L bar */}
         {live && isOpen && (
           <div className="mb-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[12px] sm:grid-cols-4">
             <div />
@@ -486,27 +565,40 @@ export default function StrategyDetailView({
 }) {
   const [logOpen, setLogOpen] = useState(false)
   const [filledQty, setFilledQty] = useState(null)
+  const [takeProfitMode, setTakeProfitMode] = useState(TAKE_PROFIT_MODE_PERCENT)
   const levels = useMemo(() => computeExecutionLevels(execution || {}), [execution])
   const broker = execution?.broker
-  // Latest price from the chart's live feed, reused to compute position P&L.
-  const livePrice = useMemo(() => {
-    const planeId = execution?.data_plane_id
-    const token = execution?.token
-    const stream = planeId ? planeStreams?.[planeId] : null
-    if (!stream || !planeId || !token) return null
-    let hist = stream.tickHistory?.[`${planeId}:${token}`]
-    if (!hist?.length) {
-      const symbol = String(execution?.symbol || '').trim().toUpperCase()
-      for (const [k, h] of Object.entries(stream.tickHistory || {})) {
-        if (k.startsWith(`${planeId}:`) && Array.isArray(h) && h.length) {
-          const tick = stream.ticks?.[k]
-          if (String(tick?.symbol || '').trim().toUpperCase() === symbol) { hist = h; break }
-        }
+
+  const activeTickHistory = useMemo(() => {
+    if (!planeStreams || !execution?.data_plane_id) return []
+    const stream = planeStreams[execution.data_plane_id]
+    if (!stream) return []
+    const token = execution.token
+    const planeId = execution.data_plane_id
+    if (!token || !planeId) return []
+    const key = `${planeId}:${token}`
+    const hist = stream.tickHistory?.[key]
+    if (hist?.length) return hist
+    // fallback: scan for matching symbol
+    const symbol = String(execution.symbol || '').trim().toUpperCase()
+    for (const [k, h] of Object.entries(stream.tickHistory || {})) {
+      if (k.startsWith(`${planeId}:`) && Array.isArray(h) && h.length) {
+        const tick = stream.ticks?.[k]
+        if (String(tick?.symbol || '').trim().toUpperCase() === symbol) return h
       }
     }
-    const last = hist?.[hist.length - 1]?.value
-    return Number.isFinite(last) && last > 0 ? Number(last) : null
+    return []
   }, [planeStreams, execution?.data_plane_id, execution?.token, execution?.symbol, selectedTick])
+  const livePrice = useMemo(() => {
+    const last = activeTickHistory?.[activeTickHistory.length - 1]?.value
+    return Number.isFinite(last) && last > 0 ? Number(last) : null
+  }, [activeTickHistory])
+  const takeProfitMetricLabel = takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? 'Potential profit' : 'Take profit %'
+  const takeProfitMetricValue = takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE
+    ? (levels.potentialProfitAbsolute != null
+      ? formatBrokerCompactMoney(broker, levels.potentialProfitAbsolute)
+      : '—')
+    : (execution?.long_percent != null ? `${execution.long_percent}%` : '—')
   const port = execution?.data_plane_port || queuedItem?.engine?.port
   const pnl = 0
   const qtyDecimals = execution?.allow_partial_stocks ? 2 : 0
@@ -654,6 +746,11 @@ export default function StrategyDetailView({
               {execution?.symbol ? <DetailChip>{execution.symbol}</DetailChip> : null}
               {port ? <DetailChip>Runtime :{port}</DetailChip> : null}
             </div>
+            {activeTickHistory.length > 1 ? (
+              <div className="mt-2">
+                <PriceChangeBadges tickHistory={activeTickHistory} />
+              </div>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Link to="/trade/strategies" className="sd-btn">
@@ -744,11 +841,15 @@ export default function StrategyDetailView({
               : '—'}
           />
           <MetricTile
-            label="Potential profit"
-            value={levels.potentialProfitAbsolute != null
-              ? formatBrokerCompactMoney(broker, levels.potentialProfitAbsolute)
-              : '—'}
+            label={takeProfitMetricLabel}
+            value={takeProfitMetricValue}
             valueClass="text-[var(--sd-green)]"
+            headerAction={(
+              <TakeProfitModeToggle
+                mode={takeProfitMode}
+                onChange={setTakeProfitMode}
+              />
+            )}
           />
           <MetricTile
             label="P&L"

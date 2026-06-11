@@ -9,10 +9,33 @@ from brokers.etoro.order_helpers import (
     diff_position_executions,
     is_order_close_fulfilled,
     is_order_entry_fulfilled,
+    normalize_etoro_order_payload,
     position_ids_from_order_status,
     positions_from_order_lookup,
     resolve_bracket_stop_loss_rate,
+    round_etoro_price,
+    round_etoro_units,
 )
+
+
+def test_round_etoro_price_normalizes_float_noise():
+    assert round_etoro_price(1999.0800000000002) == 1999.08
+
+
+def test_round_etoro_units_normalizes_to_six_decimals():
+    assert round_etoro_units(2.1291234567) == 2.129123
+
+
+def test_normalize_etoro_order_payload_rounds_money_fields():
+    payload = normalize_etoro_order_payload({
+        "action": "open",
+        "amount": 1999.0800000000002,
+        "stopLossRate": 98.00000000000001,
+        "units": 1.269991,
+    })
+    assert payload["amount"] == 1999.08
+    assert payload["stopLossRate"] == 98.0
+    assert payload["units"] == 1.269991
 
 
 def test_resolve_bracket_stop_loss_rate_uses_explicit_value():

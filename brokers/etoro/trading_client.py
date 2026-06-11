@@ -3,7 +3,12 @@ import json
 from typing import Any
 
 from brokers.etoro.client import EtoroClient
-from brokers.etoro.order_helpers import apply_v1_bracket_fields, resolve_bracket_stop_loss_rate
+from brokers.etoro.order_helpers import (
+    apply_v1_bracket_fields,
+    normalize_etoro_order_payload,
+    resolve_bracket_stop_loss_rate,
+    round_etoro_price,
+)
 from brokers.interfaces import TickClient, Subscription, LTPData
 from logzero import logger
 
@@ -74,7 +79,7 @@ class EtoroTradingClient(EtoroClient, TickClient):
             "InstrumentID": instrument_id,
             "IsBuy": True,
             "Leverage": self._default_leverage(),
-            "Amount": float(available_capital),
+            "Amount": round_etoro_price(available_capital),
         }
         return await self._place_market_open_by_amount(payload, "BUY")
 
@@ -235,10 +240,10 @@ class EtoroTradingClient(EtoroClient, TickClient):
                 units_to_deduct = None
 
         path = f"{self.execution_base_path()}/market-close-orders/positions/{position_id}"
-        payload = {
+        payload = normalize_etoro_order_payload({
             "InstrumentID": int(resolved_instrument_id),
             "UnitsToDeduct": units_to_deduct,
-        }
+        })
 
         logger.info(
             "[eToro] close_position REQUEST position=%s path=%s payload=%s",
@@ -321,17 +326,18 @@ class EtoroTradingClient(EtoroClient, TickClient):
 
     async def _place_market_open_by_amount(self, payload, side_label):
         endpoint = f"{self.execution_base_path()}/market-open-orders/by-amount"
+        normalized_payload = normalize_etoro_order_payload(payload)
         logger.info(
             "[eToro] %s request endpoint=%s payload=%s",
             side_label,
             endpoint,
-            json.dumps(payload, sort_keys=True),
+            json.dumps(normalized_payload, sort_keys=True),
         )
         try:
             response = await self.arequest(
                 "POST",
                 endpoint,
-                json_body=payload,
+                json_body=normalized_payload,
                 trade_execution=True,
             )
             return self._order_result(response)
@@ -399,7 +405,7 @@ class EtoroBracketTradingClient(EtoroTradingClient):
             "InstrumentID": instrument_id,
             "IsBuy": True,
             "Leverage": self._default_leverage(),
-            "Amount": float(available_capital),
+            "Amount": round_etoro_price(available_capital),
         }
         apply_v1_bracket_fields(
             payload,

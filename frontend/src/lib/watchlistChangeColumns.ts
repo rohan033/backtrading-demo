@@ -52,7 +52,7 @@ export function watchlistTableMinWidthPx(visibleChangeColumnCount: number): numb
   const trend = 36
   const change = 60 * visibleChangeColumnCount
   const tick = 64
-  const remove = 92
+  const remove = 118
   const chrome = 28
   // gap-x-1.5 (6px) gutters between every track keeps columns visually separated.
   const trackCount = visibleChangeColumnCount + 5
@@ -69,8 +69,8 @@ export function buildWatchlistTableGrid(visibleChangeColumns: WatchlistChangeWin
   for (const _column of visibleChangeColumns) {
     parts.push('3.625rem')
   }
-  // last track holds the per-row momentum (×2) + remove actions
-  parts.push('4rem', '5.75rem')
+  // last track holds D/L pill + momentum (×2) + remove actions
+  parts.push('4rem', '7.375rem')
   return parts.join(' ')
 }
 

@@ -10,6 +10,7 @@
 const MOMENTUM_WL_IDS_KEY = 'wl-momentum-ids-v1'
 const MOMENTUM_SYMBOL_KEYS_KEY = 'wl-momentum-symbols-v1'
 const MOMENTUM_NOTP_SYMBOL_KEYS_KEY = 'wl-momentum-notp-symbols-v1'
+const MOMENTUM_LIVE_SYMBOL_KEYS_KEY = 'wl-momentum-live-symbols-v1'
 const SYMBOL_ORDER_KEY_PREFIX = 'wl-sym-order-'
 const ARCHIVED_KEY = 'wl-momentum-archived-v1'
 
@@ -130,6 +131,40 @@ export function setMomentumSymbolMode(
   saveMomentumSymbolKeys(nextNormal)
   saveMomentumNoTpSymbolKeys(nextNoTp)
   return { normal: nextNormal, noTp: nextNoTp }
+}
+
+// ── Per-symbol live/demo deploy target ────────────────────────────────────────
+// Keys present in this set deploy momentum trades on live; absent keys use demo.
+
+export function loadMomentumLiveSymbolKeys(): Set<string> {
+  try {
+    const raw = localStorage.getItem(MOMENTUM_LIVE_SYMBOL_KEYS_KEY)
+    if (!raw) return new Set()
+    return new Set(JSON.parse(raw) as string[])
+  } catch {
+    return new Set()
+  }
+}
+
+export function saveMomentumLiveSymbolKeys(keys: Set<string>): void {
+  localStorage.setItem(MOMENTUM_LIVE_SYMBOL_KEYS_KEY, JSON.stringify([...keys]))
+}
+
+/** Toggles live deploy for one symbol and returns the new set. */
+export function toggleMomentumLiveSymbolKey(
+  current: Set<string>,
+  watchlistId: string,
+  symboltoken: string,
+): Set<string> {
+  const key = momentumSymbolKey(watchlistId, symboltoken)
+  const next = new Set(current)
+  if (next.has(key)) {
+    next.delete(key)
+  } else {
+    next.add(key)
+  }
+  saveMomentumLiveSymbolKeys(next)
+  return next
 }
 
 // ── Symbol order overrides ────────────────────────────────────────────────────

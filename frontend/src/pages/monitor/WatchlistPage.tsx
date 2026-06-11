@@ -4,6 +4,7 @@ import { Archive, Plus, X } from 'lucide-react'
 import DraggableWatchlistCard from '../../components/watchlist/DraggableWatchlistCard'
 import WatchlistColumn from '../../components/watchlist/WatchlistColumn'
 import WatchlistColumnPicker from '../../components/watchlist/WatchlistColumnPicker'
+import WatchlistAutoSort from '../../components/watchlist/WatchlistAutoSort'
 import WatchlistMomentumSettings from '../../components/watchlist/WatchlistMomentumSettings'
 import { Button } from '../../components/ui/button'
 import {
@@ -18,6 +19,11 @@ import { watchlistTickKey } from '../../lib/watchlists'
 import { useWatchlistHistorySeeder } from '../../hooks/useWatchlistHistorySeeder'
 import { useWatchlistPriceHistory } from '../../hooks/useWatchlistPriceHistory'
 import { useWatchlistTicks } from '../../hooks/useWatchlistTicks'
+import {
+  loadWatchlistAutoSortConfig,
+  sortSymbolsByWindowChange,
+  type WatchlistAutoSortConfig,
+} from '../../lib/watchlistAutoSort'
 import { loadMomentumConfig, type MomentumConfig } from '../../lib/watchlistMomentum'
 import {
   loadVisibleChangeColumns,
@@ -54,6 +60,7 @@ import {
   archiveSymbol,
   clearArchivedSymbols,
   loadArchivedSymbols,
+  loadMomentumLiveSymbolKeys,
   loadMomentumNoTpSymbolKeys,
   loadMomentumSymbolKeys,
   loadMomentumWatchlistIds,
@@ -61,6 +68,7 @@ import {
   removeArchivedSymbol,
   saveSymbolOrder,
   setMomentumSymbolMode,
+  toggleMomentumLiveSymbolKey,
   toggleMomentumWatchlistId,
   type ArchivedMomentumSymbol,
 } from '../../lib/watchlistMomentumState'
@@ -76,6 +84,9 @@ export default function WatchlistPage() {
     () => loadVisibleChangeColumns(),
   )
   const [momentumConfig, setMomentumConfig] = useState<MomentumConfig>(() => loadMomentumConfig())
+  const [autoSortConfig, setAutoSortConfig] = useState<WatchlistAutoSortConfig>(
+    () => loadWatchlistAutoSortConfig(),
+  )
 
   // Momentum-trade watchlist state (all persisted in localStorage)
   const [momentumWatchlistIds, setMomentumWatchlistIds] = useState<Set<string>>(
@@ -86,6 +97,9 @@ export default function WatchlistPage() {
   )
   const [momentumNoTpSymbolKeys, setMomentumNoTpSymbolKeys] = useState<Set<string>>(
     () => loadMomentumNoTpSymbolKeys(),
+  )
+  const [momentumLiveSymbolKeys, setMomentumLiveSymbolKeys] = useState<Set<string>>(
+    () => loadMomentumLiveSymbolKeys(),
   )
   const [symbolOrders, setSymbolOrders] = useState<Record<string, string[]>>(() => {
     // Pre-load any saved orders when the component mounts (watchlists aren't loaded yet,
@@ -103,11 +117,23 @@ export default function WatchlistPage() {
   // Pre-seed local price history from candle data so % changes are visible immediately on load
   useWatchlistHistorySeeder(watchlists, historyRef, forceRecompute)
 
-  /** Returns symbols for a watchlist with any saved order applied. */
+  /** Returns symbols for a watchlist — auto-sorted or manual drag order. */
   const orderedSymbolsFor = useCallback(
-    (wl: Watchlist): WatchlistSymbol[] =>
-      applySymbolOrder(wl.symbols, symbolOrders[wl.id] ?? null),
-    [symbolOrders],
+    (wl: Watchlist): WatchlistSymbol[] => {
+      if (autoSortConfig.enabled) {
+        const broker = (wl.broker || 'angel') as WatchlistBroker
+        const accountEnv = wl.account_env || defaultAccountEnv(broker)
+        return sortSymbolsByWindowChange(
+          wl.symbols,
+          broker,
+          accountEnv,
+          windowChanges,
+          autoSortConfig.column,
+        )
+      }
+      return applySymbolOrder(wl.symbols, symbolOrders[wl.id] ?? null)
+    },
+    [autoSortConfig, symbolOrders, windowChanges],
   )
 
   /** Stable map of ordered symbols used by the momentum hook — only recomputes when watchlists or orders change. */
@@ -136,9 +162,23 @@ export default function WatchlistPage() {
     setMomentumNoTpSymbolKeys(noTp)
   }, [momentumSymbolKeys, momentumNoTpSymbolKeys])
 
+  const handleToggleSymbolMomentumLive = useCallback((watchlistId: string, symboltoken: string) => {
+    setMomentumLiveSymbolKeys(prev => toggleMomentumLiveSymbolKey(prev, watchlistId, symboltoken))
+  }, [])
+
   const handleSymbolsReordered = useCallback((watchlistId: string, tokens: string[]) => {
     saveSymbolOrder(watchlistId, tokens)
     setSymbolOrders(prev => ({ ...prev, [watchlistId]: tokens }))
+  }, [])
+
+  const handleMetricsChange = useCallback((watchlistId: string, next: WatchlistCardMetrics) => {
+    setCardMetrics(prev => {
+      const current = prev[watchlistId]
+      if (current?.symbolCount === next.symbolCount && current?.searchOpen === next.searchOpen) {
+        return prev
+      }
+      return { ...prev, [watchlistId]: next }
+    })
   }, [])
 
   const handleSymbolArchived: SymbolArchivedCallback = useCallback(params => {
@@ -159,11 +199,12 @@ export default function WatchlistPage() {
     })
   }, [])
 
-  useWatchlistMomentumAlerts({
+  const { monitoredSymbols } = useWatchlistMomentumAlerts({
     watchlists,
     momentumWatchlistIds,
     momentumSymbolKeys,
     momentumNoTpSymbolKeys,
+    momentumLiveSymbolKeys,
     orderedSymbols: allOrderedSymbols,
     ticks,
     windowChanges,
@@ -363,12 +404,17 @@ export default function WatchlistPage() {
               <span className="ml-2">
                 {connected ? '· Live' : '· Connecting…'}
                 {momentumConfig.enabled ? ' · Momentum on' : ''}
+                {autoSortConfig.enabled ? ` · Auto-sort ${autoSortConfig.column}` : ''}
               </span>
             )}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <WatchlistMomentumSettings onChange={setMomentumConfig} />
+          <WatchlistMomentumSettings
+            onChange={setMomentumConfig}
+            monitoredSymbols={monitoredSymbols}
+          />
+          <WatchlistAutoSort config={autoSortConfig} onChange={setAutoSortConfig} />
           <WatchlistColumnPicker
             visibleColumns={visibleChangeColumns}
             onChange={handleVisibleChangeColumns}
@@ -484,7 +530,8 @@ export default function WatchlistPage() {
                       broker: (wl.broker || 'angel') as WatchlistBroker,
                       account_env: wl.account_env || defaultAccountEnv((wl.broker || 'angel') as WatchlistBroker),
                     }}
-                    orderedSymbols={orderedSymbolsFor(wl)}
+                    orderedSymbols={allOrderedSymbols[wl.id]}
+                    autoSortEnabled={autoSortConfig.enabled}
                     ticks={ticks}
                     windowChanges={windowChanges}
                     visibleChangeColumns={visibleChangeColumns}
@@ -494,6 +541,8 @@ export default function WatchlistPage() {
                     onToggleSymbolMomentum={handleToggleSymbolMomentum}
                     momentumNoTpSymbolKeys={momentumNoTpSymbolKeys}
                     onToggleSymbolMomentumNoTp={handleToggleSymbolMomentumNoTp}
+                    momentumLiveSymbolKeys={momentumLiveSymbolKeys}
+                    onToggleSymbolMomentumLive={handleToggleSymbolMomentumLive}
                     onRename={handleRename}
                     onDelete={handleDelete}
                     onBrokerChange={handleBrokerChange}
@@ -501,9 +550,7 @@ export default function WatchlistPage() {
                     onAddSymbol={handleAddSymbol}
                     onRemoveSymbol={handleRemoveSymbol}
                     onSymbolsReordered={handleSymbolsReordered}
-                    onMetricsChange={next =>
-                      setCardMetrics(prev => ({ ...prev, [wl.id]: next }))
-                    }
+                    onMetricsChange={handleMetricsChange}
                   />
                 </DraggableWatchlistCard>
               )

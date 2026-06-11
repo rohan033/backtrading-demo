@@ -1529,7 +1529,31 @@ function PortfolioTab({ ticks, liveApi, execution }) {
   )
 }
 
-function HighlightMetricCard({ label, value, tone = 'default', mono = true, size = 'lg' }) {
+export const TAKE_PROFIT_MODE_PERCENT = 'percent'
+export const TAKE_PROFIT_MODE_ABSOLUTE = 'absolute'
+
+export function TakeProfitModeToggle({ mode, onChange, className = '' }) {
+  return (
+    <div className={`inline-flex rounded border border-border/70 bg-secondary/40 p-0.5 text-[10px] ${className}`}>
+      <button
+        type="button"
+        onClick={() => onChange(TAKE_PROFIT_MODE_PERCENT)}
+        className={`rounded px-2 py-1 font-semibold ${mode === TAKE_PROFIT_MODE_PERCENT ? 'bg-accent/20 text-accent' : 'text-text-secondary'}`}
+      >
+        %
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(TAKE_PROFIT_MODE_ABSOLUTE)}
+        className={`rounded px-2 py-1 font-semibold ${mode === TAKE_PROFIT_MODE_ABSOLUTE ? 'bg-accent/20 text-accent' : 'text-text-secondary'}`}
+      >
+        $
+      </button>
+    </div>
+  )
+}
+
+function HighlightMetricCard({ label, value, tone = 'default', mono = true, size = 'lg', action = null }) {
   const valueToneClass = tone === 'profit'
     ? 'text-green'
     : tone === 'loss'
@@ -1580,10 +1604,17 @@ export function ServerInfoPanel({ port, apiBaseUrl, wsUrl, logFile, pending = fa
 }
 
 function StrategyParametersPanel({ execution, onRefresh }) {
+  const [takeProfitMode, setTakeProfitMode] = useState(TAKE_PROFIT_MODE_PERCENT)
+  const levels = useMemo(() => computeExecutionLevels(execution), [execution])
   const closePrice = execution.close_price != null
     ? formatBrokerPrice(execution.broker, execution.close_price)
     : '—'
-  const takeProfit = execution.long_percent != null ? `${execution.long_percent}%` : '—'
+  const takeProfit = takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE
+    ? (levels.potentialProfitAbsolute != null
+      ? formatBrokerCompactMoney(execution.broker, levels.potentialProfitAbsolute)
+      : '—')
+    : (execution.long_percent != null ? `${execution.long_percent}%` : '—')
+  const takeProfitLabel = takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? 'Potential profit' : 'Take profit'
   const stopLoss = formatStopLossSetting(execution, execution.broker)
   const entryThreshold = execution.initial_threshold != null ? `${execution.initial_threshold}%` : '—'
   const maxCapital = execution.max_available_capital != null
@@ -1599,7 +1630,18 @@ function StrategyParametersPanel({ execution, onRefresh }) {
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <HighlightMetricCard label="Take profit" value={takeProfit} tone="profit" size="xl" />
+        <HighlightMetricCard
+          label={takeProfitLabel}
+          value={takeProfit}
+          tone="profit"
+          size="xl"
+          action={(
+            <TakeProfitModeToggle
+              mode={takeProfitMode}
+              onChange={setTakeProfitMode}
+            />
+          )}
+        />
         <HighlightMetricCard label="Stop loss" value={stopLoss} tone="loss" size="xl" />
       </div>
 
@@ -2295,6 +2337,8 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
     tick_sample_every: '1',
     instrument_class: 'equity',
   })
+  const [takeProfitMode, setTakeProfitMode] = useState(TAKE_PROFIT_MODE_PERCENT)
+  const [profitTargetAmount, setProfitTargetAmount] = useState('')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [startingLive, setStartingLive] = useState(false)
@@ -2316,8 +2360,31 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
   })
 
   const levels = useMemo(
-    () => computeExecutionLevels(form),
-    [form.close_price, form.initial_threshold, form.long_percent, form.short_percent, form.stop_loss_amount, form.max_available_capital, form.allow_partial_stocks],
+    () => computeExecutionLevels(form, { takeProfitMode, profitTargetAmount }),
+    [
+      form.close_price,
+      form.initial_threshold,
+      form.long_percent,
+      form.short_percent,
+      form.stop_loss_amount,
+      form.max_available_capital,
+      form.allow_partial_stocks,
+      takeProfitMode,
+      profitTargetAmount,
+    ],
+  )
+
+  const resolvedLongPercent = useMemo(
+    () => resolveTakeProfitLongPercent(form, takeProfitMode, profitTargetAmount),
+    [
+      form.close_price,
+      form.initial_threshold,
+      form.long_percent,
+      form.max_available_capital,
+      form.allow_partial_stocks,
+      takeProfitMode,
+      profitTargetAmount,
+    ],
   )
 
   const stopLossAmountActive = parseStopLossAmount(form) != null
@@ -2394,10 +2461,18 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       exchange: template.exchange || executor.exchange || 'NSE',
     })
     setClosePriceManual(Boolean(template.close_price ?? executor.close_price))
+    setTakeProfitMode(TAKE_PROFIT_MODE_PERCENT)
+    setProfitTargetAmount('')
     setResults([])
     setQuery('')
     setError('')
   }, [duplicateDraft])
+
+  useEffect(() => {
+    if (takeProfitMode !== TAKE_PROFIT_MODE_PERCENT) return
+    if (levels.potentialProfitAbsolute == null) return
+    setProfitTargetAmount(String(levels.potentialProfitAbsolute))
+  }, [takeProfitMode, levels.potentialProfitAbsolute])
 
   useEffect(() => {
     if (ltp == null || closePriceManual || !selectedStock) return
@@ -2741,7 +2816,43 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
             highlighted={showHighCapitalWarning}
             warning={showHighCapitalWarning ? 'High capital — risky' : undefined}
           />
-          <FormField label="Take Profit %" type="number" value={form.long_percent} onChange={value => setForm(prev => ({ ...prev, long_percent: value }))} />
+          <div className="col-span-2 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[9px] uppercase tracking-[1.5px] text-text-secondary">
+                {takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? 'Potential profit' : 'Take profit %'}
+              </span>
+              <TakeProfitModeToggle
+                mode={takeProfitMode}
+                onChange={(nextMode) => {
+                  if (nextMode === TAKE_PROFIT_MODE_ABSOLUTE) {
+                    if (levels.potentialProfitAbsolute != null) {
+                      setProfitTargetAmount(String(levels.potentialProfitAbsolute))
+                    }
+                  }
+                  setTakeProfitMode(nextMode)
+                }}
+              />
+            </div>
+            {takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? (
+              <FormField
+                label="Target profit ($)"
+                type="number"
+                value={profitTargetAmount}
+                onChange={setProfitTargetAmount}
+                hint={resolvedLongPercent != null ? `≈ ${resolvedLongPercent.toFixed(2)}% from trigger` : undefined}
+              />
+            ) : (
+              <FormField
+                label="Take profit %"
+                type="number"
+                value={form.long_percent}
+                onChange={value => setForm(prev => ({ ...prev, long_percent: value }))}
+                hint={levels.potentialProfitAbsolute != null
+                  ? `≈ ${formatBrokerCompactMoney(form.broker, levels.potentialProfitAbsolute)} profit`
+                  : undefined}
+              />
+            )}
+          </div>
           <FormField
             label="Stop Loss Amount"
             type="number"
@@ -2791,6 +2902,9 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
           }}
           levels={levels}
           form={form}
+          takeProfitMode={takeProfitMode}
+          resolvedLongPercent={resolvedLongPercent}
+          profitTargetAmount={profitTargetAmount}
         />
       </div>
 
@@ -2888,6 +3002,9 @@ function MarketPreviewPanel({
   onUseLivePrice,
   levels,
   form,
+  takeProfitMode = TAKE_PROFIT_MODE_PERCENT,
+  resolvedLongPercent = null,
+  profitTargetAmount = '',
 }) {
   if (!selectedStock) {
     return (
@@ -2966,7 +3083,20 @@ function MarketPreviewPanel({
 
       <div className="grid grid-cols-1 gap-2 mt-auto">
         <PreviewLevelRow label="Buy Trigger" value={formatBrokerPrice(form.broker, levels.buyTrigger)} hint={`+${form.initial_threshold}% from close`} tone="accent" />
-        <PreviewLevelRow label="Take Profit" value={formatBrokerPrice(form.broker, levels.takeProfit)} hint={`+${form.long_percent}% from trigger`} tone="green" />
+        <PreviewLevelRow
+          label="Take Profit"
+          value={formatBrokerPrice(form.broker, levels.takeProfit)}
+          hint={
+            takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE
+              ? (profitTargetAmount
+                ? `${formatBrokerCompactMoney(form.broker, profitTargetAmount)} target · ≈ ${Number(resolvedLongPercent || 0).toFixed(2)}%`
+                : 'Set target profit ($)')
+              : `+${form.long_percent}% from trigger${levels.potentialProfitAbsolute != null
+                ? ` · ${formatBrokerCompactMoney(form.broker, levels.potentialProfitAbsolute)}`
+                : ''}`
+          }
+          tone="green"
+        />
         <PreviewLevelRow
           label="Stop Loss"
           value={formatBrokerPrice(form.broker, levels.stopLoss)}
@@ -3248,7 +3378,31 @@ export function formatStopLossSetting(source, broker = 'angel') {
   return '—'
 }
 
-export function computeExecutionLevels(source) {
+export function longPercentFromProfitTarget(source, profitTargetAmount) {
+  const closePrice = Number(source.close_price || 0)
+  if (!closePrice) return null
+  const buyTrigger = closePrice * (1 + Number(source.initial_threshold || 0) / 100)
+  const capital = Number(source.max_available_capital || 0)
+  const orderQuantity = computeOrderQuantity(
+    capital,
+    buyTrigger,
+    Boolean(source.allow_partial_stocks),
+  )
+  const target = Number(profitTargetAmount)
+  if (!orderQuantity || !buyTrigger || !Number.isFinite(target) || target <= 0) return null
+  return Math.round((target / (orderQuantity * buyTrigger)) * 10000) / 10000
+}
+
+export function resolveTakeProfitLongPercent(source, takeProfitMode, profitTargetAmount) {
+  if (takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE) {
+    const derived = longPercentFromProfitTarget(source, profitTargetAmount)
+    if (derived != null) return derived
+  }
+  return Number(source.long_percent || 0)
+}
+
+export function computeExecutionLevels(source, options = {}) {
+  const { takeProfitMode = TAKE_PROFIT_MODE_PERCENT, profitTargetAmount = '' } = options
   const closePrice = Number(source.close_price || 0)
   if (!closePrice) {
     return {
@@ -3263,7 +3417,8 @@ export function computeExecutionLevels(source) {
   }
 
   const buyTrigger = closePrice * (1 + Number(source.initial_threshold || 0) / 100)
-  const takeProfit = buyTrigger * (1 + Number(source.long_percent || 0) / 100)
+  const longPercent = resolveTakeProfitLongPercent(source, takeProfitMode, profitTargetAmount)
+  const takeProfit = buyTrigger * (1 + longPercent / 100)
   const capital = Number(source.max_available_capital || 0)
   const stopLossAmount = parseStopLossAmount(source)
   const stopLossUsesAmount = stopLossAmount != null && capital > stopLossAmount

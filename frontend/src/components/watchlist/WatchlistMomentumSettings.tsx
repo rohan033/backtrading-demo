@@ -8,8 +8,15 @@ import {
   type MomentumConfig,
 } from '../../lib/watchlistMomentum'
 
+type MonitoredSymbol = {
+  symbol: string
+  tradeEnv: 'live' | 'demo'
+  noTakeProfit: boolean
+}
+
 type Props = {
   onChange: (config: MomentumConfig) => void
+  monitoredSymbols?: MonitoredSymbol[]
 }
 
 function Row({
@@ -104,7 +111,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-export default function WatchlistMomentumSettings({ onChange }: Props) {
+export default function WatchlistMomentumSettings({ onChange, monitoredSymbols = [] }: Props) {
   const [open, setOpen] = useState(false)
   const [config, setConfig] = useState<MomentumConfig>(() => loadMomentumConfig())
   const rootRef = useRef<HTMLDivElement>(null)
@@ -158,12 +165,41 @@ export default function WatchlistMomentumSettings({ onChange }: Props) {
           <div className="px-3 pb-4">
             {/* ── Toggles ─────────────────────────────────────────── */}
             <Section title="Behaviour">
-              <Row label="Enable alerts" hint="Scan every symbol in all watchlists">
+              <Row
+                label="Enable alerts"
+                hint="Scans the first row of momentum watchlists plus any row you armed with the ⚡ button"
+              >
                 <Toggle checked={config.enabled} onChange={v => patch({ enabled: v })} />
               </Row>
-              <Row label="Auto-demo" hint="Auto-start strategy on demo when triggered">
+              <Row
+                label="Auto-demo"
+                hint="Auto-deploy on demo when triggered. Live rows (L pill) always auto-deploy."
+              >
                 <Toggle checked={config.autoDemo} onChange={v => patch({ autoDemo: v })} disabled={off} />
               </Row>
+              {config.enabled ? (
+                <div className="border-t border-border/30 py-2 text-[10px] leading-relaxed text-text-secondary/80">
+                  {monitoredSymbols.length > 0 ? (
+                    <>
+                      <span className="font-semibold text-text-secondary">Monitoring: </span>
+                      {monitoredSymbols.map(item => (
+                        <span key={item.symbol} className="mr-2 inline-flex items-center gap-1">
+                          <span className="font-medium text-text-primary">{item.symbol}</span>
+                          <span className={item.tradeEnv === 'live' ? 'text-red' : 'text-text-secondary/70'}>
+                            {item.tradeEnv}
+                          </span>
+                          {item.noTakeProfit ? <span className="text-blue-300">no-tp</span> : null}
+                        </span>
+                      ))}
+                    </>
+                  ) : (
+                    <span>
+                      No symbols monitored — enable a momentum watchlist or arm rows with the ⚡ button.
+                      Set per-row <span className="font-semibold">L</span> for live deploy.
+                    </span>
+                  )}
+                </div>
+              ) : null}
             </Section>
 
             {/* ── Mode selector ───────────────────────────────────── */}

@@ -4,6 +4,43 @@ from typing import Any
 
 DEFAULT_BRACKET_STOP_LOSS_AMOUNT = 20.0
 
+_ETORO_PRICE_KEYS = frozenset({
+    "amount",
+    "Amount",
+    "stopLossRate",
+    "takeProfitRate",
+    "StopLossRate",
+    "TakeProfitRate",
+    "UnitsToDeduct",
+})
+
+
+def round_etoro_price(value: float | int | str | None) -> float | None:
+    """Round monetary values sent to eToro to 2 decimal places."""
+    if value is None:
+        return None
+    return round(float(value), 2)
+
+
+def round_etoro_units(value: float | int | str | None) -> float | None:
+    """Round position units to eToro's 6-decimal precision."""
+    if value is None:
+        return None
+    return round(float(value), 6)
+
+
+def normalize_etoro_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize outgoing eToro order payload money/price fields to 2 decimals."""
+    normalized = dict(payload)
+    for key in _ETORO_PRICE_KEYS:
+        if key not in normalized or normalized[key] is None:
+            continue
+        try:
+            normalized[key] = round_etoro_price(normalized[key])
+        except (TypeError, ValueError):
+            continue
+    return normalized
+
 
 def stop_loss_rate_from_amount(ltp: float, invested_amount: float, max_loss_amount: float) -> float:
     if invested_amount <= max_loss_amount:
@@ -62,11 +99,11 @@ def apply_v1_bracket_fields(
     take_profit_rate: float | None,
     trailing_stop_loss: bool = False,
 ) -> dict[str, Any]:
-    payload["StopLossRate"] = float(stop_loss_rate)
+    payload["StopLossRate"] = round_etoro_price(stop_loss_rate)
     payload["IsNoStopLoss"] = False
     payload["IsTslEnabled"] = bool(trailing_stop_loss)
     if take_profit_rate is not None:
-        payload["TakeProfitRate"] = float(take_profit_rate)
+        payload["TakeProfitRate"] = round_etoro_price(take_profit_rate)
         payload["IsNoTakeProfit"] = False
     else:
         payload["IsNoTakeProfit"] = True
@@ -80,9 +117,9 @@ def apply_v2_bracket_fields(
     take_profit_rate: float | None,
     trailing_stop_loss: bool = False,
 ) -> dict[str, Any]:
-    payload["stopLossRate"] = float(stop_loss_rate)
+    payload["stopLossRate"] = round_etoro_price(stop_loss_rate)
     if take_profit_rate is not None:
-        payload["takeProfitRate"] = float(take_profit_rate)
+        payload["takeProfitRate"] = round_etoro_price(take_profit_rate)
     if trailing_stop_loss:
         payload["stopLossType"] = "trailing"
     return payload

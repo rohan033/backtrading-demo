@@ -133,6 +133,8 @@ type Props = {
   watchlist: Watchlist
   /** Symbols in display order (may differ from watchlist.symbols after drag-reorder). */
   orderedSymbols?: WatchlistSymbol[]
+  /** When true, row order is driven by auto-sort and drag-reorder is disabled. */
+  autoSortEnabled?: boolean
   ticks: Record<string, WatchlistTick>
   windowChanges: WatchlistWindowChanges
   visibleChangeColumns: WatchlistChangeWindowId[]
@@ -144,6 +146,9 @@ type Props = {
   /** Set of armed per-symbol no-take-profit momentum keys (`watchlistId::token`). */
   momentumNoTpSymbolKeys?: Set<string>
   onToggleSymbolMomentumNoTp?: (watchlistId: string, symboltoken: string) => void
+  /** Set of per-symbol keys that deploy momentum trades on live (absent = demo). */
+  momentumLiveSymbolKeys?: Set<string>
+  onToggleSymbolMomentumLive?: (watchlistId: string, symboltoken: string) => void
   onRename: (id: string, name: string) => void
   onDelete: (id: string) => void
   onBrokerChange: (id: string, broker: WatchlistBroker, accountEnv: string) => void
@@ -151,7 +156,7 @@ type Props = {
   onRemoveSymbol: (watchlistId: string, symboltoken: string) => void
   onSymbolsReordered?: (watchlistId: string, orderedTokens: string[]) => void
   onDeployAll?: (ctx: DeployAllContext) => Promise<void>
-  onMetricsChange?: (metrics: { symbolCount: number; searchOpen: boolean }) => void
+  onMetricsChange?: (watchlistId: string, metrics: { symbolCount: number; searchOpen: boolean }) => void
 }
 
 function directionStyles(direction: WatchlistTick['direction'] | undefined) {
@@ -179,6 +184,7 @@ function directionStyles(direction: WatchlistTick['direction'] | undefined) {
 export default function WatchlistColumn({
   watchlist,
   orderedSymbols,
+  autoSortEnabled = false,
   ticks,
   windowChanges,
   visibleChangeColumns,
@@ -188,6 +194,8 @@ export default function WatchlistColumn({
   onToggleSymbolMomentum,
   momentumNoTpSymbolKeys,
   onToggleSymbolMomentumNoTp,
+  momentumLiveSymbolKeys,
+  onToggleSymbolMomentumLive,
   onRename,
   onDelete,
   onBrokerChange,
@@ -241,9 +249,15 @@ export default function WatchlistColumn({
     if (editingName) nameInputRef.current?.focus()
   }, [editingName])
 
+  const lastMetricsRef = useRef<{ symbolCount: number; searchOpen: boolean } | null>(null)
   useEffect(() => {
-    onMetricsChange?.({ symbolCount: watchlist.symbols.length, searchOpen: adding })
-  }, [watchlist.symbols.length, adding, onMetricsChange])
+    if (!onMetricsChange) return
+    const next = { symbolCount: watchlist.symbols.length, searchOpen: adding }
+    const prev = lastMetricsRef.current
+    if (prev?.symbolCount === next.symbolCount && prev?.searchOpen === next.searchOpen) return
+    lastMetricsRef.current = next
+    onMetricsChange(watchlist.id, next)
+  }, [watchlist.id, watchlist.symbols.length, adding, onMetricsChange])
 
   const commitRename = () => {
     const trimmed = nameDraft.trim()
@@ -509,17 +523,25 @@ export default function WatchlistColumn({
             const symbolMomentumKey = momentumSymbolKey(watchlist.id, symbol.symboltoken)
             const symbolMomentumOn = momentumSymbolKeys?.has(symbolMomentumKey) ?? false
             const symbolMomentumNoTpOn = momentumNoTpSymbolKeys?.has(symbolMomentumKey) ?? false
+            const symbolMomentumLiveOn = momentumLiveSymbolKeys?.has(symbolMomentumKey) ?? false
+            const symbolMomentumArmed = symbolMomentumOn || symbolMomentumNoTpOn || (isMomentumWatchlist && isFirst)
 
             return (
               <div
                 key={symbol.symboltoken}
-                draggable
-                onDragStart={() => handleDragStart(symbol.symboltoken)}
-                onDragOver={e => handleDragOver(e, symbol.symboltoken)}
-                onDrop={e => handleDrop(e, symbol.symboltoken)}
+                draggable={!autoSortEnabled}
+                onDragStart={() => {
+                  if (!autoSortEnabled) handleDragStart(symbol.symboltoken)
+                }}
+                onDragOver={e => {
+                  if (!autoSortEnabled) handleDragOver(e, symbol.symboltoken)
+                }}
+                onDrop={e => {
+                  if (!autoSortEnabled) handleDrop(e, symbol.symboltoken)
+                }}
                 onDragEnd={handleDragEnd}
                 className={`group grid items-center gap-x-1.5 border-t transition-colors hover:bg-accent/[0.04] ${
-                  isDragOver
+                  isDragOver && !autoSortEnabled
                     ? 'border-t-2 border-t-accent bg-accent/10'
                     : 'border-t-border/40'
                 }`}
@@ -527,7 +549,9 @@ export default function WatchlistColumn({
               >
                 {/* Drag handle + first-row crown */}
                 <div className={`flex min-w-0 items-center gap-1 ${density.cellPad}`}>
-                  <GripVertical className="h-3.5 w-3.5 shrink-0 cursor-grab text-text-secondary/30 opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing" />
+                  {!autoSortEnabled ? (
+                    <GripVertical className="h-3.5 w-3.5 shrink-0 cursor-grab text-text-secondary/30 opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing" />
+                  ) : null}
                   {isMomentumWatchlist && isFirst && (
                     <span
                       title="Next momentum trade candidate"
@@ -585,7 +609,54 @@ export default function WatchlistColumn({
                     }
                   </span>
                 </div>
-                <div className="flex items-center justify-end gap-0.5 px-0.5">
+                <div className="flex min-w-0 max-w-full items-center justify-end gap-px">
+                  {onToggleSymbolMomentumLive && (
+                    <div
+                      className={`inline-flex h-6 w-8 shrink-0 items-stretch overflow-hidden rounded-full border border-border/50 bg-secondary/40 p-px transition-opacity ${
+                        symbolMomentumArmed || symbolMomentumLiveOn
+                          ? ''
+                          : 'opacity-0 group-hover:opacity-100'
+                      }`}
+                      title={
+                        symbolMomentumLiveOn
+                          ? 'Momentum deploys on live — click D for demo'
+                          : 'Momentum deploys on demo — click L for live'
+                      }
+                    >
+                      <button
+                        type="button"
+                        aria-pressed={!symbolMomentumLiveOn}
+                        onClick={() => {
+                          if (symbolMomentumLiveOn) {
+                            onToggleSymbolMomentumLive(watchlist.id, symbol.symboltoken)
+                          }
+                        }}
+                        className={`flex flex-1 items-center justify-center rounded-full text-[8px] font-bold leading-none transition-colors ${
+                          !symbolMomentumLiveOn
+                            ? 'bg-background text-text-primary shadow-sm'
+                            : 'text-text-secondary/50 hover:text-text-secondary'
+                        }`}
+                      >
+                        D
+                      </button>
+                      <button
+                        type="button"
+                        aria-pressed={symbolMomentumLiveOn}
+                        onClick={() => {
+                          if (!symbolMomentumLiveOn) {
+                            onToggleSymbolMomentumLive(watchlist.id, symbol.symboltoken)
+                          }
+                        }}
+                        className={`flex flex-1 items-center justify-center rounded-full text-[8px] font-bold leading-none transition-colors ${
+                          symbolMomentumLiveOn
+                            ? 'bg-red/25 text-red shadow-sm'
+                            : 'text-text-secondary/50 hover:text-text-secondary'
+                        }`}
+                      >
+                        L
+                      </button>
+                    </div>
+                  )}
                   {onToggleSymbolMomentum && (
                     <button
                       type="button"

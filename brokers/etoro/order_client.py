@@ -4,8 +4,11 @@ from typing import Any
 from brokers.etoro.client import EtoroApiError
 from brokers.etoro.order_helpers import (
     apply_v2_bracket_fields,
+    normalize_etoro_order_payload,
     position_ids_from_order_status,
     resolve_bracket_stop_loss_rate,
+    round_etoro_price,
+    round_etoro_units,
 )
 from brokers.etoro.settlement import etoro_settlement_type
 from brokers.etoro.trading_client import EtoroTradingClient
@@ -158,11 +161,11 @@ class EtoroV2OrderClient(EtoroTradingClient):
             "orderType": "mkt",
             "leverage": self._default_leverage(),
         }
-        if amount is not None:
-            payload["amount"] = float(amount)
-            payload["orderCurrency"] = "usd"
         if units is not None:
-            payload["units"] = float(units)
+            payload["units"] = round_etoro_units(units)
+        elif amount is not None:
+            payload["amount"] = round_etoro_price(amount)
+            payload["orderCurrency"] = "usd"
         if stop_loss_rate is not None:
             apply_v2_bracket_fields(
                 payload,
@@ -174,17 +177,18 @@ class EtoroV2OrderClient(EtoroTradingClient):
 
     async def _place_v2_open_order(self, payload: dict[str, Any], side_label: str):
         endpoint = self._v2_execution_orders_path()
+        normalized_payload = normalize_etoro_order_payload(payload)
         logger.info(
             "[eToro v2] %s request endpoint=%s payload=%s",
             side_label,
             endpoint,
-            json.dumps(payload, sort_keys=True),
+            json.dumps(normalized_payload, sort_keys=True),
         )
         try:
             response = await self.arequest_v2(
                 "POST",
                 endpoint,
-                json_body=payload,
+                json_body=normalized_payload,
                 trade_execution=True,
             )
             return self._order_result(response)
@@ -218,6 +222,7 @@ class EtoroV2BracketOrderClient(EtoroV2OrderClient):
         stop_loss_rate,
         trailing_stop_loss=False,
         instrument_class="equity",
+        quantity: float | None = None,
     ):
         if available_capital <= 0:
             logger.warning("[eToro] Capital %.2f too low for bracket BUY", available_capital)
@@ -238,12 +243,38 @@ class EtoroV2BracketOrderClient(EtoroV2OrderClient):
             logger.error("[eToro] %s", exc)
             return {}
 
+        units = None
+        if quantity is not None:
+            try:
+                parsed_units = round_etoro_units(quantity)
+            except (TypeError, ValueError):
+                parsed_units = None
+            if parsed_units is not None and parsed_units > 0:
+                units = parsed_units
+        if units is None and ltp:
+            try:
+                derived = round_etoro_units(float(available_capital) / float(ltp))
+                if derived and derived > 0:
+                    units = derived
+            except (TypeError, ValueError, ZeroDivisionError):
+                units = None
+        if units is not None and units <= 0:
+            logger.error(
+                "[eToro] Bracket BUY aborted for %s: computed units=%s (amount=%.2f ltp=%s)",
+                symbol,
+                units,
+                available_capital,
+                ltp,
+            )
+            return {}
+
         settlement_type = etoro_settlement_type(instrument_class)
+        sizing = f"units={units}" if units is not None else f"amount={available_capital:.2f}"
         logger.info(
-            "[eToro v2] Placing bracket BUY: symbol=%s amount=%.2f ref_price=%.2f "
+            "[eToro v2] Placing bracket BUY: symbol=%s %s ref_price=%.2f "
             "TP=%s SL=%.2f settlementType=%s instrument_class=%s",
             symbol,
-            available_capital,
+            sizing,
             ltp,
             take_profit_rate,
             resolved_stop_loss_rate,
@@ -254,7 +285,8 @@ class EtoroV2BracketOrderClient(EtoroV2OrderClient):
         payload = self._build_v2_open_payload(
             instrument_id=instrument_id,
             is_buy=True,
-            amount=float(available_capital),
+            amount=None if units is not None else float(available_capital),
+            units=units,
             stop_loss_rate=resolved_stop_loss_rate,
             take_profit_rate=take_profit_rate,
             trailing_stop_loss=trailing_stop_loss,

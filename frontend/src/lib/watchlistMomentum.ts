@@ -239,7 +239,6 @@ export function detectRapidPositiveMomentum(
   const velocity30s = shortTermVelocityPct(samples, now)
 
   if (change1m == null) return null
-  if (samples.length < 2) return null
 
   // ════════════════════════════════════════════════════════════════════════
   // SIMPLE MODE — only the 1m threshold matters
@@ -257,6 +256,7 @@ export function detectRapidPositiveMomentum(
   // ════════════════════════════════════════════════════════════════════════
   // COMPLEX MODE — full filter chain
   // ════════════════════════════════════════════════════════════════════════
+  if (samples.length < 2) return null
   if (change5m == null) return null
 
   // ── price filter ────────────────────────────────────────────────────────

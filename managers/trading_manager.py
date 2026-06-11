@@ -139,6 +139,7 @@ class TradingManager:
                 take_profit_rate=signal.take_profit_price,
                 stop_loss_rate=signal.stop_loss_price,
                 instrument_class=instrument_class,
+                quantity=getattr(signal, 'quantity', None),
             )
         else:
             buy_result = await self.client.abuy(
