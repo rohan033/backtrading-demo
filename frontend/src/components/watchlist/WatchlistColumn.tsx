@@ -31,40 +31,87 @@ type SearchHit = {
   exchange: string
 }
 
-/** Visual intensity tiers — uses Inter (font-sans) so numbers are actually readable. */
-function pctBadgeStyles(value: number | null | undefined): string {
-  // Base: Inter, numeric features, proper size
-  const base = 'font-sans tabular-nums tracking-tight'
+/**
+ * Density profile keeps everything readable but auto-shrinks fonts and padding
+ * as more change columns are shown, so the card never looks crowded.
+ */
+type TableDensity = {
+  symbol: string
+  value: string
+  badgeText: string
+  badgePad: string
+  cellPad: string
+  headPad: string
+}
+
+function tableDensity(changeColumnCount: number): TableDensity {
+  if (changeColumnCount >= 5) {
+    return {
+      symbol: 'text-[12px]',
+      value: 'text-[12px]',
+      badgeText: 'text-[11px]',
+      badgePad: 'px-1.5 py-0.5',
+      cellPad: 'px-1',
+      headPad: 'px-1',
+    }
+  }
+  if (changeColumnCount >= 3) {
+    return {
+      symbol: 'text-[13px]',
+      value: 'text-[13px]',
+      badgeText: 'text-[12px]',
+      badgePad: 'px-1.5 py-0.5',
+      cellPad: 'px-1.5',
+      headPad: 'px-1.5',
+    }
+  }
+  return {
+    symbol: 'text-[14px]',
+    value: 'text-[13px]',
+    badgeText: 'text-[13px]',
+    badgePad: 'px-2 py-0.5',
+    cellPad: 'px-2',
+    headPad: 'px-2',
+  }
+}
+
+/**
+ * Visual intensity tiers — uses Inter (font-sans) so numbers are readable.
+ * Size is kept uniform (driven by density) so columns stay aligned; only the
+ * weight / color / emphasis changes with the magnitude of the move.
+ */
+function pctBadgeStyles(value: number | null | undefined, sizeClass = 'text-[13px]'): string {
+  const base = `font-sans tabular-nums tracking-tight ${sizeClass}`
 
   if (value == null || Number.isNaN(value)) {
-    return `${base} text-[13px] font-medium text-text-secondary/50`
+    return `${base} font-medium text-text-secondary/50`
   }
   const abs = Math.abs(value)
   const up = value > 0
 
-  // Extreme: ≥ 3% — solid pill, glow, pulse
+  // Extreme: ≥ 3% — solid pill with a soft glow.
   if (abs >= 3) {
     return up
-      ? `${base} text-[15px] font-black text-white bg-green shadow-[0_0_10px_2px_rgba(0,200,83,0.5)] animate-pulse ring-1 ring-green/70`
-      : `${base} text-[15px] font-black text-white bg-red shadow-[0_0_10px_2px_rgba(255,23,68,0.5)] animate-pulse ring-1 ring-red/70`
+      ? `${base} font-extrabold text-white bg-green shadow-[0_0_8px_1px_rgba(0,200,83,0.45)] ring-1 ring-green/60`
+      : `${base} font-extrabold text-white bg-red shadow-[0_0_8px_1px_rgba(255,23,68,0.45)] ring-1 ring-red/60`
   }
-  // Strong: 1.5–3% — bright tint, ring
+  // Strong: 1.5–3% — bright tint, ring.
   if (abs >= 1.5) {
     return up
-      ? `${base} text-[14px] font-bold text-green bg-green/20 ring-1 ring-green/50`
-      : `${base} text-[14px] font-bold text-red bg-red/20 ring-1 ring-red/50`
+      ? `${base} font-bold text-green bg-green/20 ring-1 ring-green/40`
+      : `${base} font-bold text-red bg-red/20 ring-1 ring-red/40`
   }
   // Mild: 0.5–1.5%
   if (abs >= 0.5) {
     return up
-      ? `${base} text-[14px] font-semibold text-green bg-green/12`
-      : `${base} text-[14px] font-semibold text-red bg-red/12`
+      ? `${base} font-semibold text-green bg-green/12`
+      : `${base} font-semibold text-red bg-red/12`
   }
   // Tiny / flat
-  if (abs === 0) return `${base} text-[13px] font-medium text-text-secondary bg-muted/20`
+  if (abs === 0) return `${base} font-medium text-text-secondary bg-muted/20`
   return up
-    ? `${base} text-[13px] font-semibold text-green/70`
-    : `${base} text-[13px] font-semibold text-red/70`
+    ? `${base} font-semibold text-green/70`
+    : `${base} font-semibold text-red/70`
 }
 
 function windowChangeStyles(tone: ReturnType<typeof windowChangeTone>) {
@@ -212,6 +259,7 @@ export default function WatchlistColumn({
   const existingTokens = new Set(watchlist.symbols.map(s => s.symboltoken))
   const tableGrid = buildWatchlistTableGrid(visibleChangeColumns)
   const tableMinWidth = watchlistTableMinWidthPx(visibleChangeColumns.length)
+  const density = tableDensity(visibleChangeColumns.length)
   const windowColumnLabels = new Map(
     WATCHLIST_CHANGE_WINDOWS.map(window => [window.id, window.label]),
   )
@@ -413,18 +461,18 @@ export default function WatchlistColumn({
         <div className="overflow-x-auto rounded-lg border border-border bg-secondary/20 text-sm">
           <div style={{ minWidth: tableMinWidth }}>
           <div
-            className="grid items-center border-b border-border bg-secondary/80 text-[10px] font-semibold uppercase tracking-wide text-text-secondary"
+            className="grid items-center gap-x-1.5 border-b border-border bg-secondary/80 text-[10px] font-semibold uppercase tracking-wide text-text-secondary"
             style={{ gridTemplateColumns: tableGrid }}
           >
-            <div className="truncate px-2 py-2">Symbol</div>
-            <div className="px-1.5 py-2 text-right">Last</div>
+            <div className={`truncate py-2 ${density.headPad}`}>Symbol</div>
+            <div className={`py-2 text-right ${density.headPad}`}>Last</div>
             <div className="px-0.5 py-2 text-center">Trend</div>
             {visibleChangeColumns.map(columnId => (
-              <div key={columnId} className="px-1 py-2 text-right">
+              <div key={columnId} className={`py-2 text-right ${density.headPad}`}>
                 {windowColumnLabels.get(columnId)}
               </div>
             ))}
-            <div className="px-1.5 py-2 text-right">Tick</div>
+            <div className={`py-2 text-right ${density.headPad}`}>Tick</div>
             <div className="px-0.5 py-2" aria-hidden />
           </div>
 
@@ -456,7 +504,7 @@ export default function WatchlistColumn({
                 onDragOver={e => handleDragOver(e, symbol.symboltoken)}
                 onDrop={e => handleDrop(e, symbol.symboltoken)}
                 onDragEnd={handleDragEnd}
-                className={`group grid items-center border-t transition-colors hover:bg-accent/[0.04] ${
+                className={`group grid items-center gap-x-1.5 border-t transition-colors hover:bg-accent/[0.04] ${
                   isDragOver
                     ? 'border-t-2 border-t-accent bg-accent/10'
                     : 'border-t-border/40'
@@ -464,7 +512,7 @@ export default function WatchlistColumn({
                 style={{ gridTemplateColumns: tableGrid, height: ROW_HEIGHT_PX }}
               >
                 {/* Drag handle + first-row crown */}
-                <div className="flex min-w-0 items-center gap-1 px-1">
+                <div className={`flex min-w-0 items-center gap-1 ${density.cellPad}`}>
                   <GripVertical className="h-3.5 w-3.5 shrink-0 cursor-grab text-text-secondary/30 opacity-0 transition-opacity group-hover:opacity-100 active:cursor-grabbing" />
                   {isMomentumWatchlist && isFirst && (
                     <span
@@ -475,20 +523,20 @@ export default function WatchlistColumn({
                     </span>
                   )}
                   <span
-                    className="min-w-0 truncate font-sans text-[14px] font-semibold text-text-primary"
+                    className={`min-w-0 truncate font-sans font-semibold text-text-primary ${density.symbol}`}
                     title={symbol.tradingsymbol}
                   >
                     {symbol.tradingsymbol}
                   </span>
                 </div>
-                <div className="flex justify-end px-1.5 font-sans text-[13px] font-medium tabular-nums text-text-primary">
+                <div className={`flex justify-end font-sans font-medium tabular-nums text-text-primary ${density.cellPad} ${density.value}`}>
                   {tick ? (
                     formatBrokerMoney(broker, tick.ltp, 2)
                   ) : (
                     <span className="text-text-secondary/60">…</span>
                   )}
                 </div>
-                <div className="flex justify-center px-1">
+                <div className="flex justify-center px-0.5">
                   <span
                     className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${styles.pill}`}
                     title={dir === 'up' ? 'Up' : dir === 'down' ? 'Down' : 'Waiting'}
@@ -503,9 +551,9 @@ export default function WatchlistColumn({
                 {visibleChangeColumns.map(columnId => {
                   const value = symbolWindows?.[columnId] ?? null
                   return (
-                    <div key={columnId} className="flex justify-end px-1">
+                    <div key={columnId} className={`flex justify-end ${density.cellPad}`}>
                       <span
-                        className={`rounded-md px-2 py-0.5 tabular-nums whitespace-nowrap tracking-tight transition-colors ${pctBadgeStyles(value)}`}
+                        className={`rounded-md tabular-nums whitespace-nowrap tracking-tight transition-colors ${density.badgePad} ${pctBadgeStyles(value, density.badgeText)}`}
                         title={value == null ? 'Collecting local history…' : undefined}
                       >
                         {value == null ? '—' : `${value > 0 ? '+' : ''}${value.toFixed(2)}%`}
@@ -513,9 +561,9 @@ export default function WatchlistColumn({
                     </div>
                   )
                 })}
-                <div className="flex justify-end px-1.5">
+                <div className={`flex justify-end ${density.cellPad}`}>
                   <span
-                    className={`rounded-md px-2 py-0.5 tabular-nums whitespace-nowrap tracking-tight transition-colors ${pctBadgeStyles(pct)}`}
+                    className={`rounded-md tabular-nums whitespace-nowrap tracking-tight transition-colors ${density.badgePad} ${pctBadgeStyles(pct, density.badgeText)}`}
                   >
                     {tick
                       ? (pct == null || Number.isNaN(pct) ? '—' : `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`)

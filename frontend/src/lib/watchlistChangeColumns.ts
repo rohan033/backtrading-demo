@@ -50,11 +50,14 @@ export function watchlistTableMinWidthPx(visibleChangeColumnCount: number): numb
   const symbol = 76
   const last = 76
   const trend = 36
-  const change = 58 * visibleChangeColumnCount
+  const change = 60 * visibleChangeColumnCount
   const tick = 64
   const remove = 32
   const chrome = 28
-  return symbol + last + trend + change + tick + remove + chrome
+  // gap-x-1.5 (6px) gutters between every track keeps columns visually separated.
+  const trackCount = visibleChangeColumnCount + 5
+  const gutters = Math.max(0, trackCount - 1) * 6
+  return symbol + last + trend + change + tick + remove + chrome + gutters
 }
 
 export function buildWatchlistTableGrid(visibleChangeColumns: WatchlistChangeWindowId[]): string {
