@@ -589,7 +589,10 @@ export function ExecutionProvider({ children }) {
           if (planeHandlerGenerationRef.current[planeId] !== handlerGeneration) return
           const failures = (planeFailuresRef.current[planeId] || 0) + 1
           planeFailuresRef.current[planeId] = failures
-          const stillActive = filterActiveDataPlanes(dataPlanesRef.current).some(item => item.id === planeId)
+          const stillActive = collectActiveDataPlanes(
+            dataPlanesRef.current,
+            panelExecutionsRef.current,
+          ).some(item => item.id === planeId)
           const exhausted = stillActive && failures >= MAX_PLANE_CONNECT_FAILURES
           console.warn(
             '[PriceStream] ws_close plane=%s failures=%d exhausted=%s',
@@ -1057,7 +1060,11 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
   )
 
   useEffect(() => {
-    if (!execution?.executor_id || String(execution?.broker || '').toLowerCase() !== 'etoro') {
+    if (
+      !isStreaming
+      || !execution?.executor_id
+      || String(execution?.broker || '').toLowerCase() !== 'etoro'
+    ) {
       setPrefetchCandles([])
       return undefined
     }
@@ -1081,7 +1088,7 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
     return () => {
       cancelled = true
     }
-  }, [execution?.executor_id, execution?.broker, execution?.token])
+  }, [isStreaming, execution?.executor_id, execution?.broker, execution?.token])
 
   useEffect(() => {
     if (!execution?.executor_id) return
@@ -3836,17 +3843,29 @@ function filterActiveDataPlanes(engines) {
   )
 }
 
+function isExecutionStreaming(execution) {
+  return Boolean(execution?.ws_url)
+    && ACTIVE_DATA_PLANE_STATUSES.has(String(execution?.data_plane_status || '').toLowerCase())
+}
+
 function collectActiveDataPlanes(engines, liveExecutions = []) {
+  const runningExecutions = (liveExecutions || []).filter(isExecutionStreaming)
+  const runningPlaneIds = new Set(
+    runningExecutions.map(execution => execution.data_plane_id).filter(Boolean),
+  )
+  if (!runningPlaneIds.size) return []
+
   const byId = new Map()
   for (const plane of filterActiveDataPlanes(engines)) {
-    byId.set(plane.id, plane)
+    if (runningPlaneIds.has(plane.id)) {
+      byId.set(plane.id, plane)
+    }
   }
-  for (const execution of liveExecutions) {
-    if (!execution?.data_plane_id || !execution?.ws_url) continue
-    if (!ACTIVE_DATA_PLANE_STATUSES.has(String(execution.data_plane_status || '').toLowerCase())) continue
-    if (byId.has(execution.data_plane_id)) continue
-    byId.set(execution.data_plane_id, {
-      id: execution.data_plane_id,
+  for (const execution of runningExecutions) {
+    const planeId = execution.data_plane_id
+    if (!planeId || byId.has(planeId)) continue
+    byId.set(planeId, {
+      id: planeId,
       label: execution.data_plane_label || execution.label,
       port: execution.data_plane_port || 0,
       status: execution.data_plane_status,
