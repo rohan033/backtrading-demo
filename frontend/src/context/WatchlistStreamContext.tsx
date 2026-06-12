@@ -15,7 +15,7 @@ import {
 import {
   useMomentumNotificationPermission,
   useWatchlistMomentumAlerts,
-  type SymbolArchivedCallback,
+  type MomentumTradeCallback,
 } from '../hooks/useWatchlistMomentumAlerts'
 import { useWatchlistHistorySeeder } from '../hooks/useWatchlistHistorySeeder'
 import { useWatchlistPriceHistory } from '../hooks/useWatchlistPriceHistory'
@@ -25,12 +25,9 @@ import type { PriceSample } from '../lib/watchlistChangeColumns'
 import { loadMomentumConfig } from '../lib/watchlistMomentum'
 import { createAndStartMomentumStrategy } from '../lib/watchlistMomentumStrategy'
 import { showPlatformToast } from '../lib/platform-toast'
-import { STICKY_FEED_WATCHLIST_REFRESH_MS } from '../lib/stickyFeed'
 import type { MomentumLookup } from '../lib/watchlistTopPerformers'
 import {
   applySymbolOrder,
-  archiveSymbol,
-  loadArchivedSymbolKeys,
   loadMomentumLiveSymbolKeys,
   loadMomentumNoTpSymbolKeys,
   loadMomentumSymbolKeys,
@@ -38,14 +35,14 @@ import {
   loadSymbolOrder,
   momentumSymbolKey,
   notifyMomentumStateChanged,
-  notifySymbolArchived,
+  notifyMomentumTrade,
+  recordMomentumTrade,
   saveMomentumLiveSymbolKeys,
   WL_MOMENTUM_CHANGED_EVENT,
   WL_SYMBOL_ARCHIVED_EVENT,
 } from '../lib/watchlistMomentumState'
 import {
   fetchWatchlists,
-  removeWatchlistSymbol,
   type Watchlist,
   type WatchlistTick,
 } from '../lib/watchlists'
@@ -96,22 +93,46 @@ export function WatchlistStreamProvider({ children }: { children: ReactNode }) {
     [watchlists],
   )
 
+  const watchlistsFetchRef = useRef({ inFlight: false, lastAt: 0 })
+
   const refreshWatchlists = useCallback(async () => {
+    const gate = watchlistsFetchRef.current
+    const now = Date.now()
+    if (gate.inFlight || now - gate.lastAt < 2_000) return
+    gate.inFlight = true
     try {
       const data = await fetchWatchlists()
       setWatchlists(data)
       setWatchlistsReady(true)
+      gate.lastAt = Date.now()
     } catch {
       // Keep last known watchlists on transient errors.
+    } finally {
+      gate.inFlight = false
     }
   }, [])
 
   useEffect(() => {
+    // Fetch the watchlist config once to bootstrap WebSocket subscriptions.
+    // Live prices then flow over /ws/watchlist and in-app edits update state
+    // directly — so there's no REST polling. We only re-fetch when the tab
+    // regains focus, to catch edits made elsewhere (other tab/device).
     void refreshWatchlists()
-    const id = window.setInterval(() => {
-      void refreshWatchlists()
-    }, STICKY_FEED_WATCHLIST_REFRESH_MS)
-    return () => window.clearInterval(id)
+    let focusTimer: ReturnType<typeof setTimeout> | undefined
+    const onFocus = () => {
+      if (document.visibilityState !== 'visible') return
+      if (focusTimer) clearTimeout(focusTimer)
+      focusTimer = setTimeout(() => {
+        void refreshWatchlists()
+      }, 250)
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      if (focusTimer) clearTimeout(focusTimer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
   }, [refreshWatchlists])
 
   const refreshMomentum = useCallback(() => {
@@ -161,25 +182,23 @@ export function WatchlistStreamProvider({ children }: { children: ReactNode }) {
     [watchlists],
   )
 
-  const handleSymbolArchived: SymbolArchivedCallback = useCallback(params => {
-    archiveSymbol({ ...params, archivedAt: Date.now() })
-    notifySymbolArchived()
-    void removeWatchlistSymbol(params.watchlistId, params.symboltoken)
-      .then(updated => {
-        setWatchlists(prev => prev.map(wl => (wl.id === params.watchlistId ? updated : wl)))
-      })
-      .catch(() => {
-        setWatchlists(prev =>
-          prev.map(wl =>
-            wl.id === params.watchlistId
-              ? {
-                  ...wl,
-                  symbols: wl.symbols.filter(s => s.symboltoken !== params.symboltoken),
-                }
-              : wl,
-          ),
-        )
-      })
+  // Records a momentum order in the trades log. Unlike the old archive flow, the
+  // symbol stays in its watchlist — we just append a record of the placed order.
+  const handleMomentumTrade: MomentumTradeCallback = useCallback(params => {
+    recordMomentumTrade({
+      id: `${params.executionId || params.symboltoken}-${Date.now()}`,
+      watchlistId: params.watchlistId,
+      symboltoken: params.symboltoken,
+      tradingsymbol: params.tradingsymbol,
+      exchange: params.exchange,
+      broker: params.broker,
+      executionId: params.executionId,
+      accountEnv: params.accountEnv,
+      noTakeProfit: params.noTakeProfit,
+      entryPrice: params.entryPrice,
+      createdAt: Date.now(),
+    })
+    notifyMomentumTrade()
   }, [])
 
   useWatchlistMomentumAlerts({
@@ -194,7 +213,7 @@ export function WatchlistStreamProvider({ children }: { children: ReactNode }) {
     historyRef,
     enabled: hasSymbols && connected,
     config: momentumConfig,
-    onSymbolArchived: handleSymbolArchived,
+    onMomentumTrade: handleMomentumTrade,
   })
   useMomentumNotificationPermission(momentumConfig.enabled && hasSymbols)
 
@@ -255,7 +274,7 @@ export function WatchlistStreamProvider({ children }: { children: ReactNode }) {
           message: `${tradingsymbol} · ${bracketLabel} · ${executionId}`,
           duration: 8000,
         })
-        handleSymbolArchived({
+        handleMomentumTrade({
           watchlistId,
           symboltoken,
           tradingsymbol,
@@ -263,6 +282,8 @@ export function WatchlistStreamProvider({ children }: { children: ReactNode }) {
           broker,
           executionId,
           entryPrice: ltp,
+          accountEnv,
+          noTakeProfit,
         })
         return true
       } catch (error) {
@@ -275,7 +296,7 @@ export function WatchlistStreamProvider({ children }: { children: ReactNode }) {
         return false
       }
     },
-    [momentumConfig, handleSymbolArchived],
+    [momentumConfig, handleMomentumTrade],
   )
 
   const value = useMemo(

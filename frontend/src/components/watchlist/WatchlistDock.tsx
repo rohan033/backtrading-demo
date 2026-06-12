@@ -1,10 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, PanelRightClose } from 'lucide-react'
 
 import { useWatchlistStream } from '../../context/WatchlistStreamContext'
 import { useWatchlistDock } from '../../layout/watchlist-dock-context'
 import { formatBrokerMoney } from '../../lib/currency'
 import { defaultAccountEnv, type WatchlistBroker } from '../../lib/watchlistBrokers'
+import {
+  loadAllHiddenSymbolTokens,
+  visibleWatchlistSymbols,
+  WL_HIDDEN_SYMBOLS_CHANGED_EVENT,
+} from '../../lib/watchlistHiddenSymbols'
 import {
   formatWindowChangePct,
   WATCHLIST_CHANGE_WINDOWS,
@@ -52,6 +57,13 @@ export default function WatchlistDock() {
   const { watchlists, ticks, windowChanges, connected, hasSymbols } = useWatchlistStream()
   const [sort, setSort] = useState<DockSort>(() => loadWatchlistDockSort())
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsedWatchlists())
+  const [hiddenByWatchlist, setHiddenByWatchlist] = useState(() => loadAllHiddenSymbolTokens())
+
+  useEffect(() => {
+    const refresh = () => setHiddenByWatchlist(loadAllHiddenSymbolTokens())
+    window.addEventListener(WL_HIDDEN_SYMBOLS_CHANGED_EVENT, refresh)
+    return () => window.removeEventListener(WL_HIDDEN_SYMBOLS_CHANGED_EVENT, refresh)
+  }, [])
 
   const groups = useMemo(
     () =>
@@ -61,15 +73,20 @@ export default function WatchlistDock() {
           const broker = (wl.broker || 'angel') as WatchlistBroker
           const accountEnv = wl.account_env || defaultAccountEnv(broker)
           const ordered = applySymbolOrder(wl.symbols, loadSymbolOrder(wl.id))
-          const symbols = sortDockSymbols(ordered, broker, accountEnv, windowChanges, sort)
+          const visible = visibleWatchlistSymbols(ordered, wl.id, hiddenByWatchlist[wl.id])
+          const symbols = sortDockSymbols(visible, broker, accountEnv, windowChanges, sort)
           return { id: wl.id, name: wl.name, broker, accountEnv, symbols }
         }),
-    [watchlists, windowChanges, sort],
+    [watchlists, windowChanges, sort, hiddenByWatchlist],
   )
 
   const totalSymbols = useMemo(
-    () => watchlists.reduce((sum, wl) => sum + wl.symbols.length, 0),
-    [watchlists],
+    () =>
+      watchlists.reduce(
+        (sum, wl) => sum + visibleWatchlistSymbols(wl.symbols, wl.id, hiddenByWatchlist[wl.id]).length,
+        0,
+      ),
+    [watchlists, hiddenByWatchlist],
   )
 
   if (!open) return null

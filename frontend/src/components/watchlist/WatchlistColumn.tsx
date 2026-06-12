@@ -133,6 +133,8 @@ type Props = {
   watchlist: Watchlist
   /** Symbols in display order (may differ from watchlist.symbols after drag-reorder). */
   orderedSymbols?: WatchlistSymbol[]
+  /** Tokens hidden in the UI but still subscribed on the watchlist feed. */
+  hiddenSymbolTokens?: Set<string>
   /** When true, row order is driven by auto-sort and drag-reorder is disabled. */
   autoSortEnabled?: boolean
   ticks: Record<string, WatchlistTick>
@@ -184,6 +186,7 @@ function directionStyles(direction: WatchlistTick['direction'] | undefined) {
 export default function WatchlistColumn({
   watchlist,
   orderedSymbols,
+  hiddenSymbolTokens,
   autoSortEnabled = false,
   ticks,
   windowChanges,
@@ -282,6 +285,7 @@ export default function WatchlistColumn({
 
   const displaySymbols = orderedSymbols ?? watchlist.symbols
   const existingTokens = new Set(watchlist.symbols.map(s => s.symboltoken))
+  const hiddenTokens = hiddenSymbolTokens ?? new Set<string>()
   const tableGrid = buildWatchlistTableGrid(visibleChangeColumns)
   const tableMinWidth = watchlistTableMinWidthPx(visibleChangeColumns.length)
   const density = tableDensity(visibleChangeColumns.length)
@@ -453,7 +457,7 @@ export default function WatchlistColumn({
                 <button
                   key={`${hit.exchange}-${hit.symboltoken}`}
                   type="button"
-                  disabled={existingTokens.has(hit.symboltoken)}
+                  disabled={existingTokens.has(hit.symboltoken) && !hiddenTokens.has(hit.symboltoken)}
                   onClick={() => {
                     onAddSymbol(watchlist.id, hit)
                     setQuery('')

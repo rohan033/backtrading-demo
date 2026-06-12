@@ -103,7 +103,7 @@ function maybeBrowserNotification(title: string, body: string) {
   }
 }
 
-export type SymbolArchivedCallback = (params: {
+export type MomentumTradeCallback = (params: {
   watchlistId: string
   symboltoken: string
   tradingsymbol: string
@@ -111,6 +111,8 @@ export type SymbolArchivedCallback = (params: {
   broker: string
   executionId: string
   entryPrice: number
+  accountEnv: 'live' | 'demo'
+  noTakeProfit: boolean
 }) => void
 
 export function useWatchlistMomentumAlerts({
@@ -125,7 +127,7 @@ export function useWatchlistMomentumAlerts({
   historyRef,
   enabled,
   config,
-  onSymbolArchived,
+  onMomentumTrade,
 }: {
   watchlists: Watchlist[]
   momentumWatchlistIds: Set<string>
@@ -138,7 +140,7 @@ export function useWatchlistMomentumAlerts({
   historyRef: RefObject<Record<string, PriceSample[]>>
   enabled: boolean
   config: MomentumConfig
-  onSymbolArchived?: SymbolArchivedCallback
+  onMomentumTrade?: MomentumTradeCallback
 }) {
   const symbolIndex = useMemo(
     () => buildMomentumSymbolIndex(
@@ -168,8 +170,8 @@ export function useWatchlistMomentumAlerts({
   useEffect(() => { ticksRef.current = ticks }, [ticks])
   useEffect(() => { windowChangesRef.current = windowChanges }, [windowChanges])
 
-  const onSymbolArchivedRef = useRef(onSymbolArchived)
-  useEffect(() => { onSymbolArchivedRef.current = onSymbolArchived }, [onSymbolArchived])
+  const onMomentumTradeRef = useRef(onMomentumTrade)
+  useEffect(() => { onMomentumTradeRef.current = onMomentumTrade }, [onMomentumTrade])
 
   const deployStrategy = useCallback(
     async (
@@ -189,9 +191,9 @@ export function useWatchlistMomentumAlerts({
           message: `${ctx.tradingsymbol} · ${bracketLabel} · ${executionId}`,
           duration: 8000,
         })
-        // Archive the symbol and advance the queue after any successful deploy
+        // Record the order in the momentum trades log (symbol stays in its list)
         if (ctx.watchlistId) {
-          onSymbolArchivedRef.current?.({
+          onMomentumTradeRef.current?.({
             watchlistId: ctx.watchlistId,
             symboltoken: ctx.token,
             tradingsymbol: ctx.tradingsymbol,
@@ -199,6 +201,8 @@ export function useWatchlistMomentumAlerts({
             broker: ctx.broker,
             executionId,
             entryPrice: ctx.closePrice,
+            accountEnv,
+            noTakeProfit: Boolean(ctx.noTakeProfit),
           })
         }
         return executionId

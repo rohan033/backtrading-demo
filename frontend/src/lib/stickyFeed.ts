@@ -1,7 +1,6 @@
 import type { WatchlistChangeWindowId } from './watchlistChangeColumns'
 
 export const STICKY_FEED_STORAGE_KEY = 'sticky-watchlist-feed-v1'
-export const STICKY_FEED_WATCHLIST_REFRESH_MS = 30_000
 
 /** Windows offered in the sticky feed rank selector (per wireframe). */
 export const STICKY_FEED_RANK_WINDOWS: { id: WatchlistChangeWindowId; label: string }[] = [
