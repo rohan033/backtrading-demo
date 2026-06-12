@@ -1,14 +1,16 @@
 import { Link, useLocation } from 'react-router-dom'
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
+import { PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from 'lucide-react'
 
 import { StopAllStrategiesButton } from '../components/StopAllStrategiesButton'
 import { getPageMeta } from './page-meta'
 import { useSidebar } from './sidebar-context'
+import { useWatchlistDock } from './watchlist-dock-context'
 
 export default function TopBar() {
   const location = useLocation()
   const meta = getPageMeta(location.pathname)
   const { collapsed, toggleCollapsed } = useSidebar()
+  const { open: dockOpen, toggle: toggleDock } = useWatchlistDock()
 
   return (
     <header className="relative flex h-16 shrink-0 items-center justify-between border-b border-border bg-secondary/80 px-4 backdrop-blur-xl sm:px-6">
@@ -35,6 +37,23 @@ export default function TopBar() {
 
       <div className="flex shrink-0 items-center gap-2">
         <StopAllStrategiesButton />
+        <button
+          type="button"
+          onClick={toggleDock}
+          aria-label={dockOpen ? 'Hide watchlist panel' : 'Show watchlist panel'}
+          title={dockOpen ? 'Hide watchlist panel' : 'Show watchlist panel'}
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border transition-colors ${
+            dockOpen
+              ? 'border-accent/40 bg-accent/10 text-accent'
+              : 'border-border bg-card text-text-secondary hover:border-accent/40 hover:text-accent'
+          }`}
+        >
+          {dockOpen ? (
+            <PanelRightClose className="h-4 w-4" aria-hidden="true" />
+          ) : (
+            <PanelRightOpen className="h-4 w-4" aria-hidden="true" />
+          )}
+        </button>
         {meta.primaryAction ? (
           meta.primaryAction.to ? (
             <Link

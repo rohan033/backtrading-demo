@@ -12,12 +12,15 @@ import {
 import { useExecutionPositionsPnl } from '../../hooks/useExecutionPositionsPnl'
 import { useLiveExecutionsStreamBootstrap } from '../../hooks/useLiveExecutionsStreamBootstrap'
 import {
+  CHART_ENV_FILTER_OPTIONS,
   CHART_FILTER_OPTIONS,
   CHART_SORT_OPTIONS,
   type ChartColumnCount,
+  type ChartEnvFilter,
   type ChartFilterKey,
   type ChartSortKey,
   filterExecutions,
+  filterExecutionsByEnv,
   gridColumnClass,
   sortExecutions,
 } from '../../lib/chartsGrid'
@@ -45,6 +48,7 @@ type Props = {
     label?: string
     created_at?: string | null
     data_plane_port?: number | string
+    account_env?: string | null
   }>
   planeStreams: Record<string, unknown>
   selectedExecutionId?: string | null
@@ -65,6 +69,7 @@ export default function ChartsGrid({
 }: Props) {
   const [sortKey, setSortKey] = useState<ChartSortKey>('profit-desc')
   const [filterKey, setFilterKey] = useState<ChartFilterKey>('all')
+  const [envFilter, setEnvFilter] = useState<ChartEnvFilter>('all')
   const [columnCount, setColumnCount] = useState<ChartColumnCount>(3)
 
   const liveExecutions = useMemo(
@@ -110,9 +115,10 @@ export default function ChartsGrid({
   }, [liveExecutions, planeStreams, nowMs])
 
   const visibleExecutions = useMemo(() => {
-    const filtered = filterExecutions(liveExecutions, filterKey, pnlByExecutor, streamStatusByExecutor)
+    const byEnv = filterExecutionsByEnv(liveExecutions, envFilter)
+    const filtered = filterExecutions(byEnv, filterKey, pnlByExecutor, streamStatusByExecutor)
     return sortExecutions(filtered, sortKey, pnlByExecutor)
-  }, [liveExecutions, filterKey, sortKey, pnlByExecutor, streamStatusByExecutor])
+  }, [liveExecutions, envFilter, filterKey, sortKey, pnlByExecutor, streamStatusByExecutor])
 
   if (!liveExecutions.length) {
     return (
@@ -126,6 +132,33 @@ export default function ChartsGrid({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-b border-border bg-background/95 px-3 py-2 backdrop-blur-sm">
+        <div className="inline-flex items-center overflow-hidden rounded-md border border-border bg-card">
+          <span className="inline-flex h-[30px] items-center border-r border-border px-2.5 text-[11px] font-medium text-text-secondary">
+            Env
+          </span>
+          {CHART_ENV_FILTER_OPTIONS.map(option => {
+            const active = envFilter === option.id
+            const activeClass =
+              option.id === 'live'
+                ? 'bg-red/15 text-red'
+                : option.id === 'demo'
+                  ? 'bg-accent/15 text-accent'
+                  : 'bg-card-hi text-text-primary'
+            return (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setEnvFilter(option.id)}
+                className={`h-[30px] px-2.5 text-[11px] font-semibold transition-colors ${
+                  active ? activeClass : 'text-text-secondary hover:text-text-primary'
+                }`}
+              >
+                {option.label}
+              </button>
+            )
+          })}
+        </div>
+
         <div className="inline-flex items-center overflow-hidden rounded-md border border-border bg-card">
           <span className="inline-flex h-[30px] items-center gap-1.5 border-r border-border px-2.5 text-[11px] font-medium text-text-secondary">
             <LayoutGrid className="h-3.5 w-3.5" />
