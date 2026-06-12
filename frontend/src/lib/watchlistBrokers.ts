@@ -33,3 +33,41 @@ export async function searchWatchlistSymbol(
   const body = await res.json()
   return body.status ? body.data || [] : []
 }
+
+export type WatchlistSymbolHit = {
+  symboltoken: string
+  tradingsymbol: string
+  exchange: string
+}
+
+/**
+ * Picks the best broker hit for a free-text ticker. Prefers an exact
+ * trading-symbol match, then the symbol whose root (before the `-EQ` style
+ * suffix) matches, and otherwise falls back to the first result.
+ */
+export function pickWatchlistSymbolMatch(
+  results: WatchlistSymbolHit[],
+  ticker: string,
+): WatchlistSymbolHit | null {
+  if (!results.length) return null
+  const target = ticker.trim().toUpperCase()
+  if (!target) return null
+  const exact = results.find(r => r.tradingsymbol.toUpperCase() === target)
+  if (exact) return exact
+  const root = results.find(r => r.tradingsymbol.toUpperCase().split('-')[0] === target)
+  if (root) return root
+  return results[0]
+}
+
+/** Parses a comma/newline/whitespace separated ticker blob into a de-duped list. */
+export function parseTickerInput(raw: string): string[] {
+  const seen = new Set<string>()
+  const tickers: string[] = []
+  for (const token of raw.split(/[\s,;]+/)) {
+    const ticker = token.trim().toUpperCase()
+    if (!ticker || seen.has(ticker)) continue
+    seen.add(ticker)
+    tickers.push(ticker)
+  }
+  return tickers
+}

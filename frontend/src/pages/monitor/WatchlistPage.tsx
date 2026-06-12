@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, LayoutGrid, Plus, Undo2, X } from 'lucide-react'
+import { Archive, LayoutGrid, Plus, Undo2, Upload, X } from 'lucide-react'
 
 import DraggableWatchlistCard from '../../components/watchlist/DraggableWatchlistCard'
 import WatchlistColumn from '../../components/watchlist/WatchlistColumn'
+import BulkUploadWatchlistDialog, {
+  type BulkUploadHandler,
+} from '../../components/watchlist/BulkUploadWatchlistDialog'
 import WatchlistColumnPicker from '../../components/watchlist/WatchlistColumnPicker'
 import WatchlistAutoSort from '../../components/watchlist/WatchlistAutoSort'
 import WatchlistMomentumSettings from '../../components/watchlist/WatchlistMomentumSettings'
@@ -26,7 +29,11 @@ import {
   type WatchlistChangeWindowId,
 } from '../../lib/watchlistChangeColumns'
 import type { WatchlistBroker } from '../../lib/watchlistBrokers'
-import { defaultAccountEnv } from '../../lib/watchlistBrokers'
+import {
+  defaultAccountEnv,
+  pickWatchlistSymbolMatch,
+  searchWatchlistSymbol,
+} from '../../lib/watchlistBrokers'
 import {
   canvasMinSize,
   cardHeightForContent,
@@ -120,6 +127,7 @@ export default function WatchlistPage() {
     () => loadArchivedSymbols(),
   )
   const canvasScrollRef = useRef<HTMLDivElement | null>(null)
+  const [bulkUploadOpen, setBulkUploadOpen] = useState(false)
 
   /** Returns symbols for a watchlist — auto-sorted or manual drag order. */
   const orderedSymbolsFor = useCallback(
@@ -319,6 +327,61 @@ export default function WatchlistPage() {
       setWatchlists(prev => [...prev, created])
       persistLayouts(nextLayouts)
     })
+
+  /**
+   * Creates a named watchlist, resolves each ticker through broker search, and
+   * adds every match. Successful symbols stream into the list as they resolve;
+   * unresolved tickers are surfaced in a toast (and in the dialog summary).
+   */
+  const handleBulkUpload: BulkUploadHandler = async ({ name, broker, tickers }, onProgress) => {
+    const accountEnv = defaultAccountEnv(broker)
+    const created = await createWatchlist(name, { broker, account_env: accountEnv })
+    setWatchlists(prev => [...prev, created])
+    persistLayouts({
+      ...layouts,
+      [created.id]: {
+        ...layoutForNewWatchlist(layouts, cardMetrics, created.id),
+        width: cardWidthForTable(visibleChangeColumns.length),
+      },
+    })
+
+    const succeeded: string[] = []
+    const failed: string[] = []
+    for (let i = 0; i < tickers.length; i++) {
+      const ticker = tickers[i]
+      onProgress({ done: i, total: tickers.length, current: ticker })
+      try {
+        const results = await searchWatchlistSymbol(broker, ticker, accountEnv)
+        const hit = pickWatchlistSymbolMatch(results, ticker)
+        if (!hit) {
+          failed.push(ticker)
+          continue
+        }
+        const updated = await addWatchlistSymbol(created.id, {
+          symboltoken: hit.symboltoken,
+          tradingsymbol: hit.tradingsymbol,
+          exchange: hit.exchange,
+        })
+        setWatchlists(prev => prev.map(wl => (wl.id === created.id ? updated : wl)))
+        succeeded.push(ticker)
+      } catch {
+        failed.push(ticker)
+      }
+    }
+    onProgress({ done: tickers.length, total: tickers.length, current: '' })
+
+    showPlatformToast({
+      variant: failed.length === 0 ? 'success' : succeeded.length > 0 ? 'warning' : 'error',
+      title: `Bulk upload · ${name}`,
+      message:
+        failed.length === 0
+          ? `${succeeded.length} symbol${succeeded.length === 1 ? '' : 's'} added`
+          : `${succeeded.length} added · ${failed.length} failed: ${failed.join(', ')}`,
+      duration: failed.length === 0 ? 5000 : 10000,
+    })
+
+    return { watchlistName: name, succeeded, failed }
+  }
 
   const handleRename = (id: string, name: string) =>
     wrap(async () => {
@@ -561,12 +624,31 @@ export default function WatchlistPage() {
             <LayoutGrid className="h-3.5 w-3.5" />
             Tidy grid
           </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => setBulkUploadOpen(true)}
+            disabled={busy}
+            className="gap-1.5"
+            title="Create a watchlist from a list of tickers"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Bulk upload
+          </Button>
           <Button type="button" size="sm" onClick={handleCreate} disabled={busy} className="gap-1.5">
             <Plus className="h-3.5 w-3.5" />
             New watchlist
           </Button>
         </div>
       </div>
+
+      <BulkUploadWatchlistDialog
+        open={bulkUploadOpen}
+        defaultName={`Watchlist ${watchlists.length + 1}`}
+        onClose={() => setBulkUploadOpen(false)}
+        onSubmit={handleBulkUpload}
+      />
 
       {error && (
         <div className="mx-5 mt-3 flex items-start justify-between gap-3 rounded border border-red/30 bg-red/10 px-3 py-2 text-xs text-red">

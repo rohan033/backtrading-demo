@@ -10,7 +10,27 @@ export type ChartSortKey =
 
 export type ChartFilterKey = 'all' | 'in-position' | 'profitable' | 'streaming' | 'issues'
 
+export type ChartEnvFilter = 'all' | 'demo' | 'live'
+
 export type ChartColumnCount = 3 | 4
+
+export const CHART_ENV_FILTER_OPTIONS: { id: ChartEnvFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'demo', label: 'Demo' },
+  { id: 'live', label: 'Live' },
+]
+
+export function normalizeAccountEnv(value: string | null | undefined): 'demo' | 'live' {
+  return String(value || 'live').toLowerCase() === 'demo' ? 'demo' : 'live'
+}
+
+export function filterExecutionsByEnv<T extends { account_env?: string | null }>(
+  executions: T[],
+  envFilter: ChartEnvFilter,
+): T[] {
+  if (envFilter === 'all') return executions
+  return executions.filter(execution => normalizeAccountEnv(execution.account_env) === envFilter)
+}
 
 export const CHART_SORT_OPTIONS: { id: ChartSortKey; label: string }[] = [
   { id: 'profit-desc', label: 'Profit (high → low)' },
