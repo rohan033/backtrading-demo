@@ -8,6 +8,7 @@ import {
   type StickyFeedConfig,
 } from '../lib/stickyFeed'
 import { getTopWatchlistPerformers, type RankedWatchlistSymbol } from '../lib/watchlistTopPerformers'
+import { loadAllHiddenSymbolTokens, visibleWatchlistSymbols, WL_HIDDEN_SYMBOLS_CHANGED_EVENT } from '../lib/watchlistHiddenSymbols'
 import { loadArchivedSymbolKeys, WL_SYMBOL_ARCHIVED_EVENT } from '../lib/watchlistMomentumState'
 
 export function useStickyWatchlistFeed() {
@@ -23,9 +24,11 @@ export function useStickyWatchlistFeed() {
 
   const [config, setConfig] = useState<StickyFeedConfig>(() => loadStickyFeedConfig())
   const [archivedKeys, setArchivedKeys] = useState<Set<string>>(() => loadArchivedSymbolKeys())
+  const [hiddenByWatchlist, setHiddenByWatchlist] = useState(() => loadAllHiddenSymbolTokens())
   const [topPerformers, setTopPerformers] = useState<RankedWatchlistSymbol[]>([])
 
   const watchlistsRef = useRef(watchlists)
+  const hiddenByWatchlistRef = useRef(hiddenByWatchlist)
   const momentumRef = useRef(momentum)
   const configRef = useRef(config)
   const archivedKeysRef = useRef(archivedKeys)
@@ -33,6 +36,10 @@ export function useStickyWatchlistFeed() {
   useEffect(() => {
     watchlistsRef.current = watchlists
   }, [watchlists])
+
+  useEffect(() => {
+    hiddenByWatchlistRef.current = hiddenByWatchlist
+  }, [hiddenByWatchlist])
 
   useEffect(() => {
     momentumRef.current = momentum
@@ -48,9 +55,15 @@ export function useStickyWatchlistFeed() {
 
   useEffect(() => {
     const refreshArchived = () => setArchivedKeys(loadArchivedSymbolKeys())
+    const refreshHidden = () => setHiddenByWatchlist(loadAllHiddenSymbolTokens())
     refreshArchived()
+    refreshHidden()
     window.addEventListener(WL_SYMBOL_ARCHIVED_EVENT, refreshArchived)
-    return () => window.removeEventListener(WL_SYMBOL_ARCHIVED_EVENT, refreshArchived)
+    window.addEventListener(WL_HIDDEN_SYMBOLS_CHANGED_EVENT, refreshHidden)
+    return () => {
+      window.removeEventListener(WL_SYMBOL_ARCHIVED_EVENT, refreshArchived)
+      window.removeEventListener(WL_HIDDEN_SYMBOLS_CHANGED_EVENT, refreshHidden)
+    }
   }, [])
 
   const windowChangesRef = useRef<WindowChangesLookup>(windowChanges)
@@ -59,9 +72,17 @@ export function useStickyWatchlistFeed() {
   }, [windowChanges])
 
   const resortTopPerformers = useCallback(() => {
+    const visibleWatchlists = watchlistsRef.current.map(watchlist => ({
+      ...watchlist,
+      symbols: visibleWatchlistSymbols(
+        watchlist.symbols,
+        watchlist.id,
+        hiddenByWatchlistRef.current[watchlist.id],
+      ),
+    }))
     setTopPerformers(
       getTopWatchlistPerformers(
-        watchlistsRef.current,
+        visibleWatchlists,
         windowChangesRef.current,
         configRef.current.column,
         momentumRef.current,

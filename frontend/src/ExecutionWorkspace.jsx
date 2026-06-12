@@ -24,6 +24,13 @@ import {
 import { formatDbTimestamp } from './lib/datetime'
 import ChartsGrid from './components/charts/ChartsGrid'
 import StrategyScheduleSection from './components/StrategyScheduleSection'
+import { useWatchlistStream } from './context/WatchlistStreamContext'
+import { useMarketPreviewFeed } from './hooks/useMarketPreviewFeed'
+import {
+  applyWatchlistFeedToStreamStatus,
+  findWatchlistFeedMatch,
+  samplesToChartPoints,
+} from './lib/watchlistFeedReuse'
 import { buildLocalTradingDayOptions, loadTradingDayOptions } from './lib/tradingSchedule'
 import { EXECUTION_SOURCE_USER } from './lib/executionSources'
 
@@ -950,6 +957,7 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
   const [prefetchCandles, setPrefetchCandles] = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyMessage, setHistoryMessage] = useState('')
+  const { watchlists, ticks, connected, historyRef } = useWatchlistStream()
   const stream = getPlaneStream(planeStreams, execution?.data_plane_id)
   const resolvedStream = useMemo(
     () => (execution
@@ -957,11 +965,28 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
       : { tickHistory: [], candleHistory: [], tick: null, streamKey: '' }),
     [stream, execution],
   )
-  const ltp = selectedTick?.ltp ?? resolvedStream.tick?.ltp ?? null
-  const chartSeries = useMemo(
-    () => (execution ? buildChartSeries(resolvedStream.tickHistory, execution, ltp) : []),
-    [resolvedStream.tickHistory, execution, ltp],
+  const watchlistFeed = useMemo(
+    () => (execution && connected
+      ? findWatchlistFeedMatch(watchlists, ticks, historyRef, {
+          broker: execution.broker,
+          account_env: execution.account_env,
+          token: execution.token,
+          symbol: execution.symbol,
+        })
+      : null),
+    [execution, connected, watchlists, ticks, historyRef],
   )
+  const ltp = selectedTick?.ltp ?? resolvedStream.tick?.ltp ?? watchlistFeed?.tick?.ltp ?? null
+  const chartSeries = useMemo(() => {
+    if (!execution) return []
+    const planeHasHistory = resolvedStream.tickHistory.length > 0
+    if (planeHasHistory) {
+      return buildChartSeries(resolvedStream.tickHistory, execution, ltp)
+    }
+    const fromWatchlist = sanitizeChartSeries(samplesToChartPoints(watchlistFeed?.samples ?? []))
+    if (fromWatchlist.length > 0) return fromWatchlist
+    return buildChartSeries(resolvedStream.tickHistory, execution, ltp)
+  }, [resolvedStream.tickHistory, execution, ltp, watchlistFeed?.samples])
   const streamCandles = useMemo(
     () => (execution ? buildCandleSeries(resolvedStream.candleHistory, execution, ltp) : []),
     [resolvedStream.candleHistory, execution, ltp],
@@ -1019,13 +1044,16 @@ export function StrategyChartPanel({ execution, planeStreams, selectedTick }) {
   }
   const nowMs = useNow(isStreaming ? PRICE_STREAM_STATUS_POLL_MS : null)
   const priceStreamStatus = useMemo(
-    () => resolveExecutionPriceStreamStatus({
-      isStreaming,
-      stream,
-      streamKey: resolvedStream.streamKey,
-      nowMs,
-    }),
-    [isStreaming, stream, resolvedStream.streamKey, nowMs],
+    () => applyWatchlistFeedToStreamStatus(
+      resolveExecutionPriceStreamStatus({
+        isStreaming,
+        stream,
+        streamKey: resolvedStream.streamKey,
+        nowMs,
+      }),
+      watchlistFeed,
+    ),
+    [isStreaming, stream, resolvedStream.streamKey, nowMs, watchlistFeed],
   )
 
   useEffect(() => {
@@ -2429,7 +2457,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
   const [scheduleHint, setScheduleHint] = useState('')
   const [tradingDayOptions, setTradingDayOptions] = useState([])
   const [scheduleOptionsLoading, setScheduleOptionsLoading] = useState(false)
-  const { ltp, marketError, streamStatus: marketStreamStatus } = useMarketPreview({
+  const { ltp, marketError, streamStatus: marketStreamStatus } = useMarketPreviewFeed({
     broker: form.broker,
     token: selectedStock?.symboltoken,
     symbol: selectedStock?.tradingsymbol,

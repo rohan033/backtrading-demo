@@ -34,6 +34,15 @@ export function useWatchlistTicks(watchlists: Watchlist[], enabled: boolean) {
     [syncPayload],
   )
 
+  // Hold the latest sendSync in a ref so the connection effect can stay tied to
+  // `enabled` only. Otherwise every watchlist poll (new array reference) would
+  // change sendSync's identity, tear down the socket, and force the backend to
+  // stop/restart the broker feed (re-auth + re-subscribe) every cycle.
+  const sendSyncRef = useRef(sendSync)
+  useEffect(() => {
+    sendSyncRef.current = sendSync
+  }, [sendSync])
+
   useEffect(() => {
     if (!enabled) return
 
@@ -48,7 +57,7 @@ export function useWatchlistTicks(watchlists: Watchlist[], enabled: boolean) {
           clearTimeout(reconnectRef.current)
           reconnectRef.current = null
         }
-        sendSync(ws)
+        sendSyncRef.current(ws)
       }
 
       ws.onclose = () => {
@@ -81,8 +90,10 @@ export function useWatchlistTicks(watchlists: Watchlist[], enabled: boolean) {
       wsRef.current?.close()
       wsRef.current = null
     }
-  }, [enabled, sendSync])
+  }, [enabled])
 
+  // Re-sync subscriptions over the existing socket whenever the watchlists
+  // change — no reconnect, the backend diffs and only sends the delta.
   useEffect(() => {
     const ws = wsRef.current
     if (ws?.readyState === WebSocket.OPEN) {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Archive, LayoutGrid, Plus, Undo2, Upload, X } from 'lucide-react'
+import { LayoutGrid, Plus, Upload, X, Zap } from 'lucide-react'
 
 import DraggableWatchlistCard from '../../components/watchlist/DraggableWatchlistCard'
 import WatchlistColumn from '../../components/watchlist/WatchlistColumn'
@@ -53,32 +53,39 @@ import {
 } from '../../lib/watchlistLayout'
 import { errorMessage } from '../../lib/apiError'
 import {
+  hideWatchlistSymbol,
+  isWatchlistSymbolHidden,
+  loadAllHiddenSymbolTokens,
+  unhideWatchlistSymbol,
+  visibleWatchlistSymbols,
+  WL_HIDDEN_SYMBOLS_CHANGED_EVENT,
+} from '../../lib/watchlistHiddenSymbols'
+import {
   addWatchlistSymbol,
   createWatchlist,
   deleteWatchlist,
-  removeWatchlistSymbol,
   updateWatchlist,
   type Watchlist,
   type WatchlistSymbol,
 } from '../../lib/watchlists'
 import {
   applySymbolOrder,
-  clearArchivedSymbols,
-  loadArchivedSymbols,
+  clearMomentumTrades,
   loadMomentumLiveSymbolKeys,
   loadMomentumNoTpSymbolKeys,
   loadMomentumSymbolKeys,
+  loadMomentumTrades,
   loadMomentumWatchlistIds,
   loadSymbolOrder,
   notifyMomentumStateChanged,
-  removeArchivedSymbol,
+  removeMomentumTrade,
   saveSymbolOrder,
   setMomentumSymbolMode,
   toggleMomentumLiveSymbolKey,
   toggleMomentumWatchlistId,
   WL_MOMENTUM_CHANGED_EVENT,
-  WL_SYMBOL_ARCHIVED_EVENT,
-  type ArchivedMomentumSymbol,
+  WL_MOMENTUM_TRADE_EVENT,
+  type MomentumTrade,
 } from '../../lib/watchlistMomentumState'
 
 export default function WatchlistPage() {
@@ -123,11 +130,12 @@ export default function WatchlistPage() {
     // but we keep a partial map and fill it in after load)
     return {}
   })
-  const [archivedSymbols, setArchivedSymbols] = useState<ArchivedMomentumSymbol[]>(
-    () => loadArchivedSymbols(),
+  const [momentumTrades, setMomentumTrades] = useState<MomentumTrade[]>(
+    () => loadMomentumTrades(),
   )
   const canvasScrollRef = useRef<HTMLDivElement | null>(null)
   const [bulkUploadOpen, setBulkUploadOpen] = useState(false)
+  const [hiddenByWatchlist, setHiddenByWatchlist] = useState(() => loadAllHiddenSymbolTokens())
 
   /** Returns symbols for a watchlist — auto-sorted or manual drag order. */
   const orderedSymbolsFor = useCallback(
@@ -146,6 +154,12 @@ export default function WatchlistPage() {
       return applySymbolOrder(wl.symbols, symbolOrders[wl.id] ?? null)
     },
     [autoSortConfig, symbolOrders, windowChanges],
+  )
+
+  const visibleOrderedSymbolsFor = useCallback(
+    (wl: Watchlist): WatchlistSymbol[] =>
+      visibleWatchlistSymbols(orderedSymbolsFor(wl), wl.id, hiddenByWatchlist[wl.id]),
+    [orderedSymbolsFor, hiddenByWatchlist],
   )
 
   /** Stable map of ordered symbols used by the momentum hook — only recomputes when watchlists or orders change. */
@@ -289,14 +303,17 @@ export default function WatchlistPage() {
 
   useEffect(() => {
     const onMomentumChanged = () => syncMomentumState()
-    const onSymbolArchived = () => {
-      setArchivedSymbols(loadArchivedSymbols())
+    const onMomentumTrade = () => {
+      setMomentumTrades(loadMomentumTrades())
     }
+    const onHiddenChanged = () => setHiddenByWatchlist(loadAllHiddenSymbolTokens())
     window.addEventListener(WL_MOMENTUM_CHANGED_EVENT, onMomentumChanged)
-    window.addEventListener(WL_SYMBOL_ARCHIVED_EVENT, onSymbolArchived)
+    window.addEventListener(WL_MOMENTUM_TRADE_EVENT, onMomentumTrade)
+    window.addEventListener(WL_HIDDEN_SYMBOLS_CHANGED_EVENT, onHiddenChanged)
     return () => {
       window.removeEventListener(WL_MOMENTUM_CHANGED_EVENT, onMomentumChanged)
-      window.removeEventListener(WL_SYMBOL_ARCHIVED_EVENT, onSymbolArchived)
+      window.removeEventListener(WL_MOMENTUM_TRADE_EVENT, onMomentumTrade)
+      window.removeEventListener(WL_HIDDEN_SYMBOLS_CHANGED_EVENT, onHiddenChanged)
     }
   }, [syncMomentumState])
 
@@ -414,77 +431,31 @@ export default function WatchlistPage() {
     hit: { symboltoken: string; tradingsymbol: string; exchange: string },
   ) =>
     wrap(async () => {
+      const target = watchlists.find(wl => wl.id === watchlistId)
+      if (!target) return
+
+      const exists = target.symbols.some(symbol => symbol.symboltoken === hit.symboltoken)
+      if (exists) {
+        if (isWatchlistSymbolHidden(watchlistId, hit.symboltoken)) {
+          unhideWatchlistSymbol(watchlistId, hit.symboltoken)
+          showPlatformToast({
+            variant: 'success',
+            title: 'Symbol restored',
+            message: `${hit.tradingsymbol} is visible again (feed kept active).`,
+            duration: 4000,
+          })
+        }
+        return
+      }
+
       const updated = await addWatchlistSymbol(watchlistId, hit)
       setWatchlists(prev => prev.map(wl => (wl.id === watchlistId ? updated : wl)))
     })
 
-  const handleRemoveSymbol = (watchlistId: string, symboltoken: string) =>
-    wrap(async () => {
-      const updated = await removeWatchlistSymbol(watchlistId, symboltoken)
-      setWatchlists(prev => prev.map(wl => (wl.id === watchlistId ? updated : wl)))
-    })
-
-  /** Re-adds one archived symbol to its original watchlist, then drops it from the archive. */
-  const handleRestoreArchived = (sym: ArchivedMomentumSymbol) =>
-    wrap(async () => {
-      const target = watchlists.find(wl => wl.id === sym.watchlistId)
-      if (!target) {
-        showPlatformToast({
-          variant: 'error',
-          title: 'Restore failed',
-          message: `Original watchlist for ${sym.tradingsymbol} no longer exists.`,
-          duration: 6000,
-        })
-        return
-      }
-      const updated = await addWatchlistSymbol(sym.watchlistId, {
-        symboltoken: sym.symboltoken,
-        tradingsymbol: sym.tradingsymbol,
-        exchange: sym.exchange,
-      })
-      setWatchlists(prev => prev.map(wl => (wl.id === sym.watchlistId ? updated : wl)))
-      setArchivedSymbols(removeArchivedSymbol(sym.symboltoken, sym.watchlistId))
-      showPlatformToast({
-        variant: 'success',
-        title: 'Restored to watchlist',
-        message: `${sym.tradingsymbol} added back to ${target.name}.`,
-        duration: 4000,
-      })
-    })
-
-  /** Restores every archived symbol back to its watchlist (skips lists that were deleted). */
-  const handleRestoreAllArchived = () =>
-    wrap(async () => {
-      let ok = 0
-      let fail = 0
-      for (const sym of archivedSymbols) {
-        const target = watchlists.find(wl => wl.id === sym.watchlistId)
-        if (!target) {
-          fail++
-          continue
-        }
-        try {
-          const updated = await addWatchlistSymbol(sym.watchlistId, {
-            symboltoken: sym.symboltoken,
-            tradingsymbol: sym.tradingsymbol,
-            exchange: sym.exchange,
-          })
-          setWatchlists(prev => prev.map(wl => (wl.id === sym.watchlistId ? updated : wl)))
-          setArchivedSymbols(removeArchivedSymbol(sym.symboltoken, sym.watchlistId))
-          ok++
-        } catch {
-          fail++
-        }
-      }
-      showPlatformToast({
-        variant: fail === 0 ? 'success' : ok > 0 ? 'warning' : 'error',
-        title: 'Restore archive',
-        message: fail === 0
-          ? `${ok} symbol${ok === 1 ? '' : 's'} restored to their watchlists`
-          : `${ok} restored · ${fail} skipped (watchlist removed)`,
-        duration: 6000,
-      })
-    })
+  /** Hides from the UI only — the symbol stays subscribed on the watchlist feed. */
+  const handleRemoveSymbol = (watchlistId: string, symboltoken: string) => {
+    hideWatchlistSymbol(watchlistId, symboltoken)
+  }
 
   const handleDeployAll = async (ctx: DeployAllContext) => {
     const accountEnv = ctx.accountEnv as 'live' | 'demo'
@@ -663,77 +634,64 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {archivedSymbols.length > 0 && (
+      {momentumTrades.length > 0 && (
         <div className="shrink-0 border-b border-accent/20 bg-accent/[0.05] px-5 py-3">
           <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <span className="grid h-6 w-6 place-items-center rounded-md bg-accent/15 text-accent">
-                <Archive className="h-3.5 w-3.5" />
+                <Zap className="h-3.5 w-3.5" />
               </span>
               <span className="font-display text-sm font-bold tracking-tightest text-text-primary">
-                Momentum Archive
+                Momentum Trades
               </span>
               <span className="rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.12em] text-accent">
-                {archivedSymbols.length} deployed
+                {momentumTrades.length} order{momentumTrades.length === 1 ? '' : 's'}
               </span>
               <span className="hidden text-[11px] text-text-secondary sm:inline">
-                strategies running · restore to add back to its list
+                orders placed by momentum · symbols stay in their watchlist
               </span>
             </div>
-            <div className="flex items-center gap-1.5">
-              <Button
-                type="button"
-                size="xs"
-                variant="outline"
-                onClick={handleRestoreAllArchived}
-                disabled={busy}
-                className="gap-1.5 text-accent hover:text-accent"
-              >
-                <Undo2 className="h-3.5 w-3.5" />
-                Restore all
-              </Button>
-              <Button
-                type="button"
-                size="xs"
-                variant="tertiary"
-                onClick={() => setArchivedSymbols(clearArchivedSymbols())}
-                disabled={busy}
-                className="hover:text-red"
-              >
-                Clear all
-              </Button>
-            </div>
+            <Button
+              type="button"
+              size="xs"
+              variant="tertiary"
+              onClick={() => setMomentumTrades(clearMomentumTrades())}
+              className="hover:text-red"
+            >
+              Clear all
+            </Button>
           </div>
           <div className="flex flex-wrap gap-2">
-            {archivedSymbols.map(sym => (
+            {momentumTrades.map(trade => (
               <div
-                key={`${sym.watchlistId}-${sym.symboltoken}`}
+                key={trade.id}
                 className="group flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 shadow-panel transition-colors hover:border-accent/40"
               >
-                <div className="flex flex-col">
+                <span
+                  className={`grid h-7 w-10 shrink-0 place-items-center rounded-md text-[10px] font-bold uppercase tracking-wide ${
+                    trade.accountEnv === 'live'
+                      ? 'border border-red/30 bg-red/15 text-red'
+                      : 'border border-green/30 bg-green/15 text-green'
+                  }`}
+                >
+                  {trade.accountEnv === 'live' ? 'LIVE' : 'DEMO'}
+                </span>
+                <div className="flex min-w-0 flex-col">
                   <span className="font-display text-[13px] font-bold leading-tight tracking-tightest text-text-primary">
-                    {sym.tradingsymbol}
+                    {trade.tradingsymbol}
+                    <span className="ml-1.5 font-mono text-[10px] font-medium text-text-secondary">
+                      {trade.noTakeProfit ? 'no TP · 1% SL' : '5% TP · 1% SL'}
+                    </span>
                   </span>
-                  <span className="font-mono text-[10px] leading-tight text-text-secondary tabular-nums">
-                    @ {sym.entryPrice.toFixed(2)} · {new Date(sym.archivedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  <span className="truncate font-mono text-[10px] leading-tight text-text-secondary tabular-nums">
+                    @ {trade.entryPrice.toFixed(2)} · {trade.executionId} · {new Date(trade.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
                 </div>
                 <button
                   type="button"
-                  title="Restore to watchlist"
-                  onClick={() => handleRestoreArchived(sym)}
-                  disabled={busy}
-                  className="grid h-7 w-7 place-items-center rounded-md border border-accent/30 bg-accent/10 text-accent transition-colors hover:bg-accent hover:text-primary disabled:opacity-50"
-                >
-                  <Undo2 className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  title="Remove from archive"
-                  onClick={() =>
-                    setArchivedSymbols(removeArchivedSymbol(sym.symboltoken, sym.watchlistId))
-                  }
-                  className="grid h-7 w-7 place-items-center rounded-md text-text-secondary/60 transition-colors hover:bg-card-hi hover:text-red"
+                  title="Remove from list"
+                  onClick={() => setMomentumTrades(removeMomentumTrade(trade.id))}
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-text-secondary/60 transition-colors hover:bg-card-hi hover:text-red"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
@@ -783,7 +741,8 @@ export default function WatchlistPage() {
                       broker: (wl.broker || 'angel') as WatchlistBroker,
                       account_env: wl.account_env || defaultAccountEnv((wl.broker || 'angel') as WatchlistBroker),
                     }}
-                    orderedSymbols={allOrderedSymbols[wl.id]}
+                    orderedSymbols={visibleOrderedSymbolsFor(wl)}
+                    hiddenSymbolTokens={hiddenByWatchlist[wl.id]}
                     autoSortEnabled={autoSortConfig.enabled}
                     ticks={ticks}
                     windowChanges={windowChanges}

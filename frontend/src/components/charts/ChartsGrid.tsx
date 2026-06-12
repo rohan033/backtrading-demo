@@ -9,7 +9,13 @@ import {
   resolveExecutionPriceStreamStatus,
   resolveExecutionStream,
 } from '../../ExecutionWorkspace'
+import { useWatchlistStream } from '../../context/WatchlistStreamContext'
 import { useExecutionPositionsPnl } from '../../hooks/useExecutionPositionsPnl'
+import {
+  applyWatchlistFeedToStreamStatus,
+  findWatchlistFeedMatch,
+  samplesToChartPoints,
+} from '../../lib/watchlistFeedReuse'
 import { useLiveExecutionsStreamBootstrap } from '../../hooks/useLiveExecutionsStreamBootstrap'
 import {
   CHART_ENV_FILTER_OPTIONS,
@@ -49,6 +55,8 @@ type Props = {
     created_at?: string | null
     data_plane_port?: number | string
     account_env?: string | null
+    token?: string | number | null
+    broker?: string | null
   }>
   planeStreams: Record<string, unknown>
   selectedExecutionId?: string | null
@@ -67,6 +75,7 @@ export default function ChartsGrid({
   refreshExecutions,
   onExecutionStopped,
 }: Props) {
+  const { watchlists, ticks, connected, historyRef } = useWatchlistStream()
   const [sortKey, setSortKey] = useState<ChartSortKey>('profit-desc')
   const [filterKey, setFilterKey] = useState<ChartFilterKey>('all')
   const [envFilter, setEnvFilter] = useState<ChartEnvFilter>('all')
@@ -92,10 +101,18 @@ export default function ChartsGrid({
     for (const execution of liveExecutions) {
       const stream = getPlaneStream(planeStreams, execution.data_plane_id)
       const resolved = resolveExecutionStream(stream, execution)
-      prices[execution.executor_id] = resolved.tick?.ltp ?? null
+      const watchlistFeed = connected
+        ? findWatchlistFeedMatch(watchlists, ticks, historyRef, {
+            broker: execution.broker,
+            account_env: execution.account_env,
+            token: execution.token,
+            symbol: execution.symbol,
+          })
+        : null
+      prices[execution.executor_id] = resolved.tick?.ltp ?? watchlistFeed?.tick?.ltp ?? null
     }
     return prices
-  }, [liveExecutions, planeStreams])
+  }, [liveExecutions, planeStreams, watchlists, ticks, connected, historyRef])
 
   const pnlByExecutor = useExecutionPositionsPnl(liveExecutions, livePriceByExecutor)
 
@@ -222,10 +239,24 @@ export default function ChartsGrid({
               const stream = getPlaneStream(planeStreams, execution.data_plane_id)
               const resolvedStream = resolveExecutionStream(stream, execution)
               const { tickHistory, candleHistory, tick: streamTick, streamKey } = resolvedStream
-              const liveLtp = streamTick?.ltp ?? null
-              const chartSeries = buildChartSeries(tickHistory, execution, liveLtp)
+              const watchlistFeed = connected
+                ? findWatchlistFeedMatch(watchlists, ticks, historyRef, {
+                    broker: execution.broker,
+                    account_env: execution.account_env,
+                    token: execution.token,
+                    symbol: execution.symbol,
+                  })
+                : null
+              const liveLtp = streamTick?.ltp ?? watchlistFeed?.tick?.ltp ?? null
+              const historyForChart = tickHistory.length
+                ? tickHistory
+                : samplesToChartPoints(watchlistFeed?.samples ?? [])
+              const chartSeries = buildChartSeries(historyForChart, execution, liveLtp)
               const candleSeries = buildCandleSeries(candleHistory, execution, liveLtp)
-              const priceStreamStatus = streamStatusByExecutor[execution.executor_id]
+              const priceStreamStatus = applyWatchlistFeedToStreamStatus(
+                streamStatusByExecutor[execution.executor_id],
+                watchlistFeed,
+              )
               const realtimeEvents = stream.realtimeEvents.filter(event =>
                 event.executor_id === execution.executor_id
                 || event.details?.executor_id === execution.executor_id,

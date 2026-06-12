@@ -13,9 +13,11 @@ const MOMENTUM_NOTP_SYMBOL_KEYS_KEY = 'wl-momentum-notp-symbols-v1'
 const MOMENTUM_LIVE_SYMBOL_KEYS_KEY = 'wl-momentum-live-symbols-v1'
 const SYMBOL_ORDER_KEY_PREFIX = 'wl-sym-order-'
 const ARCHIVED_KEY = 'wl-momentum-archived-v1'
+const MOMENTUM_TRADES_KEY = 'wl-momentum-trades-v1'
 
 export const WL_MOMENTUM_CHANGED_EVENT = 'wl-momentum-changed'
 export const WL_SYMBOL_ARCHIVED_EVENT = 'wl-symbol-archived'
+export const WL_MOMENTUM_TRADE_EVENT = 'wl-momentum-trade'
 
 export function notifyMomentumStateChanged(): void {
   if (typeof window === 'undefined') return
@@ -25,6 +27,11 @@ export function notifyMomentumStateChanged(): void {
 export function notifySymbolArchived(): void {
   if (typeof window === 'undefined') return
   window.dispatchEvent(new CustomEvent(WL_SYMBOL_ARCHIVED_EVENT))
+}
+
+export function notifyMomentumTrade(): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new CustomEvent(WL_MOMENTUM_TRADE_EVENT))
 }
 
 export function archivedSymbolKey(watchlistId: string, symboltoken: string): string {
@@ -275,5 +282,52 @@ export function removeArchivedSymbol(
 
 export function clearArchivedSymbols(): ArchivedMomentumSymbol[] {
   localStorage.removeItem(ARCHIVED_KEY)
+  return []
+}
+
+// ── Momentum trades log ───────────────────────────────────────────────────────
+// A running list of orders created by momentum deploys. Symbols stay in their
+// watchlist — this is purely a record of what was placed, mirroring the toast
+// notification content so the user can review recent momentum orders.
+
+export type MomentumTrade = {
+  id: string
+  watchlistId: string
+  symboltoken: string
+  tradingsymbol: string
+  exchange: string
+  broker: string
+  executionId: string
+  accountEnv: 'live' | 'demo'
+  noTakeProfit: boolean
+  entryPrice: number
+  createdAt: number
+}
+
+export function loadMomentumTrades(): MomentumTrade[] {
+  try {
+    const raw = localStorage.getItem(MOMENTUM_TRADES_KEY)
+    return raw ? (JSON.parse(raw) as MomentumTrade[]) : []
+  } catch {
+    return []
+  }
+}
+
+/** Prepends a trade to the log (capped at 200 entries) and returns the new list. */
+export function recordMomentumTrade(trade: MomentumTrade): MomentumTrade[] {
+  const existing = loadMomentumTrades()
+  const next = [trade, ...existing].slice(0, 200)
+  localStorage.setItem(MOMENTUM_TRADES_KEY, JSON.stringify(next))
+  return next
+}
+
+export function removeMomentumTrade(id: string): MomentumTrade[] {
+  const next = loadMomentumTrades().filter(trade => trade.id !== id)
+  localStorage.setItem(MOMENTUM_TRADES_KEY, JSON.stringify(next))
+  return next
+}
+
+export function clearMomentumTrades(): MomentumTrade[] {
+  localStorage.removeItem(MOMENTUM_TRADES_KEY)
   return []
 }
