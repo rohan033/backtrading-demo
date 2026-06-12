@@ -11,11 +11,13 @@ import {
   computeExecutionLevels,
   formatOrderQuantity,
 } from '../../ExecutionWorkspace'
+import { useWatchlistStream } from '../../context/WatchlistStreamContext'
 import {
   formatBrokerCompactMoney,
   formatBrokerPrice,
   formatBrokerSignedMoney,
 } from '../../lib/currency'
+import { findWatchlistFeedMatch } from '../../lib/watchlistFeedReuse'
 import { formatDbTimestamp } from '../../lib/datetime'
 import {
   executionSourceHref,
@@ -566,8 +568,20 @@ export default function StrategyDetailView({
   const [logOpen, setLogOpen] = useState(false)
   const [filledQty, setFilledQty] = useState(null)
   const [takeProfitMode, setTakeProfitMode] = useState(TAKE_PROFIT_MODE_PERCENT)
+  const { watchlists, ticks, connected, historyRef } = useWatchlistStream()
   const levels = useMemo(() => computeExecutionLevels(execution || {}), [execution])
   const broker = execution?.broker
+  const watchlistFeed = useMemo(
+    () => (execution && connected
+      ? findWatchlistFeedMatch(watchlists, ticks, historyRef, {
+          broker: execution.broker,
+          account_env: execution.account_env,
+          token: execution.token,
+          symbol: execution.symbol,
+        })
+      : null),
+    [execution, connected, watchlists, ticks, historyRef],
+  )
 
   const activeTickHistory = useMemo(() => {
     if (!planeStreams || !execution?.data_plane_id) return []
@@ -590,9 +604,12 @@ export default function StrategyDetailView({
     return []
   }, [planeStreams, execution?.data_plane_id, execution?.token, execution?.symbol, selectedTick])
   const livePrice = useMemo(() => {
+    if (!isLive && watchlistFeed?.tick?.ltp != null) {
+      return watchlistFeed.tick.ltp
+    }
     const last = activeTickHistory?.[activeTickHistory.length - 1]?.value
     return Number.isFinite(last) && last > 0 ? Number(last) : null
-  }, [activeTickHistory])
+  }, [isLive, watchlistFeed?.tick?.ltp, activeTickHistory])
   const takeProfitMetricLabel = takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? 'Potential profit' : 'Take profit %'
   const takeProfitMetricValue = takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE
     ? (levels.potentialProfitAbsolute != null
