@@ -126,6 +126,38 @@ export function samplesToChartPoints(samples: PriceSample[]): Array<{ time: numb
   return deduped
 }
 
+export type WatchlistCandle = {
+  time: number
+  open: number
+  high: number
+  low: number
+  close: number
+}
+
+/** Aggregate tick samples into 1-minute candles for watchlist chart view. */
+export function samplesToCandles(samples: PriceSample[]): WatchlistCandle[] {
+  const buckets = new Map<number, WatchlistCandle>()
+  for (const sample of samples) {
+    if (!Number.isFinite(sample.ltp) || sample.ltp <= 0) continue
+    const time = Math.floor(sample.ts / 60_000) * 60
+    const existing = buckets.get(time)
+    if (!existing) {
+      buckets.set(time, {
+        time,
+        open: sample.ltp,
+        high: sample.ltp,
+        low: sample.ltp,
+        close: sample.ltp,
+      })
+      continue
+    }
+    existing.high = Math.max(existing.high, sample.ltp)
+    existing.low = Math.min(existing.low, sample.ltp)
+    existing.close = sample.ltp
+  }
+  return [...buckets.values()].sort((a, b) => a.time - b.time)
+}
+
 export function shouldReuseWatchlistFeed(
   watchlists: Watchlist[],
   connected: boolean,

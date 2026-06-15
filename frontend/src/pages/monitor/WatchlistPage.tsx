@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronUp, LayoutGrid, Plus, Upload, X, Zap } from 'lucide-react'
+import { ChevronDown, ChevronUp, ChevronsUp, LayoutGrid, LineChart, Plus, Upload, X, Zap } from 'lucide-react'
 
+import WatchlistChartView from '../../components/watchlist/WatchlistChartView'
 import WatchlistPanelTabs from '../../components/watchlist/WatchlistPanelTabs'
 import DraggableWatchlistCard from '../../components/watchlist/DraggableWatchlistCard'
 import WatchlistColumn from '../../components/watchlist/WatchlistColumn'
@@ -13,6 +14,7 @@ import WatchlistMomentumSettings from '../../components/watchlist/WatchlistMomen
 import { Button } from '../../components/ui/button'
 import { useWatchlistStream } from '../../context/WatchlistStreamContext'
 import { buildMomentumSymbolIndex } from '../../hooks/useWatchlistMomentumAlerts'
+import { useWatchlistChartCandles } from '../../hooks/useWatchlistChartCandles'
 import type { DeployAllContext } from '../../components/watchlist/WatchlistColumn'
 import { showPlatformToast } from '../../lib/platform-toast'
 import { createAndStartMomentumStrategy } from '../../lib/watchlistMomentumStrategy'
@@ -70,6 +72,14 @@ import {
 } from '../../lib/watchlistPanelApi'
 import { loadActivePanelId, saveActivePanelId } from '../../lib/watchlistPanels'
 import { loadWatchlistHeaderCompact, saveWatchlistHeaderCompact } from '../../lib/watchlistHeaderCompact'
+import {
+  loadWatchlistChromeHidden,
+  notifyWatchlistChromeHiddenChanged,
+  saveWatchlistChromeHidden,
+  WL_CHROME_HIDDEN_CHANGED_EVENT,
+} from '../../lib/watchlistChromeHidden'
+import { uniqueWatchlistChartSymbols } from '../../lib/watchlistUniqueSymbols'
+import { loadWatchlistViewMode, loadWatchlistChartRenderMode, saveWatchlistChartRenderMode, saveWatchlistViewMode, type WatchlistChartRenderMode, type WatchlistViewMode } from '../../lib/watchlistViewMode'
 import {
   addWatchlistSymbol,
   createWatchlist,
@@ -151,10 +161,33 @@ export default function WatchlistPage() {
   const [panels, setPanels] = useState<WatchlistPanel[]>([])
   const [activePanelId, setActivePanelId] = useState<string | null>(() => loadActivePanelId())
   const [headerCompact, setHeaderCompact] = useState(() => loadWatchlistHeaderCompact())
+  const [chromeHidden, setChromeHidden] = useState(() => loadWatchlistChromeHidden())
+  const [viewMode, setViewMode] = useState<WatchlistViewMode>(() => loadWatchlistViewMode())
+  const [chartRenderMode, setChartRenderMode] = useState<WatchlistChartRenderMode>(
+    () => loadWatchlistChartRenderMode(),
+  )
+  const [focusedChartKey, setFocusedChartKey] = useState<string | null>(null)
+
+  const setChromeHiddenPersisted = useCallback((hidden: boolean) => {
+    setChromeHidden(hidden)
+    saveWatchlistChromeHidden(hidden)
+    notifyWatchlistChromeHiddenChanged()
+  }, [])
 
   const setHeaderCompactPersisted = useCallback((compact: boolean) => {
     setHeaderCompact(compact)
     saveWatchlistHeaderCompact(compact)
+  }, [])
+
+  const setChartRenderModePersisted = useCallback((mode: WatchlistChartRenderMode) => {
+    setChartRenderMode(mode)
+    saveWatchlistChartRenderMode(mode)
+  }, [])
+
+  const setViewModePersisted = useCallback((mode: WatchlistViewMode) => {
+    setViewMode(mode)
+    saveWatchlistViewMode(mode)
+    if (mode === 'cards') setFocusedChartKey(null)
   }, [])
 
   const resolveWatchlistPanelId = useCallback(
@@ -200,6 +233,25 @@ export default function WatchlistPage() {
     (wl: Watchlist): WatchlistSymbol[] =>
       visibleWatchlistSymbols(orderedSymbolsFor(wl), wl.id, hiddenByWatchlist[wl.id]),
     [orderedSymbolsFor, hiddenByWatchlist],
+  )
+
+  const panelChartSymbols = useMemo(
+    () => uniqueWatchlistChartSymbols(activePanelWatchlists, visibleOrderedSymbolsFor),
+    [activePanelWatchlists, visibleOrderedSymbolsFor],
+  )
+
+  const chartSamplesByKey = useMemo(() => {
+    const history = historyRef.current
+    return Object.fromEntries(
+      panelChartSymbols.map(symbol => [symbol.tickKey, history[symbol.tickKey] ?? []]),
+    )
+  }, [panelChartSymbols, ticks])
+
+  const chartCandlesByKey = useWatchlistChartCandles(
+    panelChartSymbols,
+    ticks,
+    chartSamplesByKey,
+    viewMode === 'charts' && chartRenderMode === 'candle',
   )
 
   /** Stable map of ordered symbols used by the momentum hook — only recomputes when watchlists or orders change. */
@@ -376,18 +428,25 @@ export default function WatchlistPage() {
   }, [activePanelId, panels])
 
   useEffect(() => {
+    setFocusedChartKey(null)
+  }, [activePanelId, viewMode])
+
+  useEffect(() => {
     const onMomentumChanged = () => syncMomentumState()
     const onMomentumTrade = () => {
       setMomentumTrades(loadMomentumTrades())
     }
     const onHiddenChanged = () => setHiddenByWatchlist(loadAllHiddenSymbolTokens())
+    const onChromeHiddenChanged = () => setChromeHidden(loadWatchlistChromeHidden())
     window.addEventListener(WL_MOMENTUM_CHANGED_EVENT, onMomentumChanged)
     window.addEventListener(WL_MOMENTUM_TRADE_EVENT, onMomentumTrade)
     window.addEventListener(WL_HIDDEN_SYMBOLS_CHANGED_EVENT, onHiddenChanged)
+    window.addEventListener(WL_CHROME_HIDDEN_CHANGED_EVENT, onChromeHiddenChanged)
     return () => {
       window.removeEventListener(WL_MOMENTUM_CHANGED_EVENT, onMomentumChanged)
       window.removeEventListener(WL_MOMENTUM_TRADE_EVENT, onMomentumTrade)
       window.removeEventListener(WL_HIDDEN_SYMBOLS_CHANGED_EVENT, onHiddenChanged)
+      window.removeEventListener(WL_CHROME_HIDDEN_CHANGED_EVENT, onChromeHiddenChanged)
     }
   }, [syncMomentumState])
 
@@ -644,9 +703,63 @@ export default function WatchlistPage() {
     })
   }
 
+  const chromeHideButton = (
+    <button
+      type="button"
+      onClick={() => setChromeHiddenPersisted(true)}
+      className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-text-secondary transition-colors hover:bg-card hover:text-text-primary"
+      title="Hide header, panels, and top feed"
+    >
+      <ChevronsUp className="h-4 w-4" />
+    </button>
+  )
+
+  const viewModeToggle = (
+    <div
+      className="inline-flex overflow-hidden rounded-md border border-border bg-card"
+      title="Switch between card table and chart grid"
+    >
+      <button
+        type="button"
+        onClick={() => setViewModePersisted('cards')}
+        className={`inline-flex items-center gap-1 px-2 py-1.5 text-[11px] font-medium transition-colors ${
+          viewMode === 'cards'
+            ? 'bg-accent/15 text-accent'
+            : 'text-text-secondary hover:text-text-primary'
+        }`}
+      >
+        <LayoutGrid className="h-3.5 w-3.5" />
+        Cards
+      </button>
+      <button
+        type="button"
+        onClick={() => setViewModePersisted('charts')}
+        className={`inline-flex items-center gap-1 border-l border-border px-2 py-1.5 text-[11px] font-medium transition-colors ${
+          viewMode === 'charts'
+            ? 'bg-accent/15 text-accent'
+            : 'text-text-secondary hover:text-text-primary'
+        }`}
+      >
+        <LineChart className="h-3.5 w-3.5" />
+        Charts
+      </button>
+    </div>
+  )
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {headerCompact ? (
+    <div className="relative flex h-full min-h-0 flex-col">
+      {chromeHidden ? (
+        <button
+          type="button"
+          onClick={() => setChromeHiddenPersisted(false)}
+          className="absolute left-3 top-2 z-30 inline-flex items-center gap-1.5 rounded-md border border-border/80 bg-card/95 px-2.5 py-1.5 text-[11px] font-medium text-text-secondary shadow-panel backdrop-blur-sm transition-colors hover:bg-card-hi hover:text-text-primary"
+          title="Show header, panels, and top feed"
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+          Show controls
+        </button>
+      ) : null}
+      {!chromeHidden && headerCompact ? (
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border bg-secondary/20 px-5 py-1.5">
           <button
             type="button"
@@ -671,13 +784,15 @@ export default function WatchlistPage() {
                 {connected ? 'Live' : '…'}
               </span>
             ) : null}
+            {viewModeToggle}
+            {chromeHideButton}
             <Button type="button" size="sm" onClick={handleCreate} disabled={busy || !activePanelId} className="h-7 gap-1 px-2 text-[11px]">
               <Plus className="h-3.5 w-3.5" />
               New
             </Button>
           </div>
         </div>
-      ) : (
+      ) : !chromeHidden ? (
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
           <div className="flex min-w-0 items-center gap-3">
             <span className="h-9 w-1 shrink-0 rounded-full bg-accent" aria-hidden="true" />
@@ -718,6 +833,7 @@ export default function WatchlistPage() {
               visibleColumns={visibleChangeColumns}
               onChange={handleVisibleChangeColumns}
             />
+            {viewModeToggle}
             <Button
               type="button"
               size="sm"
@@ -750,14 +866,16 @@ export default function WatchlistPage() {
               type="button"
               onClick={() => setHeaderCompactPersisted(true)}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-text-secondary transition-colors hover:bg-card hover:text-text-primary"
-              title="Hide header for more space"
+              title="Collapse to compact header"
             >
               <ChevronUp className="h-4 w-4" />
             </button>
+            {chromeHideButton}
           </div>
         </div>
-      )}
+      ) : null}
 
+      {!chromeHidden ? (
       <WatchlistPanelTabs
         panels={panels}
         activePanelId={activePanelId}
@@ -767,6 +885,7 @@ export default function WatchlistPage() {
         onRename={handleRenamePanel}
         onDelete={handleDeletePanel}
       />
+      ) : null}
 
       <BulkUploadWatchlistDialog
         open={bulkUploadOpen}
@@ -788,7 +907,7 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      {momentumTrades.length > 0 && (
+      {!chromeHidden && momentumTrades.length > 0 && (
         <div className="shrink-0 border-b border-accent/20 bg-accent/[0.05] px-5 py-3">
           <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -855,9 +974,34 @@ export default function WatchlistPage() {
         </div>
       )}
 
-      <div ref={canvasScrollRef} className="relative min-h-0 flex-1 overflow-auto bg-primary/30">
+      <div
+        ref={canvasScrollRef}
+        className={`relative min-h-0 flex-1 bg-primary/30 ${
+          viewMode === 'charts' && focusedChartKey ? 'overflow-hidden' : 'overflow-auto'
+        }`}
+      >
         {loading ? (
           <p className="p-5 text-xs text-text-secondary">Loading watchlists…</p>
+        ) : viewMode === 'charts' ? (
+          <WatchlistChartView
+            symbols={panelChartSymbols}
+            ticks={ticks}
+            samplesByKey={chartSamplesByKey}
+            candlesByKey={chartCandlesByKey}
+            focusedTickKey={focusedChartKey}
+            onFocusChange={setFocusedChartKey}
+            visibleChangeColumns={visibleChangeColumns}
+            windowChanges={windowChanges}
+            chartRenderMode={chartRenderMode}
+            onChartRenderModeChange={setChartRenderModePersisted}
+            momentumSymbolKeys={momentumSymbolKeys}
+            momentumNoTpSymbolKeys={momentumNoTpSymbolKeys}
+            momentumLiveSymbolKeys={momentumLiveSymbolKeys}
+            onToggleSymbolMomentum={handleToggleSymbolMomentum}
+            onToggleSymbolMomentumNoTp={handleToggleSymbolMomentumNoTp}
+            onToggleSymbolMomentumLive={handleToggleSymbolMomentumLive}
+            onHideChrome={() => setChromeHiddenPersisted(true)}
+          />
         ) : activePanelWatchlists.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
             <p className="text-sm text-text-secondary">

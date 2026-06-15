@@ -12,6 +12,10 @@ import {
   STICKY_FEED_SORT_INTERVALS,
   stickyFeedSortIntervalLabel,
 } from '../../lib/stickyFeed'
+import {
+  loadWatchlistChromeHidden,
+  WL_CHROME_HIDDEN_CHANGED_EVENT,
+} from '../../lib/watchlistChromeHidden'
 import type { WindowChangesLookup } from '../../lib/watchlistAutoSort'
 import type { WatchlistChangeWindowId } from '../../lib/watchlistChangeColumns'
 import type { RankedWatchlistSymbol } from '../../lib/watchlistTopPerformers'
@@ -262,6 +266,13 @@ export default function StickyWatchlistFeed() {
   } = useStickyWatchlistFeed()
 
   const [pendingDeploy, setPendingDeploy] = useState<PendingDeploy | null>(null)
+  const [chromeHidden, setChromeHidden] = useState(() => loadWatchlistChromeHidden())
+
+  useEffect(() => {
+    const sync = () => setChromeHidden(loadWatchlistChromeHidden())
+    window.addEventListener(WL_CHROME_HIDDEN_CHANGED_EVENT, sync)
+    return () => window.removeEventListener(WL_CHROME_HIDDEN_CHANGED_EVENT, sync)
+  }, [])
 
   const handleRequestMomentum = useCallback(
     (row: RankedWatchlistSymbol, noTakeProfit: boolean) => {
@@ -288,7 +299,7 @@ export default function StickyWatchlistFeed() {
     })
   }, [deploySymbolMomentum])
 
-  if (!hasSymbols) return null
+  if (!hasSymbols || chromeHidden) return null
 
   const columnLabel = STICKY_FEED_RANK_WINDOWS.find(window => window.id === config.column)?.label
     ?? config.column
