@@ -120,6 +120,8 @@ export default function WatchlistSymbolChart({
   const userInteractedRef = useRef(false)
   const lineDataRef = useRef<LineData[]>([])
   const candleDataRef = useRef<WatchlistSanitizedCandle[]>([])
+  const lastFirstLineTimeRef = useRef<number | null>(null)
+  const lastFirstCandleTimeRef = useRef<number | null>(null)
   const [plotHeight, setPlotHeight] = useState(compact ? 72 : 280)
   const [chartGeneration, setChartGeneration] = useState(0)
 
@@ -168,13 +170,31 @@ export default function WatchlistSymbolChart({
       applyWatchlistCandleColors(series, lastCandle)
       lastPointRef.current = lastCandle
       const barCount = currentCandleData.length
+      const previousFirstTime = lastFirstCandleTimeRef.current
+      const newFirstTime = currentCandleData[0]?.time
+      const prepended =
+        previousFirstTime != null
+        && newFirstTime != null
+        && newFirstTime < previousFirstTime
+      if (prepended && !compact) {
+        const visibleBars = 120
+        chart.timeScale().setVisibleLogicalRange({
+          from: 0,
+          to: Math.min(visibleBars, Math.max(barCount - 1, 0)),
+        })
+        lastViewportBarCountRef.current = barCount
+        lastFirstCandleTimeRef.current = newFirstTime ?? null
+        return
+      }
       const shouldRefocus =
         !userInteractedRef.current
+        && !prepended
         && (lastViewportBarCountRef.current === 0 || barCount !== lastViewportBarCountRef.current)
       if (shouldRefocus) {
         applyWatchlistCandleViewport(chart, barCount, compact)
         lastViewportBarCountRef.current = barCount
       }
+      lastFirstCandleTimeRef.current = newFirstTime ?? null
       return
     }
 
@@ -199,9 +219,25 @@ export default function WatchlistSymbolChart({
     }
     lastPointRef.current = lastPoint
 
-    if (!userInteractedRef.current) {
+    const previousFirstTime = lastFirstLineTimeRef.current
+    const newFirstTime = currentLineData[0]?.time
+    const prepended =
+      previousFirstTime != null
+      && typeof newFirstTime === 'number'
+      && newFirstTime < previousFirstTime
+    if (prepended && !compact) {
+      const visibleBars = 120
+      chart.timeScale().setVisibleLogicalRange({
+        from: 0,
+        to: Math.min(visibleBars, Math.max(currentLineData.length - 1, 0)),
+      })
+      lastFirstLineTimeRef.current = newFirstTime
+      return
+    }
+    if (!userInteractedRef.current && !prepended) {
       chart.timeScale().fitContent()
     }
+    lastFirstLineTimeRef.current = typeof newFirstTime === 'number' ? newFirstTime : null
   }, [isCandleMode, compact])
 
   useEffect(() => {
@@ -250,6 +286,8 @@ export default function WatchlistSymbolChart({
     userInteractedRef.current = false
     lastPointRef.current = null
     lastViewportBarCountRef.current = 0
+    lastFirstLineTimeRef.current = null
+    lastFirstCandleTimeRef.current = null
 
     const markUserInteracted = () => {
       userInteractedRef.current = true

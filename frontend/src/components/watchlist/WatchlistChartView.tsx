@@ -32,7 +32,9 @@ type Props = {
   onToggleSymbolMomentumLive: (watchlistId: string, symboltoken: string) => void
   onHideChrome?: () => void
   onLoadHistorical?: () => void
+  onLoadOlderHistorical?: () => void
   historicalLoading?: boolean
+  olderHistoricalLoading?: boolean
   hasHistorical?: boolean
 }
 
@@ -208,6 +210,8 @@ export default function WatchlistChartView({
   candlesByKey,
   onLoadHistorical,
   historicalLoading = false,
+  onLoadOlderHistorical,
+  olderHistoricalLoading = false,
   hasHistorical = false,
   onHideChrome,
   ...shared
@@ -281,6 +285,20 @@ export default function WatchlistChartView({
                 >
                   <RefreshCw className={`h-3.5 w-3.5 ${historicalLoading ? 'animate-spin' : ''}`} />
                   {hasHistorical ? 'Refresh history' : 'Load history'}
+                </Button>
+              ) : null}
+              {hasHistorical && onLoadOlderHistorical ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={onLoadOlderHistorical}
+                  disabled={olderHistoricalLoading || historicalLoading}
+                  className="gap-1.5"
+                  title="Load 2 hours of candles before the oldest bar on chart"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${olderHistoricalLoading ? 'animate-spin' : ''}`} />
+                  Load older
                 </Button>
               ) : null}
               <ChartRenderToggle

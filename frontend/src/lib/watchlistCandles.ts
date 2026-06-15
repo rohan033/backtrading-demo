@@ -1,5 +1,4 @@
 import type { PriceSample } from './watchlistChangeColumns'
-import type { PriceSample } from './watchlistChangeColumns'
 import type { WatchlistChartSymbol } from './watchlistUniqueSymbols'
 
 export type WatchlistSanitizedCandle = {
@@ -16,7 +15,11 @@ export const WATCHLIST_CANDLE_DOWN = '#ff5252'
 export const WATCHLIST_CANDLE_NEUTRAL_UP = '#00c853'
 export const WATCHLIST_CANDLE_NEUTRAL_DOWN = '#ff1744'
 
+export const WATCHLIST_CHART_INITIAL_COUNT = 270
 export const WATCHLIST_CHART_CANDLE_COUNT = 1000
+/** Bars per "Load older" page — end = earliest loaded bar, start = end - this many minutes. */
+export const WATCHLIST_CHART_OLDER_COUNT = 100
+export const WATCHLIST_CHART_OLDER_MINUTES = WATCHLIST_CHART_OLDER_COUNT
 
 export function ohlcCandlesToPriceSamples(candles: WatchlistSanitizedCandle[]): PriceSample[] {
   return candles.map(candle => ({
@@ -170,7 +173,7 @@ export function liveWatchlistCandles(
 
 export async function fetchWatchlistSymbolCandles(
   symbol: WatchlistChartSymbol,
-  count = WATCHLIST_CHART_CANDLE_COUNT,
+  count = WATCHLIST_CHART_INITIAL_COUNT,
 ): Promise<WatchlistSanitizedCandle[]> {
   const url =
     `/api/watchlist/candles` +
@@ -183,6 +186,37 @@ export async function fetchWatchlistSymbolCandles(
   if (!res.ok) return []
   const json = (await res.json()) as { data?: unknown[] }
   return sanitizeWatchlistCandles(Array.isArray(json.data) ? json.data : [])
+}
+
+export async function fetchWatchlistOlderCandles(
+  symbol: WatchlistChartSymbol,
+  endTime: number,
+  count = WATCHLIST_CHART_OLDER_COUNT,
+): Promise<{ candles: WatchlistSanitizedCandle[]; loadedCount: number; interval?: string }> {
+  const end = Math.floor(endTime / 60) * 60
+  const start = end - count * 60
+  const url =
+    `/api/watchlist/candles/history` +
+    `?broker=${encodeURIComponent(symbol.broker)}` +
+    `&account_env=${encodeURIComponent(symbol.accountEnv)}` +
+    `&symbol=${encodeURIComponent(symbol.tradingsymbol)}` +
+    `&token=${encodeURIComponent(symbol.symboltoken)}` +
+    `&end=${encodeURIComponent(String(end))}` +
+    `&start=${encodeURIComponent(String(start))}` +
+    `&count=${count}`
+  const res = await fetch(url)
+  if (!res.ok) return { candles: [], loadedCount: 0 }
+  const json = (await res.json()) as {
+    data?: unknown[]
+    loaded_count?: number
+    interval?: string
+  }
+  const candles = sanitizeWatchlistCandles(Array.isArray(json.data) ? json.data : [])
+  return {
+    candles,
+    loadedCount: Number(json.loaded_count ?? candles.length) || 0,
+    interval: json.interval,
+  }
 }
 
 export function applyWatchlistCandleColors(

@@ -322,9 +322,26 @@ export default function WatchlistPage() {
     )
   }, [panelChartSymbols, ticks, windowChanges, historyRef])
 
+  const {
+    candlesByKey: chartCandlesByKey,
+    historicalByKey,
+    loadHistoricalCandles,
+    loadOlderHistoricalCandles,
+    loadingTickKey,
+    loadingOlderTickKey,
+    hasHistorical,
+  } = useWatchlistChartCandles(
+    panelChartSymbols,
+    ticks,
+    baseChartSamplesByKey,
+    focusedChartKey,
+  )
+
   const chartSamplesByKey = useMemo(() => {
     if (!focusedChartKey) return baseChartSamplesByKey
-    const ohlc = getWatchlistOhlcCache(focusedChartKey)
+    const ohlc =
+      historicalByKey[focusedChartKey]
+      ?? getWatchlistOhlcCache(focusedChartKey)
     if (!ohlc?.length) return baseChartSamplesByKey
     return {
       ...baseChartSamplesByKey,
@@ -333,19 +350,27 @@ export default function WatchlistPage() {
         baseChartSamplesByKey[focusedChartKey] ?? [],
       ),
     }
-  }, [baseChartSamplesByKey, focusedChartKey, ohlcRevision])
+  }, [baseChartSamplesByKey, focusedChartKey, historicalByKey, ohlcRevision])
 
-  const {
-    candlesByKey: chartCandlesByKey,
-    loadHistoricalCandles,
-    loadingTickKey,
-    hasHistorical,
-  } = useWatchlistChartCandles(
-    panelChartSymbols,
-    ticks,
-    chartSamplesByKey,
-    focusedChartKey,
-  )
+  const handleLoadOlderHistorical = useCallback(async () => {
+    if (!focusedChartKey || !hasHistorical(focusedChartKey)) return
+    const { loadedCount, interval } = await loadOlderHistoricalCandles(focusedChartKey)
+    if (loadedCount > 0) {
+      const intervalLabel =
+        interval && interval !== 'OneMinute'
+          ? ` (${interval.replace(/([A-Z])/g, ' $1').trim().toLowerCase()} bars)`
+          : ''
+      showPlatformToast({
+        message: `Loaded ${loadedCount} older bars${intervalLabel}`,
+        variant: 'success',
+      })
+      return
+    }
+    showPlatformToast({
+      message: 'No older candles available for this window',
+      variant: 'warning',
+    })
+  }, [focusedChartKey, hasHistorical, loadOlderHistoricalCandles])
 
   useEffect(() => {
     setWatchlistHistorySeederEnabled(viewMode !== 'charts')
@@ -1223,6 +1248,14 @@ export default function WatchlistPage() {
             }
             historicalLoading={Boolean(focusedChartKey && loadingTickKey === focusedChartKey)}
             hasHistorical={focusedChartKey ? hasHistorical(focusedChartKey) : false}
+            onLoadOlderHistorical={
+              focusedChartKey && hasHistorical(focusedChartKey)
+                ? () => void handleLoadOlderHistorical()
+                : undefined
+            }
+            olderHistoricalLoading={Boolean(
+              focusedChartKey && loadingOlderTickKey === focusedChartKey,
+            )}
           />
         ) : activePanelWatchlists.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">

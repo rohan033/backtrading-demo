@@ -1496,6 +1496,78 @@ async def get_watchlist_symbol_candles(
         return {"status": True, "data": []}
 
 
+@app.get(
+    "/api/watchlist/candles/history",
+    operation_id="get_watchlist_symbol_candles_history",
+    summary="Fetch older 1-minute OHLCV candles before the oldest bar already loaded",
+)
+async def get_watchlist_symbol_candles_history(
+    broker: str,
+    account_env: str,
+    symbol: str,
+    token: str,
+    before: int | None = None,
+    end: int | None = None,
+    start: int | None = None,
+    minutes: int = 120,
+    count: int = 100,
+):
+    """Returns up to `count` bars in [start, end).
+
+    eToro has no start/end query params on its candles API — we simulate pagination by
+    fetching desc and filtering client-side. Pass `before` (or `end`) as the exclusive
+    end of the window; omit `start` to use `before - minutes`.
+    """
+    broker_lower = broker.lower()
+    if broker_lower != "etoro":
+        return {"status": True, "data": [], "loaded_count": 0}
+
+    from brokers.etoro.candles import (
+        CANDLE_HISTORY_2H_MINUTES,
+        DEFAULT_HISTORY_PAGE_COUNT,
+        aget_historical_candles_before,
+    )
+
+    safe_minutes = max(1, min(int(minutes or CANDLE_HISTORY_2H_MINUTES), 1000))
+    safe_count = max(1, min(int(count or DEFAULT_HISTORY_PAGE_COUNT), 1000))
+    end_time = (int(before if before is not None else end) // 60) * 60
+    if end_time <= 0:
+        return {"status": True, "data": [], "loaded_count": 0}
+    start_time = (
+        (int(start) // 60) * 60
+        if start is not None
+        else end_time - safe_minutes * 60
+    )
+    try:
+        client = await _etoro_trading_client(account_env)
+        instrument_id = await client._instrument_id(symbol, str(token))
+        if instrument_id is None:
+            return {"status": True, "data": [], "loaded_count": 0}
+
+        candles, interval_used = await aget_historical_candles_before(
+            client,
+            instrument_id,
+            before_time=end_time,
+            minutes=max(1, (end_time - start_time) // 60),
+            count=safe_count,
+        )
+        log.info(
+            "[WATCHLIST_CANDLES] window symbol=%s token=%s env=%s start=%d end=%d count=%d interval=%s candles=%d",
+            symbol, token, account_env, start_time, end_time, safe_count, interval_used, len(candles),
+        )
+        return {
+            "status": True,
+            "data": candles,
+            "loaded_count": len(candles),
+            "interval": interval_used,
+            "start": start_time,
+            "end": end_time,
+        }
+    except Exception as exc:
+        log.warning("[WATCHLIST_CANDLES] older failed symbol=%s: %s", symbol, exc)
+        return {"status": True, "data": [], "loaded_count": 0}
+
+
 @app.post(
     "/api/control/executions/{execution_id}/positions/{position_id}/close",
     operation_id="close_execution_position",

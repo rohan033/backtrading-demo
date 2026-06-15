@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
+  fetchWatchlistOlderCandles,
   fetchWatchlistSymbolCandles,
   mergeLiveTailSamples,
   mergeLiveTickIntoWatchlistCandles,
+  mergeWatchlistCandleHistory,
   samplesToWatchlistCandles,
+  WATCHLIST_CHART_INITIAL_COUNT,
   type WatchlistSanitizedCandle,
 } from '../lib/watchlistCandles'
 import {
@@ -38,11 +41,15 @@ export function useWatchlistChartCandles(
     Record<string, WatchlistSanitizedCandle[]>
   >({})
   const [loadingTickKey, setLoadingTickKey] = useState<string | null>(null)
+  const [loadingOlderTickKey, setLoadingOlderTickKey] = useState<string | null>(null)
   const [ohlcRevision, setOhlcRevision] = useState(0)
   const symbolsRef = useRef(symbols)
+  const historicalByKeyRef = useRef(historicalByKey)
   const loadingKeysRef = useRef<Set<string>>(new Set())
+  const loadingOlderKeysRef = useRef<Set<string>>(new Set())
 
   symbolsRef.current = symbols
+  historicalByKeyRef.current = historicalByKey
 
   useEffect(() => {
     const onOhlcUpdated = () => setOhlcRevision(revision => revision + 1)
@@ -70,7 +77,7 @@ export function useWatchlistChartCandles(
     loadingKeysRef.current.add(tickKey)
     setLoadingTickKey(tickKey)
     try {
-      const candles = await fetchWatchlistSymbolCandles(symbol)
+      const candles = await fetchWatchlistSymbolCandles(symbol, WATCHLIST_CHART_INITIAL_COUNT)
       if (candles.length) {
         setWatchlistOhlcCache(tickKey, candles)
         setHistoricalByKey(prev => ({ ...prev, [tickKey]: candles }))
@@ -78,6 +85,42 @@ export function useWatchlistChartCandles(
     } finally {
       loadingKeysRef.current.delete(tickKey)
       setLoadingTickKey(current => (current === tickKey ? null : current))
+    }
+  }, [])
+
+  const loadOlderHistoricalCandles = useCallback(async (
+    tickKey: string,
+  ): Promise<{ loadedCount: number; interval?: string }> => {
+    if (loadingOlderKeysRef.current.has(tickKey) || loadingKeysRef.current.has(tickKey)) {
+      return { loadedCount: 0 }
+    }
+
+    const symbol = symbolsRef.current.find(item => item.tickKey === tickKey)
+    if (!symbol) return { loadedCount: 0 }
+
+    const current = resolveHistoricalCandles(
+      tickKey,
+      tickKey,
+      historicalByKeyRef.current,
+    ) ?? getWatchlistOhlcCache(tickKey)
+    if (!current?.length) return { loadedCount: 0 }
+
+    loadingOlderKeysRef.current.add(tickKey)
+    setLoadingOlderTickKey(tickKey)
+    try {
+      const { candles: older, loadedCount, interval } = await fetchWatchlistOlderCandles(
+        symbol,
+        current[0].time,
+      )
+      if (!loadedCount || !older.length) return { loadedCount: 0, interval }
+
+      const merged = mergeWatchlistCandleHistory(older, current)
+      setWatchlistOhlcCache(tickKey, merged)
+      setHistoricalByKey(prev => ({ ...prev, [tickKey]: merged }))
+      return { loadedCount, interval }
+    } finally {
+      loadingOlderKeysRef.current.delete(tickKey)
+      setLoadingOlderTickKey(current => (current === tickKey ? null : current))
     }
   }, [])
 
@@ -109,13 +152,16 @@ export function useWatchlistChartCandles(
     (tickKey: string) =>
       tickKey === focusedTickKey
       && ((historicalByKey[tickKey]?.length ?? 0) > 0 || hasWatchlistOhlcCache(tickKey)),
-    [focusedTickKey, historicalByKey],
+    [focusedTickKey, historicalByKey, ohlcRevision],
   )
 
   return {
     candlesByKey,
+    historicalByKey,
     loadHistoricalCandles,
+    loadOlderHistoricalCandles,
     loadingTickKey,
+    loadingOlderTickKey,
     hasHistorical,
   }
 }
