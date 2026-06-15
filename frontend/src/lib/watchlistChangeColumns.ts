@@ -31,14 +31,13 @@ export function loadVisibleChangeColumns(): WatchlistChangeWindowId[] {
     const parsed = JSON.parse(raw)
     if (!Array.isArray(parsed)) return defaultVisibleChangeColumns()
     const allowed = new Set(WATCHLIST_CHANGE_WINDOW_IDS)
-    const next = parsed.filter(
+    return parsed.filter(
       (id): id is WatchlistChangeWindowId =>
         typeof id === 'string' && allowed.has(id as WatchlistChangeWindowId),
     )
-    return next.length ? next : defaultVisibleChangeColumns()
   } catch {
     return defaultVisibleChangeColumns()
-}
+  }
 }
 
 export function saveVisibleChangeColumns(columns: WatchlistChangeWindowId[]): void {
@@ -62,7 +61,7 @@ export function watchlistTableMinWidthPx(visibleChangeColumnCount: number): numb
 
 export function buildWatchlistTableGrid(visibleChangeColumns: WatchlistChangeWindowId[]): string {
   const parts = [
-    'minmax(4.5rem, 1.15fr)',
+    'minmax(3.5rem, 6.5rem)',
     '4.75rem',
     '2.25rem',
   ]

@@ -29,6 +29,9 @@ import {
 } from './pages/trade/TradePages'
 import { ExecutionProvider } from './ExecutionWorkspace'
 import './index.css'
+import { initDisableNumberInputScroll } from './lib/disableNumberInputScroll'
+
+initDisableNumberInputScroll()
 
 function ResearchLayout() {
   return (

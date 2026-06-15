@@ -78,7 +78,7 @@ export default function DraggableWatchlistCard({
         top: layout.y,
         width: Math.max(layout.width, minTableWidth),
         minWidth: minTableWidth,
-        minHeight: cardHeight,
+        height: cardHeight,
       }}
       onPointerDown={event => {
         const el = event.target as HTMLElement

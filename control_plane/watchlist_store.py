@@ -25,6 +25,7 @@ class WatchlistStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         self._ensure_watchlist_columns(conn)
+        self._ensure_panel_schema(conn)
         return conn
 
     def _init_database(self) -> None:
@@ -56,10 +57,59 @@ class WatchlistStore:
 
             CREATE INDEX IF NOT EXISTS idx_watchlist_symbols_watchlist
                 ON watchlist_symbols(watchlist_id);
+
+            CREATE TABLE IF NOT EXISTS watchlist_panels (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             """
         )
         conn.commit()
         conn.close()
+
+    def _ensure_panel_schema(self, conn: sqlite3.Connection) -> None:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS watchlist_panels (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(watchlists)")}
+        if "panel_id" not in columns:
+            conn.execute("ALTER TABLE watchlists ADD COLUMN panel_id TEXT")
+
+        panel_count = conn.execute("SELECT COUNT(*) AS c FROM watchlist_panels").fetchone()["c"]
+        if panel_count == 0:
+            default_id = str(uuid.uuid4())
+            now = _now_utc()
+            conn.execute(
+                """
+                INSERT INTO watchlist_panels (id, name, position, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (default_id, "Default", 0, now, now),
+            )
+            conn.execute(
+                "UPDATE watchlists SET panel_id = ? WHERE panel_id IS NULL OR panel_id = ''",
+                (default_id,),
+            )
+        else:
+            default_id = conn.execute(
+                "SELECT id FROM watchlist_panels ORDER BY position ASC, created_at ASC LIMIT 1"
+            ).fetchone()["id"]
+            conn.execute(
+                "UPDATE watchlists SET panel_id = ? WHERE panel_id IS NULL OR panel_id = ''",
+                (default_id,),
+            )
+        conn.commit()
 
     def _ensure_watchlist_columns(self, conn: sqlite3.Connection) -> None:
         table = conn.execute(
@@ -84,16 +134,141 @@ class WatchlistStore:
         keys = data.keys()
         broker = data["broker"] if "broker" in keys else "angel"
         account_env = data["account_env"] if "account_env" in keys else "live"
+        panel_id = data["panel_id"] if "panel_id" in keys else None
         return {
             "id": data["id"],
             "name": data["name"],
             "position": data["position"],
             "broker": broker,
             "account_env": account_env,
+            "panel_id": panel_id,
             "created_at": data["created_at"],
             "updated_at": data["updated_at"],
             "symbols": symbols,
         }
+
+    @staticmethod
+    def _panel_payload(row: sqlite3.Row, watchlist_count: int = 0) -> dict[str, Any]:
+        data = dict(row)
+        return {
+            "id": data["id"],
+            "name": data["name"],
+            "position": data["position"],
+            "created_at": data["created_at"],
+            "updated_at": data["updated_at"],
+            "watchlist_count": watchlist_count,
+        }
+
+    def list_panels(self) -> list[dict[str, Any]]:
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT * FROM watchlist_panels ORDER BY position ASC, created_at ASC"
+        ).fetchall()
+        counts = {
+            row["panel_id"]: row["c"]
+            for row in conn.execute(
+                "SELECT panel_id, COUNT(*) AS c FROM watchlists GROUP BY panel_id"
+            ).fetchall()
+            if row["panel_id"]
+        }
+        conn.close()
+        return [
+            self._panel_payload(row, counts.get(row["id"], 0))
+            for row in rows
+        ]
+
+    def create_panel(self, name: str) -> dict[str, Any]:
+        panel_id = str(uuid.uuid4())
+        now = _now_utc()
+        conn = self._connect()
+        position = conn.execute("SELECT COUNT(*) AS c FROM watchlist_panels").fetchone()["c"]
+        conn.execute(
+            """
+            INSERT INTO watchlist_panels (id, name, position, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (panel_id, name.strip() or "Panel", position, now, now),
+        )
+        conn.commit()
+        conn.close()
+        return self.get_panel(panel_id) or {}
+
+    def get_panel(self, panel_id: str) -> dict[str, Any] | None:
+        conn = self._connect()
+        row = conn.execute("SELECT * FROM watchlist_panels WHERE id = ?", (panel_id,)).fetchone()
+        if not row:
+            conn.close()
+            return None
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM watchlists WHERE panel_id = ?",
+            (panel_id,),
+        ).fetchone()["c"]
+        conn.close()
+        return self._panel_payload(row, count)
+
+    def update_panel(
+        self,
+        panel_id: str,
+        *,
+        name: str | None = None,
+        position: int | None = None,
+    ) -> dict[str, Any] | None:
+        existing = self.get_panel(panel_id)
+        if not existing:
+            return None
+        conn = self._connect()
+        next_name = (name or existing["name"]).strip() or existing["name"]
+        next_position = existing["position"] if position is None else position
+        conn.execute(
+            """
+            UPDATE watchlist_panels
+            SET name = ?, position = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (next_name, next_position, _now_utc(), panel_id),
+        )
+        conn.commit()
+        conn.close()
+        return self.get_panel(panel_id)
+
+    def delete_panel(self, panel_id: str) -> bool:
+        conn = self._connect()
+        panel_count = conn.execute("SELECT COUNT(*) AS c FROM watchlist_panels").fetchone()["c"]
+        if panel_count <= 1:
+            conn.close()
+            return False
+        fallback = conn.execute(
+            """
+            SELECT id FROM watchlist_panels
+            WHERE id != ?
+            ORDER BY position ASC, created_at ASC
+            LIMIT 1
+            """,
+            (panel_id,),
+        ).fetchone()
+        if not fallback:
+            conn.close()
+            return False
+        fallback_id = fallback["id"]
+        conn.execute(
+            "UPDATE watchlists SET panel_id = ?, updated_at = ? WHERE panel_id = ?",
+            (fallback_id, _now_utc(), panel_id),
+        )
+        cur = conn.execute("DELETE FROM watchlist_panels WHERE id = ?", (panel_id,))
+        conn.commit()
+        deleted = cur.rowcount > 0
+        conn.close()
+        return deleted
+
+    def default_panel_id(self) -> str:
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT id FROM watchlist_panels ORDER BY position ASC, created_at ASC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        if not row:
+            return self.create_panel("Default")["id"]
+        return row["id"]
 
     def list_watchlists(self) -> list[dict[str, Any]]:
         conn = self._connect()
@@ -132,6 +307,7 @@ class WatchlistStore:
         *,
         broker: str = "angel",
         account_env: str | None = None,
+        panel_id: str | None = None,
     ) -> dict[str, Any]:
         watchlist_id = str(uuid.uuid4())
         now = _now_utc()
@@ -139,13 +315,15 @@ class WatchlistStore:
         env = account_env or ("demo" if broker_name == "etoro" else "live")
         conn = self._connect()
         self._ensure_watchlist_columns(conn)
+        self._ensure_panel_schema(conn)
+        resolved_panel_id = panel_id or self.default_panel_id()
         position = conn.execute("SELECT COUNT(*) AS c FROM watchlists").fetchone()["c"]
         conn.execute(
             """
-            INSERT INTO watchlists (id, name, position, broker, account_env, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO watchlists (id, name, position, broker, account_env, panel_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (watchlist_id, name.strip() or "Watchlist", position, broker_name, env, now, now),
+            (watchlist_id, name.strip() or "Watchlist", position, broker_name, env, resolved_panel_id, now, now),
         )
         conn.commit()
         conn.close()
@@ -171,24 +349,27 @@ class WatchlistStore:
         name: str | None = None,
         broker: str | None = None,
         account_env: str | None = None,
+        panel_id: str | None = None,
     ) -> dict[str, Any] | None:
         existing = self.get_watchlist(watchlist_id)
         if not existing:
             return None
         conn = self._connect()
         self._ensure_watchlist_columns(conn)
+        self._ensure_panel_schema(conn)
         next_name = (name or existing["name"]).strip() or existing["name"]
         next_broker = (broker or existing.get("broker") or "angel").lower()
         next_env = account_env or existing.get("account_env") or (
             "demo" if next_broker == "etoro" else "live"
         )
+        next_panel_id = panel_id or existing.get("panel_id") or self.default_panel_id()
         conn.execute(
             """
             UPDATE watchlists
-            SET name = ?, broker = ?, account_env = ?, updated_at = ?
+            SET name = ?, broker = ?, account_env = ?, panel_id = ?, updated_at = ?
             WHERE id = ?
             """,
-            (next_name, next_broker, next_env, _now_utc(), watchlist_id),
+            (next_name, next_broker, next_env, next_panel_id, _now_utc(), watchlist_id),
         )
         conn.commit()
         conn.close()

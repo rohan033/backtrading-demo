@@ -28,6 +28,7 @@ from api.ai_research_routes import get_ai_research_store, router as ai_research_
 from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket, router as cursor_agent_router
 from api.workspace_media import router as workspace_media_router
 from api.watchlist_routes import router as watchlist_router
+from api.watchlist_panel_routes import router as watchlist_panel_router
 from api.watchlist_feed import get_watchlist_feed_hub
 from control_plane.client_mode import normalize_client_mode
 from control_plane.engine_registry import EngineRegistry
@@ -112,6 +113,7 @@ app.include_router(cursor_agent_router)
 app.include_router(ai_research_router)
 app.include_router(workspace_media_router)
 app.include_router(watchlist_router)
+app.include_router(watchlist_panel_router)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 TRADE_FEE = 25  # ₹25 per buy-sell round trip

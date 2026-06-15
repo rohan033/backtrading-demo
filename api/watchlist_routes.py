@@ -12,12 +12,14 @@ class CreateWatchlistRequest(BaseModel):
     name: str = Field(default="Watchlist", max_length=80)
     broker: str = Field(default="angel")
     account_env: str | None = None
+    panel_id: str | None = None
 
 
 class UpdateWatchlistRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     broker: str | None = None
     account_env: str | None = None
+    panel_id: str | None = None
 
 
 class RenameWatchlistRequest(BaseModel):
@@ -44,6 +46,7 @@ def create_watchlist(req: CreateWatchlistRequest):
         req.name,
         broker=req.broker,
         account_env=req.account_env,
+        panel_id=req.panel_id,
     )
     return {"status": True, "data": row}
 
@@ -56,6 +59,7 @@ def update_watchlist(watchlist_id: str, req: UpdateWatchlistRequest):
         name=req.name,
         broker=req.broker,
         account_env=req.account_env,
+        panel_id=req.panel_id,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Watchlist not found")

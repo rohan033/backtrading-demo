@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { LayoutGrid, Plus, Upload, X, Zap } from 'lucide-react'
+import { ChevronDown, ChevronUp, LayoutGrid, Plus, Upload, X, Zap } from 'lucide-react'
 
+import WatchlistPanelTabs from '../../components/watchlist/WatchlistPanelTabs'
 import DraggableWatchlistCard from '../../components/watchlist/DraggableWatchlistCard'
 import WatchlistColumn from '../../components/watchlist/WatchlistColumn'
 import BulkUploadWatchlistDialog, {
@@ -38,6 +39,7 @@ import {
   canvasMinSize,
   cardHeightForContent,
   cardWidthForTable,
+  cardWidthForVisibleColumns,
   clampWidth,
   GRID_GAP_X,
   GRID_GAP_Y,
@@ -61,11 +63,21 @@ import {
   WL_HIDDEN_SYMBOLS_CHANGED_EVENT,
 } from '../../lib/watchlistHiddenSymbols'
 import {
+  createWatchlistPanel,
+  deleteWatchlistPanel,
+  fetchWatchlistPanels,
+  updateWatchlistPanel,
+} from '../../lib/watchlistPanelApi'
+import { loadActivePanelId, saveActivePanelId } from '../../lib/watchlistPanels'
+import { loadWatchlistHeaderCompact, saveWatchlistHeaderCompact } from '../../lib/watchlistHeaderCompact'
+import {
   addWatchlistSymbol,
   createWatchlist,
   deleteWatchlist,
+  fetchWatchlists,
   updateWatchlist,
   type Watchlist,
+  type WatchlistPanel,
   type WatchlistSymbol,
 } from '../../lib/watchlists'
 import {
@@ -136,6 +148,34 @@ export default function WatchlistPage() {
   const canvasScrollRef = useRef<HTMLDivElement | null>(null)
   const [bulkUploadOpen, setBulkUploadOpen] = useState(false)
   const [hiddenByWatchlist, setHiddenByWatchlist] = useState(() => loadAllHiddenSymbolTokens())
+  const [panels, setPanels] = useState<WatchlistPanel[]>([])
+  const [activePanelId, setActivePanelId] = useState<string | null>(() => loadActivePanelId())
+  const [headerCompact, setHeaderCompact] = useState(() => loadWatchlistHeaderCompact())
+
+  const setHeaderCompactPersisted = useCallback((compact: boolean) => {
+    setHeaderCompact(compact)
+    saveWatchlistHeaderCompact(compact)
+  }, [])
+
+  const resolveWatchlistPanelId = useCallback(
+    (wl: Watchlist) => wl.panel_id || panels[0]?.id || '',
+    [panels],
+  )
+
+  const activePanelWatchlists = useMemo(
+    () => (activePanelId ? watchlists.filter(wl => resolveWatchlistPanelId(wl) === activePanelId) : watchlists),
+    [watchlists, activePanelId, resolveWatchlistPanelId],
+  )
+
+  const activePanelLayouts = useMemo(() => {
+    const ids = new Set(activePanelWatchlists.map(wl => wl.id))
+    return Object.fromEntries(Object.entries(layouts).filter(([id]) => ids.has(id)))
+  }, [layouts, activePanelWatchlists])
+
+  const activePanelMetrics = useMemo(() => {
+    const ids = new Set(activePanelWatchlists.map(wl => wl.id))
+    return Object.fromEntries(Object.entries(cardMetrics).filter(([id]) => ids.has(id)))
+  }, [cardMetrics, activePanelWatchlists])
 
   /** Returns symbols for a watchlist — auto-sorted or manual drag order. */
   const orderedSymbolsFor = useCallback(
@@ -199,7 +239,10 @@ export default function WatchlistPage() {
   }, [momentumSymbolKeys, momentumNoTpSymbolKeys])
 
   const handleToggleSymbolMomentumLive = useCallback((watchlistId: string, symboltoken: string) => {
-    setMomentumLiveSymbolKeys(prev => toggleMomentumLiveSymbolKey(prev, watchlistId, symboltoken))
+    // Persist before notify — syncMomentumState reloads from localStorage on that event,
+    // so saving inside a setState updater can race and revert the toggle on first click.
+    const next = toggleMomentumLiveSymbolKey(loadMomentumLiveSymbolKeys(), watchlistId, symboltoken)
+    setMomentumLiveSymbolKeys(next)
     notifyMomentumStateChanged()
   }, [])
 
@@ -252,13 +295,13 @@ export default function WatchlistPage() {
   }, [])
 
   useEffect(() => {
+    const fitWidth = cardWidthForVisibleColumns(visibleChangeColumns.length)
     setLayouts(prev => {
       let changed = false
       const next: WatchlistLayoutMap = { ...prev }
       for (const [id, layout] of Object.entries(next)) {
-        const width = cardWidthForTable(visibleChangeColumns.length, layout.width)
-        if (width !== layout.width) {
-          next[id] = { ...layout, width }
+        if (layout.width !== fitWidth) {
+          next[id] = { ...layout, width: fitWidth }
           changed = true
         }
       }
@@ -283,23 +326,54 @@ export default function WatchlistPage() {
       setSymbolOrders(orders)
       const stored = loadWatchlistLayouts()
       const merged = mergeLayouts(rows.map(r => r.id), stored)
-      const columns = loadVisibleChangeColumns()
       const sized = Object.fromEntries(
         Object.entries(merged).map(([id, layout]) => [
           id,
-          { ...layout, width: cardWidthForTable(columns.length, layout.width) },
+          { ...layout, width: cardWidthForTable(visibleChangeColumns.length, layout.width) },
         ]),
       )
       persistLayouts(sized)
     },
-    [persistLayouts],
+    [persistLayouts, visibleChangeColumns.length],
   )
+
+  useEffect(() => {
+    if (!watchlistsReady) return
+    void (async () => {
+      try {
+        const rows = await fetchWatchlistPanels()
+        setPanels(rows)
+        const stored = loadActivePanelId()
+        const valid = stored && rows.some(panel => panel.id === stored)
+        const nextId = valid ? stored : rows[0]?.id ?? null
+        setActivePanelId(nextId)
+        if (nextId) saveActivePanelId(nextId)
+      } catch (e) {
+        setError(errorMessage(e))
+      }
+    })()
+  }, [watchlistsReady])
+
+  useEffect(() => {
+    if (activePanelId) saveActivePanelId(activePanelId)
+  }, [activePanelId])
+
+  const refreshPanels = useCallback(async () => {
+    const rows = await fetchWatchlistPanels()
+    setPanels(rows)
+    return rows
+  }, [])
 
   useEffect(() => {
     if (!watchlistsReady) return
     syncLayoutsFromWatchlists(watchlists)
     setLoading(false)
   }, [watchlistsReady, watchlists, syncLayoutsFromWatchlists])
+
+  useEffect(() => {
+    if (!activePanelId || panels.some(panel => panel.id === activePanelId)) return
+    setActivePanelId(panels[0]?.id ?? null)
+  }, [activePanelId, panels])
 
   useEffect(() => {
     const onMomentumChanged = () => syncMomentumState()
@@ -331,18 +405,45 @@ export default function WatchlistPage() {
 
   const handleCreate = () =>
     wrap(async () => {
-      const created = await createWatchlist(`Watchlist ${watchlists.length + 1}`, {
+      if (!activePanelId) return
+      const created = await createWatchlist(`Watchlist ${activePanelWatchlists.length + 1}`, {
         broker: 'angel',
+        panel_id: activePanelId,
       })
       const nextLayouts = {
         ...layouts,
         [created.id]: {
           ...layoutForNewWatchlist(layouts, cardMetrics, created.id),
-          width: cardWidthForTable(visibleChangeColumns.length),
+          width: cardWidthForVisibleColumns(visibleChangeColumns.length),
         },
       }
       setWatchlists(prev => [...prev, created])
       persistLayouts(nextLayouts)
+      await refreshPanels()
+    })
+
+  const handleCreatePanel = () =>
+    wrap(async () => {
+      const created = await createWatchlistPanel(`Panel ${panels.length + 1}`)
+      setPanels(prev => [...prev, created])
+      setActivePanelId(created.id)
+    })
+
+  const handleRenamePanel = (panelId: string, name: string) =>
+    wrap(async () => {
+      const updated = await updateWatchlistPanel(panelId, { name })
+      setPanels(prev => prev.map(panel => (panel.id === panelId ? updated : panel)))
+    })
+
+  const handleDeletePanel = (panelId: string) =>
+    wrap(async () => {
+      await deleteWatchlistPanel(panelId)
+      const rows = await refreshPanels()
+      if (activePanelId === panelId) {
+        setActivePanelId(rows[0]?.id ?? null)
+      }
+      const refreshed = await fetchWatchlists()
+      setWatchlists(refreshed)
     })
 
   /**
@@ -352,7 +453,11 @@ export default function WatchlistPage() {
    */
   const handleBulkUpload: BulkUploadHandler = async ({ name, broker, tickers }, onProgress) => {
     const accountEnv = defaultAccountEnv(broker)
-    const created = await createWatchlist(name, { broker, account_env: accountEnv })
+    const created = await createWatchlist(name, {
+      broker,
+      account_env: accountEnv,
+      panel_id: activePanelId ?? undefined,
+    })
     setWatchlists(prev => [...prev, created])
     persistLayouts({
       ...layouts,
@@ -397,6 +502,7 @@ export default function WatchlistPage() {
       duration: failed.length === 0 ? 5000 : 10000,
     })
 
+    await refreshPanels()
     return { watchlistName: name, succeeded, failed }
   }
 
@@ -424,6 +530,7 @@ export default function WatchlistPage() {
         delete metrics[id]
         return metrics
       })
+      await refreshPanels()
     })
 
   const handleAddSymbol = (
@@ -495,29 +602,25 @@ export default function WatchlistPage() {
   }
 
   /**
-   * Re-packs every watchlist into a tidy masonry grid that fills the full canvas
-   * width — no blank gutter on the right. Fits as many columns as possible at the
-   * minimum table width, then stretches the column width so the row spans edge to
-   * edge. Each card stacks under the currently-shortest column so heights stay
-   * balanced and nothing overlaps.
+   * Re-packs every watchlist into a tidy masonry grid. Card width matches the
+   * current visible column set so deselected columns don't leave empty table space.
+   * Each card stacks under the shortest column so heights stay balanced.
    */
   const handleAutoArrange = useCallback(() => {
-    if (watchlists.length === 0) return
-    const minWidth = tableMinWidth
-    const fallback = minWidth * 3 + GRID_GAP_X * 2 + GRID_ORIGIN_X * 2
+    if (activePanelWatchlists.length === 0) return
+    const width = cardWidthForVisibleColumns(visibleChangeColumns.length)
+    const fallback = width * 3 + GRID_GAP_X * 2 + GRID_ORIGIN_X * 2
     const clientWidth = canvasScrollRef.current?.clientWidth || fallback
-    const available = Math.max(minWidth, clientWidth - GRID_ORIGIN_X * 2)
+    const available = Math.max(width, clientWidth - GRID_ORIGIN_X * 2)
 
-    const fit = Math.floor((available + GRID_GAP_X) / (minWidth + GRID_GAP_X))
-    const columns = Math.max(1, Math.min(fit || 1, watchlists.length))
-    const width = clampWidth(
-      Math.max(minWidth, Math.floor((available - (columns - 1) * GRID_GAP_X) / columns)),
-    )
+    const fit = Math.floor((available + GRID_GAP_X) / (width + GRID_GAP_X))
+    const columns = Math.max(1, Math.min(fit || 1, activePanelWatchlists.length))
     const columnHeights = new Array<number>(columns).fill(GRID_ORIGIN_Y)
 
-    const next: WatchlistLayoutMap = {}
-    for (const wl of watchlists) {
-      const metrics = cardMetrics[wl.id] ?? { symbolCount: wl.symbols.length, searchOpen: false }
+    const next: WatchlistLayoutMap = { ...layouts }
+    for (const wl of activePanelWatchlists) {
+      const symbolCount = visibleOrderedSymbolsFor(wl).length
+      const searchOpen = cardMetrics[wl.id]?.searchOpen ?? false
       const shortest = columnHeights.indexOf(Math.min(...columnHeights))
       const y = columnHeights[shortest]
       next[wl.id] = {
@@ -525,11 +628,11 @@ export default function WatchlistPage() {
         y,
         width,
       }
-      columnHeights[shortest] = y + cardHeightForContent(metrics.symbolCount, metrics.searchOpen) + GRID_GAP_Y
+      columnHeights[shortest] = y + cardHeightForContent(symbolCount, searchOpen) + GRID_GAP_Y
     }
     persistLayouts(next)
     canvasScrollRef.current?.scrollTo({ top: 0, left: 0, behavior: 'smooth' })
-  }, [watchlists, cardMetrics, tableMinWidth, persistLayouts])
+  }, [activePanelWatchlists, layouts, cardMetrics, visibleChangeColumns.length, visibleOrderedSymbolsFor, persistLayouts])
 
   const handleLayoutChange = (id: string, next: WatchlistCardLayout) => {
     persistLayouts({
@@ -543,80 +646,131 @@ export default function WatchlistPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
-        <div className="flex items-center gap-3">
-          <span className="h-9 w-1 rounded-full bg-accent" aria-hidden="true" />
-          <div>
-            <div className="flex items-center gap-2.5">
-              <h1 className="font-display text-xl font-bold tracking-tightest text-text-primary">Watchlists</h1>
-              {hasSymbols && (
-                <span
-                  className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em] ${
-                    connected
-                      ? 'border-green/30 bg-green/10 text-green'
-                      : 'border-accent/30 bg-accent/10 text-accent'
-                  }`}
-                >
-                  <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-green' : 'bg-accent'}`} />
-                  {connected ? 'Live' : 'Connecting…'}
-                </span>
-              )}
-            </div>
-            <p className="mt-1 text-xs text-text-secondary">
-              Cards grow with your symbols · drag to rearrange · resize on the right edge
-              {hasSymbols && (
-                <span className="ml-1.5 text-text-secondary/80">
-                  {momentumConfig.enabled ? '· Momentum on' : ''}
-                  {autoSortConfig.enabled ? ` · Auto-sort ${autoSortConfig.column}` : ''}
-                </span>
-              )}
-            </p>
+      {headerCompact ? (
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border bg-secondary/20 px-5 py-1.5">
+          <button
+            type="button"
+            onClick={() => setHeaderCompactPersisted(false)}
+            className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11px] font-medium text-text-secondary transition-colors hover:bg-card hover:text-text-primary"
+            title="Show watchlist header and controls"
+          >
+            <ChevronDown className="h-3.5 w-3.5" />
+            Show header
+          </button>
+          <div className="flex min-w-0 items-center gap-2">
+            {hasSymbols ? (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                  connected
+                    ? 'border-green/30 bg-green/10 text-green'
+                    : 'border-accent/30 bg-accent/10 text-accent'
+                }`}
+                title={connected ? 'Live feed connected' : 'Connecting…'}
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-green' : 'bg-accent'}`} />
+                {connected ? 'Live' : '…'}
+              </span>
+            ) : null}
+            <Button type="button" size="sm" onClick={handleCreate} disabled={busy || !activePanelId} className="h-7 gap-1 px-2 text-[11px]">
+              <Plus className="h-3.5 w-3.5" />
+              New
+            </Button>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <WatchlistMomentumSettings
-            onChange={setMomentumConfig}
-            monitoredSymbols={monitoredSymbols}
-          />
-          <WatchlistAutoSort config={autoSortConfig} onChange={setAutoSortConfig} />
-          <WatchlistColumnPicker
-            visibleColumns={visibleChangeColumns}
-            onChange={handleVisibleChangeColumns}
-          />
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={handleAutoArrange}
-            disabled={busy || watchlists.length === 0}
-            className="gap-1.5"
-            title="Re-arrange watchlists into a tidy grid"
-          >
-            <LayoutGrid className="h-3.5 w-3.5" />
-            Tidy grid
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            onClick={() => setBulkUploadOpen(true)}
-            disabled={busy}
-            className="gap-1.5"
-            title="Create a watchlist from a list of tickers"
-          >
-            <Upload className="h-3.5 w-3.5" />
-            Bulk upload
-          </Button>
-          <Button type="button" size="sm" onClick={handleCreate} disabled={busy} className="gap-1.5">
-            <Plus className="h-3.5 w-3.5" />
-            New watchlist
-          </Button>
+      ) : (
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="h-9 w-1 shrink-0 rounded-full bg-accent" aria-hidden="true" />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2.5">
+                <h1 className="font-display text-xl font-bold tracking-tightest text-text-primary">Watchlists</h1>
+                {hasSymbols && (
+                  <span
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.14em] ${
+                      connected
+                        ? 'border-green/30 bg-green/10 text-green'
+                        : 'border-accent/30 bg-accent/10 text-accent'
+                    }`}
+                  >
+                    <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-green' : 'bg-accent'}`} />
+                    {connected ? 'Live' : 'Connecting…'}
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-xs text-text-secondary">
+                Cards grow with your symbols · drag to rearrange · resize on the right edge
+                {hasSymbols && (
+                  <span className="ml-1.5 text-text-secondary/80">
+                    {momentumConfig.enabled ? '· Momentum on' : ''}
+                    {autoSortConfig.enabled ? ` · Auto-sort ${autoSortConfig.column}` : ''}
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <WatchlistMomentumSettings
+              onChange={setMomentumConfig}
+              monitoredSymbols={monitoredSymbols}
+            />
+            <WatchlistAutoSort config={autoSortConfig} onChange={setAutoSortConfig} />
+            <WatchlistColumnPicker
+              visibleColumns={visibleChangeColumns}
+              onChange={handleVisibleChangeColumns}
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={handleAutoArrange}
+              disabled={busy || activePanelWatchlists.length === 0}
+              className="gap-1.5"
+              title="Re-arrange watchlists into a tidy grid"
+            >
+              <LayoutGrid className="h-3.5 w-3.5" />
+              Tidy grid
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setBulkUploadOpen(true)}
+              disabled={busy}
+              className="gap-1.5"
+              title="Create a watchlist from a list of tickers"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              Bulk upload
+            </Button>
+            <Button type="button" size="sm" onClick={handleCreate} disabled={busy || !activePanelId} className="gap-1.5">
+              <Plus className="h-3.5 w-3.5" />
+              New watchlist
+            </Button>
+            <button
+              type="button"
+              onClick={() => setHeaderCompactPersisted(true)}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-border text-text-secondary transition-colors hover:bg-card hover:text-text-primary"
+              title="Hide header for more space"
+            >
+              <ChevronUp className="h-4 w-4" />
+            </button>
+          </div>
         </div>
-      </div>
+      )}
+
+      <WatchlistPanelTabs
+        panels={panels}
+        activePanelId={activePanelId}
+        busy={busy}
+        onSelect={setActivePanelId}
+        onCreate={handleCreatePanel}
+        onRename={handleRenamePanel}
+        onDelete={handleDeletePanel}
+      />
 
       <BulkUploadWatchlistDialog
         open={bulkUploadOpen}
-        defaultName={`Watchlist ${watchlists.length + 1}`}
+        defaultName={`Watchlist ${activePanelWatchlists.length + 1}`}
         onClose={() => setBulkUploadOpen(false)}
         onSubmit={handleBulkUpload}
       />
@@ -704,26 +858,28 @@ export default function WatchlistPage() {
       <div ref={canvasScrollRef} className="relative min-h-0 flex-1 overflow-auto bg-primary/30">
         {loading ? (
           <p className="p-5 text-xs text-text-secondary">Loading watchlists…</p>
-        ) : watchlists.length === 0 ? (
+        ) : activePanelWatchlists.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
-            <p className="text-sm text-text-secondary">No watchlists yet.</p>
-            <Button type="button" onClick={handleCreate} disabled={busy} className="gap-1.5">
+            <p className="text-sm text-text-secondary">
+              {panels.length === 0 ? 'No panels yet.' : 'No watchlists in this panel.'}
+            </p>
+            <Button type="button" onClick={handleCreate} disabled={busy || !activePanelId} className="gap-1.5">
               <Plus className="h-4 w-4" />
-              Create your first watchlist
+              Create watchlist
             </Button>
           </div>
         ) : (
           <div
             className="relative p-5"
             style={{
-              minWidth: canvasMinSize(layouts, cardMetrics).width,
-              minHeight: Math.max(480, canvasMinSize(layouts, cardMetrics).height),
+              minWidth: canvasMinSize(activePanelLayouts, activePanelMetrics).width,
+              minHeight: Math.max(480, canvasMinSize(activePanelLayouts, activePanelMetrics).height),
             }}
           >
-            {watchlists.map(wl => {
+            {activePanelWatchlists.map(wl => {
               const layout = layouts[wl.id] ?? mergeLayouts([wl.id], layouts)[wl.id]
               const metrics = cardMetrics[wl.id] ?? {
-                symbolCount: wl.symbols.length,
+                symbolCount: visibleOrderedSymbolsFor(wl).length,
                 searchOpen: false,
               }
               return (

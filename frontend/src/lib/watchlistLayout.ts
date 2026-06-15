@@ -21,8 +21,8 @@ export const GRID_GAP_Y = 20
 export const GRID_ORIGIN_X = 20
 export const GRID_ORIGIN_Y = 20
 
-export const ROW_HEIGHT_PX = 48
-export const TABLE_HEAD_PX = 36
+export const ROW_HEIGHT_PX = 40
+export const TABLE_HEAD_PX = 32
 export const CARD_TOOLBAR_PX = 48
 /** Padding around the table panel (pt-2 + pb-2.5). */
 export const CARD_TABLE_WRAP_PX = 20
@@ -31,7 +31,7 @@ export const SEARCH_PANEL_PX = 96
 
 /** Base columns: symbol, last, trend, tick chg%, remove. */
 export const WATCHLIST_TABLE_GRID_BASE =
-  'minmax(3.25rem,1fr) 5rem 2.75rem 4.75rem 1.75rem' as const
+  'minmax(3.5rem,6.5rem) 5rem 2.75rem 4.75rem 1.75rem' as const
 
 /** @deprecated Use buildWatchlistTableGrid from watchlistChangeColumns for dynamic layouts. */
 export const WATCHLIST_TABLE_GRID = WATCHLIST_TABLE_GRID_BASE
@@ -43,8 +43,13 @@ export const MAX_CARD_WIDTH = 1280
 export function cardWidthForTable(changeColumnCount: number, preferredWidth?: number): number {
   const tableMin = watchlistTableMinWidthPx(changeColumnCount)
   const floor = Math.max(DEFAULT_CARD_WIDTH, tableMin)
-  const base = preferredWidth ?? floor
-  return clampWidth(Math.max(base, floor))
+  if (preferredWidth == null) return clampWidth(floor)
+  return clampWidth(Math.max(floor, preferredWidth))
+}
+
+/** Snap card width to the current column set (used when columns are added or removed). */
+export function cardWidthForVisibleColumns(changeColumnCount: number): number {
+  return cardWidthForTable(changeColumnCount)
 }
 
 /** Grid placement estimate for an empty watchlist. */
