@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createChart,
   type IChartApi,
@@ -13,7 +13,7 @@ import { WATCHLIST_CHANGE_WINDOWS, windowChangeTone } from '../../lib/watchlistC
 import type { WatchlistWindowChanges } from '../../hooks/useWatchlistPriceHistory'
 import { momentumSymbolKey } from '../../lib/watchlistMomentumState'
 import type { PriceSample } from '../../lib/watchlistChangeColumns'
-import { samplesToChartPoints } from '../../lib/watchlistFeedReuse'
+import { buildWatchlistLinePoints } from '../../lib/watchlistFeedReuse'
 import {
   applyWatchlistCandleColors,
   applyWatchlistCandleViewport,
@@ -54,18 +54,7 @@ type Props = {
 }
 
 function chartPoints(samples: PriceSample[], liveLtp?: number | null): LineData[] {
-  const points = samplesToChartPoints(samples)
-  if (points.length) return points as LineData[]
-
-  const price = Number(liveLtp)
-  if (!Number.isFinite(price) || price <= 0) return []
-
-  const now = Math.floor(Date.now() / 1000)
-  return [
-    { time: now - 180, value: price },
-    { time: now - 60, value: price },
-    { time: now, value: price },
-  ]
+  return buildWatchlistLinePoints(samples, liveLtp) as LineData[]
 }
 
 function changeBadgeClass(value: number | null | undefined, compact: boolean): string {
@@ -127,12 +116,93 @@ export default function WatchlistSymbolChart({
   const volumeSeriesRef = useRef<ISeriesApi<'Histogram'> | null>(null)
   const candlesRef = useRef<WatchlistSanitizedCandle[]>([])
   const lastPointRef = useRef<LineData | WatchlistSanitizedCandle | null>(null)
+  const lastViewportBarCountRef = useRef(0)
   const userInteractedRef = useRef(false)
+  const lineDataRef = useRef<LineData[]>([])
+  const candleDataRef = useRef<WatchlistSanitizedCandle[]>([])
   const [plotHeight, setPlotHeight] = useState(compact ? 72 : 280)
+  const [chartGeneration, setChartGeneration] = useState(0)
 
   const isCandleMode = renderMode === 'candle'
   const lineData = useMemo(() => chartPoints(samples, tick?.ltp), [samples, tick?.ltp])
   const candleData = useMemo(() => candles, [candles])
+
+  lineDataRef.current = lineData
+  candleDataRef.current = candleData
+
+  const applyChartSeriesData = useCallback(() => {
+    const chart = chartRef.current
+    if (!chart) return
+
+    const currentLineData = lineDataRef.current
+    const currentCandleData = candleDataRef.current
+
+    if (isCandleMode) {
+      const series = candleSeriesRef.current
+      const volumeSeries = volumeSeriesRef.current
+      if (!series) return
+      if (!currentCandleData.length) {
+        series.setData([])
+        volumeSeries?.setData([])
+        lastPointRef.current = null
+        return
+      }
+      const lastCandle = currentCandleData[currentCandleData.length - 1]
+      const previous = lastPointRef.current as WatchlistSanitizedCandle | null
+      const volumeData = candlesToVolumeData(currentCandleData)
+      const lastVolume = volumeData[volumeData.length - 1]
+      if (previous && lastCandle.time === previous.time) {
+        series.update(lastCandle)
+        volumeSeries?.update(lastVolume)
+      } else if (
+        previous
+        && lastCandle.time > previous.time
+        && currentCandleData[currentCandleData.length - 2]?.time === previous.time
+      ) {
+        series.update(lastCandle)
+        volumeSeries?.update(lastVolume)
+      } else {
+        series.setData(currentCandleData)
+        volumeSeries?.setData(volumeData)
+      }
+      applyWatchlistCandleColors(series, lastCandle)
+      lastPointRef.current = lastCandle
+      const barCount = currentCandleData.length
+      const shouldRefocus =
+        !userInteractedRef.current
+        && (lastViewportBarCountRef.current === 0 || barCount !== lastViewportBarCountRef.current)
+      if (shouldRefocus) {
+        applyWatchlistCandleViewport(chart, barCount, compact)
+        lastViewportBarCountRef.current = barCount
+      }
+      return
+    }
+
+    const series = lineSeriesRef.current
+    if (!series) return
+    if (!currentLineData.length) {
+      series.setData([])
+      lastPointRef.current = null
+      return
+    }
+    const showPointMarkers = currentLineData.length === 1
+    series.applyOptions({
+      pointMarkersVisible: showPointMarkers,
+      lastValueVisible: showPointMarkers || !compact,
+    })
+    const lastPoint = currentLineData[currentLineData.length - 1]
+    const previous = lastPointRef.current as LineData | null
+    if (previous && lastPoint.time === previous.time) {
+      series.update(lastPoint)
+    } else {
+      series.setData(currentLineData)
+    }
+    lastPointRef.current = lastPoint
+
+    if (!userInteractedRef.current) {
+      chart.timeScale().fitContent()
+    }
+  }, [isCandleMode, compact])
 
   useEffect(() => {
     candlesRef.current = candleData
@@ -179,6 +249,7 @@ export default function WatchlistSymbolChart({
 
     userInteractedRef.current = false
     lastPointRef.current = null
+    lastViewportBarCountRef.current = 0
 
     const markUserInteracted = () => {
       userInteractedRef.current = true
@@ -256,6 +327,9 @@ export default function WatchlistSymbolChart({
         if (nextWidth > 0) chartRef.current.resize(nextWidth, plotHeight)
       })
       resizeObserver.observe(plotRef.current)
+
+      applyChartSeriesData()
+      setChartGeneration(generation => generation + 1)
     }
 
     mount()
@@ -272,68 +346,11 @@ export default function WatchlistSymbolChart({
       volumeSeriesRef.current = null
       lastPointRef.current = null
     }
-  }, [plotHeight, compact, isCandleMode, label])
+  }, [plotHeight, compact, isCandleMode, label, applyChartSeriesData])
 
   useEffect(() => {
-    const chart = chartRef.current
-    if (!chart) return
-
-    if (isCandleMode) {
-      const series = candleSeriesRef.current
-      const volumeSeries = volumeSeriesRef.current
-      if (!series) return
-      if (!candleData.length) {
-        series.setData([])
-        volumeSeries?.setData([])
-        lastPointRef.current = null
-        return
-      }
-      const lastCandle = candleData[candleData.length - 1]
-      const previous = lastPointRef.current as WatchlistSanitizedCandle | null
-      const volumeData = candlesToVolumeData(candleData)
-      const lastVolume = volumeData[volumeData.length - 1]
-      if (previous && lastCandle.time === previous.time) {
-        series.update(lastCandle)
-        volumeSeries?.update(lastVolume)
-      } else if (
-        previous
-        && lastCandle.time > previous.time
-        && candleData[candleData.length - 2]?.time === previous.time
-      ) {
-        series.update(lastCandle)
-        volumeSeries?.update(lastVolume)
-      } else {
-        series.setData(candleData)
-        volumeSeries?.setData(volumeData)
-      }
-      applyWatchlistCandleColors(series, lastCandle)
-      lastPointRef.current = lastCandle
-      if (!userInteractedRef.current) {
-        applyWatchlistCandleViewport(chart, candleData.length, compact)
-      }
-      return
-    }
-
-    const series = lineSeriesRef.current
-    if (!series) return
-    if (!lineData.length) {
-      series.setData([])
-      lastPointRef.current = null
-      return
-    }
-    const lastPoint = lineData[lineData.length - 1]
-    const previous = lastPointRef.current as LineData | null
-    if (previous && lastPoint.time === previous.time) {
-      series.update(lastPoint)
-    } else {
-      series.setData(lineData)
-    }
-    lastPointRef.current = lastPoint
-
-    if (!userInteractedRef.current) {
-      chart.timeScale().fitContent()
-    }
-  }, [lineData, candleData, isCandleMode, compact])
+    applyChartSeriesData()
+  }, [applyChartSeriesData, lineData, candleData, chartGeneration])
 
   const tickPct = tick?.change_pct
   const highlight = rowHighlightClass(symbolMomentumOn, symbolMomentumNoTpOn, symbolMomentumLiveOn)

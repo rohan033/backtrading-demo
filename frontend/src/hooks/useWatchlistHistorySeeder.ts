@@ -4,16 +4,20 @@
  * immediately instead of waiting for the WebSocket feed to accumulate enough data.
  *
  * Only eToro symbols are seeded (backend returns an empty list for other brokers).
- * Concurrency is capped at MAX_CONCURRENT to avoid hammering the eToro rate limiter.
+ * Each tick key is seeded at most once per browser session to avoid 429s on reload
+ * or watchlist reshuffles.
  */
 
 import { useEffect, useRef, type RefObject } from 'react'
 
 import { MAX_WATCHLIST_HISTORY_MS, type PriceSample } from '../lib/watchlistChangeColumns'
+import { isWatchlistHistorySeederEnabled } from '../lib/watchlistHistorySeederGate'
 import { defaultAccountEnv } from '../lib/watchlistBrokers'
+import { loadActivePanelId } from '../lib/watchlistPanels'
+import { isTickKeySeeded, markTickKeySeeded } from '../lib/watchlistSeededKeys'
 import { watchlistTickKey, type Watchlist } from '../lib/watchlists'
 
-const MAX_CONCURRENT = 3
+const MAX_CONCURRENT = 2
 /** Request ~4.5 hours of 1-minute bars (270 candles). Enough for all windows. */
 const CANDLE_COUNT = 270
 
@@ -38,36 +42,32 @@ async function fetchSeedCandles(
   return Array.isArray(json.data) ? json.data : []
 }
 
-/** Merge historical candle samples with any live samples already in the ref.
- *  Live samples (more recent) always win on timestamp collision.
- *  Trims to MAX_WATCHLIST_HISTORY_MS. */
+/** Merge historical candle samples with any live samples already in the ref. */
 function mergeSeedSamples(
   historicalSamples: PriceSample[],
   liveSamples: PriceSample[],
 ): PriceSample[] {
   const map = new Map<number, PriceSample>()
-  // Historical first — live samples will overwrite on collision
-  for (const s of historicalSamples) map.set(s.ts, s)
-  for (const s of liveSamples) map.set(s.ts, s)
+  for (const sample of historicalSamples) map.set(sample.ts, sample)
+  for (const sample of liveSamples) map.set(sample.ts, sample)
   const now = Date.now()
   const cutoff = now - MAX_WATCHLIST_HISTORY_MS
   return Array.from(map.values())
-    .filter(s => s.ts >= cutoff)
+    .filter(sample => sample.ts >= cutoff)
     .sort((a, b) => a.ts - b.ts)
 }
 
 export function useWatchlistHistorySeeder(
   watchlists: Watchlist[],
   historyRef: RefObject<Record<string, PriceSample[]>>,
-  /** Called after any batch of symbols is seeded so window changes recompute immediately. */
   onSeeded?: () => void,
 ) {
-  const seededRef = useRef<Set<string>>(new Set())
+  const inFlightRef = useRef<Set<string>>(new Set())
   const onSeededRef = useRef(onSeeded)
   useEffect(() => { onSeededRef.current = onSeeded }, [onSeeded])
 
   useEffect(() => {
-    if (!watchlists.length) return
+    if (!watchlists.length || !isWatchlistHistorySeederEnabled()) return
 
     type SymbolJob = {
       broker: string
@@ -77,13 +77,18 @@ export function useWatchlistHistorySeeder(
       tickKey: string
     }
 
+    const activePanelId = loadActivePanelId()
     const jobs: SymbolJob[] = []
-    for (const wl of watchlists) {
-      const broker = (wl.broker || 'angel').toLowerCase()
-      const accountEnv = wl.account_env || defaultAccountEnv(broker as 'etoro' | 'angel')
-      for (const sym of wl.symbols) {
+    for (const watchlist of watchlists) {
+      if (activePanelId && watchlist.panel_id && watchlist.panel_id !== activePanelId) {
+        continue
+      }
+
+      const broker = (watchlist.broker || 'angel').toLowerCase()
+      const accountEnv = watchlist.account_env || defaultAccountEnv(broker as 'etoro' | 'angel')
+      for (const sym of watchlist.symbols) {
         const tickKey = watchlistTickKey(broker, accountEnv, sym.symboltoken)
-        if (seededRef.current.has(tickKey)) continue
+        if (isTickKeySeeded(tickKey) || inFlightRef.current.has(tickKey)) continue
         jobs.push({
           broker,
           accountEnv,
@@ -97,12 +102,13 @@ export function useWatchlistHistorySeeder(
     if (!jobs.length) return
 
     let cursor = 0
+    let cancelled = false
 
     const worker = async () => {
-      while (cursor < jobs.length) {
+      while (!cancelled && cursor < jobs.length) {
         const job = jobs[cursor++]
-        if (seededRef.current.has(job.tickKey)) continue
-        seededRef.current.add(job.tickKey)
+        if (isTickKeySeeded(job.tickKey) || inFlightRef.current.has(job.tickKey)) continue
+        inFlightRef.current.add(job.tickKey)
 
         try {
           const candles = await fetchSeedCandles(
@@ -111,11 +117,12 @@ export function useWatchlistHistorySeeder(
             job.symbol,
             job.token,
           )
+          markTickKeySeeded(job.tickKey)
           if (!candles.length) continue
 
-          const historicalSamples: PriceSample[] = candles.map(c => ({
-            ts: c.time * 1000, // Unix seconds → ms
-            ltp: c.close,
+          const historicalSamples: PriceSample[] = candles.map(candle => ({
+            ts: candle.time * 1000,
+            ltp: candle.close,
           }))
 
           if (historyRef.current) {
@@ -124,12 +131,17 @@ export function useWatchlistHistorySeeder(
           }
           onSeededRef.current?.()
         } catch {
-          // Ignore individual failures — live ticks will backfill over time
+          // Live ticks will backfill over time.
+        } finally {
+          inFlightRef.current.delete(job.tickKey)
         }
       }
     }
 
-    // Fan out MAX_CONCURRENT workers
     void Promise.all(Array.from({ length: MAX_CONCURRENT }, () => worker()))
+
+    return () => {
+      cancelled = true
+    }
   }, [watchlists, historyRef])
 }

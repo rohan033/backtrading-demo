@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronDown, ChevronUp, ChevronsUp, LayoutGrid, LineChart, Plus, Upload, X, Zap } from 'lucide-react'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { ChevronDown, ChevronUp, ChevronsUp, LayoutGrid, LineChart, Plus, Rows3, Upload, X, Zap } from 'lucide-react'
 
 import WatchlistChartView from '../../components/watchlist/WatchlistChartView'
 import WatchlistPanelTabs from '../../components/watchlist/WatchlistPanelTabs'
@@ -79,6 +80,26 @@ import {
   WL_CHROME_HIDDEN_CHANGED_EVENT,
 } from '../../lib/watchlistChromeHidden'
 import { uniqueWatchlistChartSymbols } from '../../lib/watchlistUniqueSymbols'
+import {
+  applyPanelWatchlistReorganize,
+  planPanelWatchlistChunks,
+} from '../../lib/reorganizePanelWatchlists'
+import {
+  buildWatchlistChartUrl,
+  buildWatchlistChartsGridUrl,
+  copyWatchlistChartLink,
+  findPanelIdForTickKey,
+  tickKeyFromRouteParams,
+  WATCHLIST_CHART_LEGACY_PARAM,
+  WATCHLIST_CHART_PANEL_PARAM,
+  WATCHLIST_CHART_VIEW_PARAM,
+} from '../../lib/watchlistChartUrl'
+import {
+  mergePriceSamples,
+  ohlcCandlesToPriceSamples,
+} from '../../lib/watchlistCandles'
+import { getWatchlistOhlcCache, WATCHLIST_OHLC_UPDATED_EVENT } from '../../lib/watchlistOhlcCache'
+import { setWatchlistHistorySeederEnabled } from '../../lib/watchlistHistorySeederGate'
 import { loadWatchlistViewMode, loadWatchlistChartRenderMode, saveWatchlistChartRenderMode, saveWatchlistViewMode, type WatchlistChartRenderMode, type WatchlistViewMode } from '../../lib/watchlistViewMode'
 import {
   addWatchlistSymbol,
@@ -111,6 +132,24 @@ import {
 } from '../../lib/watchlistMomentumState'
 
 export default function WatchlistPage() {
+  const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
+  const { broker: routeBroker, accountEnv: routeAccountEnv, symbolToken: routeSymbolToken } = useParams<{
+    broker?: string
+    accountEnv?: string
+    symbolToken?: string
+  }>()
+  const routeTickKey = tickKeyFromRouteParams(routeBroker, routeAccountEnv, routeSymbolToken)
+  const routeAppliedRef = useRef<string | null>(null)
+  const historyAttemptRef = useRef<string | null>(null)
+  const [ohlcRevision, setOhlcRevision] = useState(0)
+
+  useEffect(() => {
+    const onOhlcUpdated = () => setOhlcRevision(revision => revision + 1)
+    window.addEventListener(WATCHLIST_OHLC_UPDATED_EVENT, onOhlcUpdated)
+    return () => window.removeEventListener(WATCHLIST_OHLC_UPDATED_EVENT, onOhlcUpdated)
+  }, [])
+
   const {
     watchlists,
     setWatchlists,
@@ -187,8 +226,44 @@ export default function WatchlistPage() {
   const setViewModePersisted = useCallback((mode: WatchlistViewMode) => {
     setViewMode(mode)
     saveWatchlistViewMode(mode)
-    if (mode === 'cards') setFocusedChartKey(null)
-  }, [])
+    if (mode === 'cards') {
+      setFocusedChartKey(null)
+      navigate('/watchlist', { replace: true })
+      return
+    }
+    navigate(buildWatchlistChartsGridUrl(activePanelId), { replace: true })
+  }, [activePanelId, navigate])
+
+  const handleChartFocusChange = useCallback((tickKey: string | null) => {
+    setFocusedChartKey(tickKey)
+    if (tickKey) {
+      navigate(buildWatchlistChartUrl(tickKey, activePanelId), { replace: true })
+      return
+    }
+    navigate(buildWatchlistChartsGridUrl(activePanelId), { replace: true })
+  }, [activePanelId, navigate])
+
+  const handlePanelSelect = useCallback((panelId: string) => {
+    setActivePanelId(panelId)
+    if (viewMode === 'charts') {
+      setFocusedChartKey(null)
+      navigate(buildWatchlistChartsGridUrl(panelId), { replace: true })
+    }
+  }, [viewMode, navigate])
+
+  const chartShareUrl = useMemo(() => {
+    if (!focusedChartKey || typeof window === 'undefined') return null
+    return `${window.location.origin}${buildWatchlistChartUrl(focusedChartKey, activePanelId)}`
+  }, [focusedChartKey, activePanelId])
+
+  const handleCopyChartLink = useCallback(async () => {
+    if (!chartShareUrl) return
+    const copied = await copyWatchlistChartLink(chartShareUrl)
+    showPlatformToast({
+      message: copied ? 'Chart link copied' : 'Could not copy link',
+      variant: copied ? 'success' : 'error',
+    })
+  }, [chartShareUrl])
 
   const resolveWatchlistPanelId = useCallback(
     (wl: Watchlist) => wl.panel_id || panels[0]?.id || '',
@@ -240,19 +315,59 @@ export default function WatchlistPage() {
     [activePanelWatchlists, visibleOrderedSymbolsFor],
   )
 
-  const chartSamplesByKey = useMemo(() => {
+  const baseChartSamplesByKey = useMemo(() => {
     const history = historyRef.current
     return Object.fromEntries(
       panelChartSymbols.map(symbol => [symbol.tickKey, history[symbol.tickKey] ?? []]),
     )
-  }, [panelChartSymbols, ticks])
+  }, [panelChartSymbols, ticks, windowChanges, historyRef])
 
-  const chartCandlesByKey = useWatchlistChartCandles(
+  const chartSamplesByKey = useMemo(() => {
+    if (!focusedChartKey) return baseChartSamplesByKey
+    const ohlc = getWatchlistOhlcCache(focusedChartKey)
+    if (!ohlc?.length) return baseChartSamplesByKey
+    return {
+      ...baseChartSamplesByKey,
+      [focusedChartKey]: mergePriceSamples(
+        ohlcCandlesToPriceSamples(ohlc),
+        baseChartSamplesByKey[focusedChartKey] ?? [],
+      ),
+    }
+  }, [baseChartSamplesByKey, focusedChartKey, ohlcRevision])
+
+  const {
+    candlesByKey: chartCandlesByKey,
+    loadHistoricalCandles,
+    loadingTickKey,
+    hasHistorical,
+  } = useWatchlistChartCandles(
     panelChartSymbols,
     ticks,
     chartSamplesByKey,
-    viewMode === 'charts' && chartRenderMode === 'candle',
+    focusedChartKey,
   )
+
+  useEffect(() => {
+    setWatchlistHistorySeederEnabled(viewMode !== 'charts')
+  }, [viewMode])
+
+  useEffect(() => {
+    historyAttemptRef.current = null
+  }, [focusedChartKey])
+
+  useEffect(() => {
+    if (viewMode !== 'charts' || !focusedChartKey) return
+    if (hasHistorical(focusedChartKey) || loadingTickKey === focusedChartKey) return
+    if (historyAttemptRef.current === focusedChartKey) return
+    historyAttemptRef.current = focusedChartKey
+    void loadHistoricalCandles(focusedChartKey)
+  }, [
+    viewMode,
+    focusedChartKey,
+    hasHistorical,
+    loadingTickKey,
+    loadHistoricalCandles,
+  ])
 
   /** Stable map of ordered symbols used by the momentum hook — only recomputes when watchlists or orders change. */
   const allOrderedSymbols = useMemo(
@@ -423,13 +538,48 @@ export default function WatchlistPage() {
   }, [watchlistsReady, watchlists, syncLayoutsFromWatchlists])
 
   useEffect(() => {
+    if (!watchlistsReady) return
+
+    const legacyChart = searchParams.get(WATCHLIST_CHART_LEGACY_PARAM)
+    const chartKey = routeTickKey ?? legacyChart
+    const viewParam = searchParams.get(WATCHLIST_CHART_VIEW_PARAM)
+    const panelParam = searchParams.get(WATCHLIST_CHART_PANEL_PARAM)
+
+    if (!chartKey) {
+      if (viewParam === 'charts') setViewMode('charts')
+      if (panelParam) setActivePanelId(panelParam)
+      return
+    }
+
+    if (routeAppliedRef.current === chartKey) return
+    routeAppliedRef.current = chartKey
+
+    setViewMode('charts')
+    const panelId = findPanelIdForTickKey(
+      watchlists,
+      chartKey,
+      panelParam ?? activePanelId ?? panels[0]?.id,
+    )
+    if (panelId) setActivePanelId(panelId)
+    setFocusedChartKey(chartKey)
+
+    if (!routeTickKey && legacyChart) {
+      navigate(buildWatchlistChartUrl(chartKey, panelId), { replace: true })
+    }
+  }, [
+    watchlistsReady,
+    routeTickKey,
+    searchParams,
+    watchlists,
+    panels,
+    activePanelId,
+    navigate,
+  ])
+
+  useEffect(() => {
     if (!activePanelId || panels.some(panel => panel.id === activePanelId)) return
     setActivePanelId(panels[0]?.id ?? null)
   }, [activePanelId, panels])
-
-  useEffect(() => {
-    setFocusedChartKey(null)
-  }, [activePanelId, viewMode])
 
   useEffect(() => {
     const onMomentumChanged = () => syncMomentumState()
@@ -660,6 +810,54 @@ export default function WatchlistPage() {
     })
   }
 
+  const handleReorganizePanel = () =>
+    wrap(async () => {
+      if (!activePanelId || activePanelWatchlists.length === 0) return
+
+      const getSymbols = (watchlist: Watchlist) => orderedSymbolsFor(watchlist)
+      const chunks = planPanelWatchlistChunks(activePanelWatchlists, getSymbols)
+      if (chunks.length === 0) {
+        showPlatformToast({
+          variant: 'warning',
+          message: 'No symbols to reorganise in this panel.',
+        })
+        return
+      }
+
+      setWatchlistHistorySeederEnabled(false)
+
+      const previousIds = new Set(activePanelWatchlists.map(watchlist => watchlist.id))
+      try {
+        const updated = await applyPanelWatchlistReorganize(activePanelId, activePanelWatchlists, chunks)
+        const refreshed = await fetchWatchlists()
+        setWatchlists(refreshed)
+
+        const nextLayouts: WatchlistLayoutMap = { ...layouts }
+        for (const id of previousIds) {
+          if (!updated.some(watchlist => watchlist.id === id)) {
+            delete nextLayouts[id]
+          }
+        }
+        for (const watchlist of updated) {
+          if (!nextLayouts[watchlist.id]) {
+            nextLayouts[watchlist.id] = {
+              ...layoutForNewWatchlist(nextLayouts, cardMetrics, watchlist.id),
+              width: cardWidthForVisibleColumns(visibleChangeColumns.length),
+            }
+          }
+        }
+        persistLayouts(nextLayouts)
+        await refreshPanels()
+
+        showPlatformToast({
+          variant: 'success',
+          message: `Reorganised into ${updated.length} watchlist${updated.length === 1 ? '' : 's'} (max 5 symbols each).`,
+        })
+      } finally {
+        setWatchlistHistorySeederEnabled(viewMode !== 'charts')
+      }
+    })
+
   /**
    * Re-packs every watchlist into a tidy masonry grid. Card width matches the
    * current visible column set so deselected columns don't leave empty table space.
@@ -838,6 +1036,18 @@ export default function WatchlistPage() {
               type="button"
               size="sm"
               variant="outline"
+              onClick={handleReorganizePanel}
+              disabled={busy || activePanelWatchlists.length === 0}
+              className="gap-1.5"
+              title="Split panel watchlists into groups of at most 5 symbols"
+            >
+              <Rows3 className="h-3.5 w-3.5" />
+              Reorganise
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
               onClick={handleAutoArrange}
               disabled={busy || activePanelWatchlists.length === 0}
               className="gap-1.5"
@@ -880,7 +1090,7 @@ export default function WatchlistPage() {
         panels={panels}
         activePanelId={activePanelId}
         busy={busy}
-        onSelect={setActivePanelId}
+        onSelect={handlePanelSelect}
         onCreate={handleCreatePanel}
         onRename={handleRenamePanel}
         onDelete={handleDeletePanel}
@@ -989,7 +1199,9 @@ export default function WatchlistPage() {
             samplesByKey={chartSamplesByKey}
             candlesByKey={chartCandlesByKey}
             focusedTickKey={focusedChartKey}
-            onFocusChange={setFocusedChartKey}
+            onFocusChange={handleChartFocusChange}
+            chartShareUrl={chartShareUrl}
+            onCopyChartLink={handleCopyChartLink}
             visibleChangeColumns={visibleChangeColumns}
             windowChanges={windowChanges}
             chartRenderMode={chartRenderMode}
@@ -1001,6 +1213,16 @@ export default function WatchlistPage() {
             onToggleSymbolMomentumNoTp={handleToggleSymbolMomentumNoTp}
             onToggleSymbolMomentumLive={handleToggleSymbolMomentumLive}
             onHideChrome={() => setChromeHiddenPersisted(true)}
+            onLoadHistorical={
+              focusedChartKey
+                ? () => void loadHistoricalCandles(
+                    focusedChartKey,
+                    hasHistorical(focusedChartKey),
+                  )
+                : undefined
+            }
+            historicalLoading={Boolean(focusedChartKey && loadingTickKey === focusedChartKey)}
+            hasHistorical={focusedChartKey ? hasHistorical(focusedChartKey) : false}
           />
         ) : activePanelWatchlists.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">

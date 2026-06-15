@@ -126,6 +126,33 @@ export function samplesToChartPoints(samples: PriceSample[]): Array<{ time: numb
   return deduped
 }
 
+/** Line chart points — skip flat runs so an unchanged price is a dot, not a long horizontal line. */
+export function buildWatchlistLinePoints(
+  samples: PriceSample[],
+  liveLtp?: number | null,
+): Array<{ time: number; value: number }> {
+  const points = samplesToChartPoints(samples)
+
+  if (!points.length) {
+    const price = Number(liveLtp)
+    if (!Number.isFinite(price) || price <= 0) return []
+    return [{ time: Math.floor(Date.now() / 1000), value: price }]
+  }
+
+  if (points.every(point => point.value === points[0].value)) {
+    return [points[points.length - 1]]
+  }
+
+  const result = [points[0]]
+  for (let i = 1; i < points.length; i++) {
+    const point = points[i]
+    if (point.value !== result[result.length - 1].value) {
+      result.push(point)
+    }
+  }
+  return result
+}
+
 export type WatchlistCandle = {
   time: number
   open: number

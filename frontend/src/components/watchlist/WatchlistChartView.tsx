@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { CandlestickChart, ChevronsUp, LayoutGrid, LineChart, Search, X } from 'lucide-react'
+import { CandlestickChart, ChevronsUp, LayoutGrid, LineChart, Link2, RefreshCw, Search, X } from 'lucide-react'
 
 import { Button } from '../ui/button'
 import type { WatchlistChangeWindowId } from '../../lib/watchlistChangeColumns'
@@ -18,6 +18,8 @@ type Props = {
   candlesByKey: Record<string, WatchlistSanitizedCandle[]>
   focusedTickKey: string | null
   onFocusChange: (tickKey: string | null) => void
+  chartShareUrl?: string | null
+  onCopyChartLink?: () => void
   visibleChangeColumns: WatchlistChangeWindowId[]
   windowChanges: WatchlistWindowChanges
   chartRenderMode: WatchlistChartRenderMode
@@ -29,6 +31,9 @@ type Props = {
   onToggleSymbolMomentumNoTp: (watchlistId: string, symboltoken: string) => void
   onToggleSymbolMomentumLive: (watchlistId: string, symboltoken: string) => void
   onHideChrome?: () => void
+  onLoadHistorical?: () => void
+  historicalLoading?: boolean
+  hasHistorical?: boolean
 }
 
 const GRID_CHART_HEIGHT = 200
@@ -198,7 +203,12 @@ export default function WatchlistChartView({
   samplesByKey,
   focusedTickKey,
   onFocusChange,
+  chartShareUrl,
+  onCopyChartLink,
   candlesByKey,
+  onLoadHistorical,
+  historicalLoading = false,
+  hasHistorical = false,
   onHideChrome,
   ...shared
 }: Props) {
@@ -246,6 +256,33 @@ export default function WatchlistChartView({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
+              {chartShareUrl && onCopyChartLink ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={onCopyChartLink}
+                  className="gap-1.5"
+                  title={chartShareUrl}
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                  Copy link
+                </Button>
+              ) : null}
+              {onLoadHistorical ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={onLoadHistorical}
+                  disabled={historicalLoading}
+                  className="gap-1.5"
+                  title="Fetch broker history from eToro"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${historicalLoading ? 'animate-spin' : ''}`} />
+                  {hasHistorical ? 'Refresh history' : 'Load history'}
+                </Button>
+              ) : null}
               <ChartRenderToggle
                 mode={shared.chartRenderMode}
                 onChange={shared.onChartRenderModeChange}

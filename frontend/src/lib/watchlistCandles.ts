@@ -1,4 +1,5 @@
 import type { PriceSample } from './watchlistChangeColumns'
+import type { PriceSample } from './watchlistChangeColumns'
 import type { WatchlistChartSymbol } from './watchlistUniqueSymbols'
 
 export type WatchlistSanitizedCandle = {
@@ -10,12 +11,29 @@ export type WatchlistSanitizedCandle = {
   volume: number
 }
 
-export const WATCHLIST_CANDLE_UP = '#8fd4ab'
-export const WATCHLIST_CANDLE_DOWN = '#f5a5a5'
-export const WATCHLIST_CANDLE_NEUTRAL_UP = '#7bc99a'
-export const WATCHLIST_CANDLE_NEUTRAL_DOWN = '#e89595'
+export const WATCHLIST_CANDLE_UP = '#00e676'
+export const WATCHLIST_CANDLE_DOWN = '#ff5252'
+export const WATCHLIST_CANDLE_NEUTRAL_UP = '#00c853'
+export const WATCHLIST_CANDLE_NEUTRAL_DOWN = '#ff1744'
 
 export const WATCHLIST_CHART_CANDLE_COUNT = 1000
+
+export function ohlcCandlesToPriceSamples(candles: WatchlistSanitizedCandle[]): PriceSample[] {
+  return candles.map(candle => ({
+    ts: candle.time * 1000,
+    ltp: candle.close,
+  }))
+}
+
+export function mergePriceSamples(
+  historical: PriceSample[],
+  live: PriceSample[],
+): PriceSample[] {
+  const map = new Map<number, PriceSample>()
+  for (const sample of historical) map.set(sample.ts, sample)
+  for (const sample of live) map.set(sample.ts, sample)
+  return [...map.values()].sort((a, b) => a.ts - b.ts)
+}
 
 export function sanitizeWatchlistCandles(candles: unknown[]): WatchlistSanitizedCandle[] {
   if (!candles?.length) return []
@@ -54,7 +72,7 @@ export function candlesToVolumeData(candles: WatchlistSanitizedCandle[]) {
   return candles.map(candle => ({
     time: candle.time,
     value: Number.isFinite(candle.volume) ? candle.volume : 0,
-    color: candle.close >= candle.open ? 'rgba(143, 212, 171, 0.5)' : 'rgba(245, 165, 165, 0.5)',
+    color: candle.close >= candle.open ? 'rgba(0, 230, 118, 0.45)' : 'rgba(255, 82, 82, 0.45)',
   }))
 }
 
@@ -104,7 +122,7 @@ export function mergeLiveTickIntoWatchlistCandles(
   return sanitizeWatchlistCandles(next)
 }
 
-/** Fallback when broker API candles are unavailable — tick count stands in for volume. */
+/** Aggregate tick samples into 1-minute candles (tick count stands in for volume). */
 export function samplesToWatchlistCandles(samples: PriceSample[]): WatchlistSanitizedCandle[] {
   const buckets = new Map<number, WatchlistSanitizedCandle & { ticks: number }>()
   for (const sample of samples) {
@@ -133,6 +151,21 @@ export function samplesToWatchlistCandles(samples: PriceSample[]): WatchlistSani
   return [...buckets.values()]
     .map(({ ticks: _ticks, ...candle }) => candle)
     .sort((a, b) => a.time - b.time)
+}
+
+/** Live forming bar only — no broker history. Uses ticks from the current minute. */
+export function liveWatchlistCandles(
+  samples: PriceSample[],
+  ltp: number | null | undefined,
+): WatchlistSanitizedCandle[] {
+  const bucket = Math.floor(Date.now() / 1000 / 60) * 60
+  const currentMinuteSamples = samples.filter(
+    sample => Math.floor(sample.ts / 60_000) * 60 === bucket,
+  )
+  return mergeLiveTickIntoWatchlistCandles(
+    samplesToWatchlistCandles(currentMinuteSamples),
+    ltp,
+  )
 }
 
 export async function fetchWatchlistSymbolCandles(
@@ -170,16 +203,67 @@ export function applyWatchlistCandleColors(
   })
 }
 
+export function mergeLiveTailSamples(
+  apiCandles: WatchlistSanitizedCandle[],
+  samples: PriceSample[],
+): WatchlistSanitizedCandle[] {
+  if (!apiCandles.length) return apiCandles
+
+  const currentBucket = Math.floor(Date.now() / 1000 / 60) * 60
+  const sampleCandles = samplesToWatchlistCandles(samples)
+  const forming = sampleCandles.find(candle => candle.time === currentBucket)
+  if (!forming) return apiCandles
+
+  const merged = [...apiCandles]
+  const lastIdx = merged.length - 1
+  const last = merged[lastIdx]
+
+  if (forming.time === last.time) {
+    merged[lastIdx] = {
+      time: last.time,
+      open: last.open,
+      high: Math.max(last.high, forming.high),
+      low: Math.min(last.low, forming.low),
+      close: forming.close,
+      volume: Math.max(last.volume, forming.volume),
+    }
+  } else if (forming.time > last.time) {
+    merged.push(forming)
+  }
+
+  return sanitizeWatchlistCandles(merged)
+}
+
 export function applyWatchlistCandleViewport(
-  chart: { timeScale: () => { applyOptions: (options: Record<string, number>) => void; fitContent: () => void } } | null,
+  chart: {
+    timeScale: () => {
+      applyOptions: (options: Record<string, number>) => void
+      fitContent: () => void
+      setVisibleLogicalRange: (range: { from: number; to: number }) => void
+    }
+  } | null,
   barCount: number,
   compact = false,
 ): void {
   if (!chart || barCount <= 0) return
+
+  const visibleBars = compact ? 50 : 120
+  const barSpacing = compact ? 3 : 8
+
   chart.timeScale().applyOptions({
-    barSpacing: compact ? 1 : 3,
-    minBarSpacing: 0.5,
-    rightOffset: compact ? 2 : 4,
+    barSpacing,
+    minBarSpacing: compact ? 1 : 3,
+    rightOffset: compact ? 4 : 12,
   })
-  chart.timeScale().fitContent()
+
+  if (barCount <= visibleBars) {
+    chart.timeScale().fitContent()
+    return
+  }
+
+  // Pin the viewport to recent bars so live candles stay readable on maximize.
+  chart.timeScale().setVisibleLogicalRange({
+    from: barCount - visibleBars,
+    to: barCount + (compact ? 4 : 12),
+  })
 }

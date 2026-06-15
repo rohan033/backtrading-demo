@@ -1481,6 +1481,10 @@ async def get_watchlist_symbol_candles(
             count=safe_count,
             direction="desc",
         )
+        from managers.candle_store import CandleStore
+
+        store = CandleStore()
+        candles = store.bootstrap(candles)
         log.info(
             "[WATCHLIST_CANDLES] symbol=%s token=%s env=%s candles=%d",
             symbol, token, account_env, len(candles),

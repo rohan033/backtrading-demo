@@ -1,93 +1,121 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   fetchWatchlistSymbolCandles,
+  mergeLiveTailSamples,
   mergeLiveTickIntoWatchlistCandles,
   samplesToWatchlistCandles,
   type WatchlistSanitizedCandle,
 } from '../lib/watchlistCandles'
+import {
+  getWatchlistOhlcCache,
+  hasWatchlistOhlcCache,
+  setWatchlistOhlcCache,
+  WATCHLIST_OHLC_UPDATED_EVENT,
+} from '../lib/watchlistOhlcCache'
 import type { PriceSample } from '../lib/watchlistChangeColumns'
 import type { WatchlistChartSymbol } from '../lib/watchlistUniqueSymbols'
 import type { WatchlistTick } from '../lib/watchlists'
 
-const MAX_CONCURRENT = 3
+function resolveHistoricalCandles(
+  tickKey: string,
+  focusedTickKey: string | null,
+  historicalByKey: Record<string, WatchlistSanitizedCandle[]>,
+): WatchlistSanitizedCandle[] | undefined {
+  if (!focusedTickKey || tickKey !== focusedTickKey) return undefined
+  const loaded = historicalByKey[tickKey]
+  if (loaded?.length) return loaded
+  return getWatchlistOhlcCache(tickKey)
+}
 
 export function useWatchlistChartCandles(
   symbols: WatchlistChartSymbol[],
   ticks: Record<string, WatchlistTick>,
   samplesByKey: Record<string, PriceSample[]>,
-  enabled: boolean,
+  focusedTickKey: string | null,
 ) {
-  const [candlesByKey, setCandlesByKey] = useState<Record<string, WatchlistSanitizedCandle[]>>({})
-  const fetchedRef = useRef<Set<string>>(new Set())
-  const inflightRef = useRef<Set<string>>(new Set())
+  const [historicalByKey, setHistoricalByKey] = useState<
+    Record<string, WatchlistSanitizedCandle[]>
+  >({})
+  const [loadingTickKey, setLoadingTickKey] = useState<string | null>(null)
+  const [ohlcRevision, setOhlcRevision] = useState(0)
   const symbolsRef = useRef(symbols)
-  const samplesByKeyRef = useRef(samplesByKey)
+  const loadingKeysRef = useRef<Set<string>>(new Set())
+
+  symbolsRef.current = symbols
 
   useEffect(() => {
-    symbolsRef.current = symbols
-  }, [symbols])
+    const onOhlcUpdated = () => setOhlcRevision(revision => revision + 1)
+    window.addEventListener(WATCHLIST_OHLC_UPDATED_EVENT, onOhlcUpdated)
+    return () => window.removeEventListener(WATCHLIST_OHLC_UPDATED_EVENT, onOhlcUpdated)
+  }, [])
 
-  useEffect(() => {
-    samplesByKeyRef.current = samplesByKey
-  }, [samplesByKey])
+  const loadHistoricalCandles = useCallback(async (tickKey: string, force = false) => {
+    if (loadingKeysRef.current.has(tickKey)) return
 
-  const symbolsKey = useMemo(
-    () => symbols.map(symbol => symbol.tickKey).sort().join('|'),
-    [symbols],
-  )
-
-  useEffect(() => {
-    if (!enabled || symbols.length === 0) return undefined
-
-    let cancelled = false
-    let cursor = 0
-    const jobs = symbolsRef.current
-
-    const worker = async () => {
-      while (cursor < jobs.length) {
-        if (cancelled) return
-        const symbol = jobs[cursor++]
-        if (fetchedRef.current.has(symbol.tickKey) || inflightRef.current.has(symbol.tickKey)) continue
-
-        inflightRef.current.add(symbol.tickKey)
-        try {
-          const candles = await fetchWatchlistSymbolCandles(symbol)
-          if (cancelled) return
-          fetchedRef.current.add(symbol.tickKey)
-          setCandlesByKey(prev => ({
-            ...prev,
-            [symbol.tickKey]: candles.length
-              ? candles
-              : samplesToWatchlistCandles(samplesByKeyRef.current[symbol.tickKey] ?? []),
-          }))
-        } catch {
-          fetchedRef.current.add(symbol.tickKey)
-          setCandlesByKey(prev => ({
-            ...prev,
-            [symbol.tickKey]: samplesToWatchlistCandles(samplesByKeyRef.current[symbol.tickKey] ?? []),
-          }))
-        } finally {
-          inflightRef.current.delete(symbol.tickKey)
-        }
+    if (!force) {
+      const cached = getWatchlistOhlcCache(tickKey)
+      if (cached?.length) {
+        setHistoricalByKey(prev => {
+          if (prev[tickKey]?.length) return prev
+          return { ...prev, [tickKey]: cached }
+        })
+        return
       }
     }
 
-    void Promise.all(Array.from({ length: MAX_CONCURRENT }, () => worker()))
+    const symbol = symbolsRef.current.find(item => item.tickKey === tickKey)
+    if (!symbol) return
 
-    return () => {
-      cancelled = true
+    loadingKeysRef.current.add(tickKey)
+    setLoadingTickKey(tickKey)
+    try {
+      const candles = await fetchWatchlistSymbolCandles(symbol)
+      if (candles.length) {
+        setWatchlistOhlcCache(tickKey, candles)
+        setHistoricalByKey(prev => ({ ...prev, [tickKey]: candles }))
+      }
+    } finally {
+      loadingKeysRef.current.delete(tickKey)
+      setLoadingTickKey(current => (current === tickKey ? null : current))
     }
-  }, [enabled, symbolsKey, symbols.length])
+  }, [])
 
-  return useMemo(() => {
+  const candlesByKey = useMemo(() => {
     const result: Record<string, WatchlistSanitizedCandle[]> = {}
     for (const symbol of symbols) {
-      const apiCandles = candlesByKey[symbol.tickKey]
-      const fallback = samplesToWatchlistCandles(samplesByKey[symbol.tickKey] ?? [])
-      const base = apiCandles?.length ? apiCandles : fallback
-      result[symbol.tickKey] = mergeLiveTickIntoWatchlistCandles(base, ticks[symbol.tickKey]?.ltp)
+      const samples = samplesByKey[symbol.tickKey] ?? []
+      const ltp = ticks[symbol.tickKey]?.ltp
+      const historical = resolveHistoricalCandles(
+        symbol.tickKey,
+        focusedTickKey,
+        historicalByKey,
+      )
+
+      if (historical?.length) {
+        const withLiveTail = mergeLiveTailSamples(historical, samples)
+        result[symbol.tickKey] = mergeLiveTickIntoWatchlistCandles(withLiveTail, ltp)
+      } else {
+        result[symbol.tickKey] = mergeLiveTickIntoWatchlistCandles(
+          samplesToWatchlistCandles(samples),
+          ltp,
+        )
+      }
     }
     return result
-  }, [symbols, candlesByKey, samplesByKey, ticks])
+  }, [symbols, focusedTickKey, historicalByKey, samplesByKey, ticks, ohlcRevision])
+
+  const hasHistorical = useCallback(
+    (tickKey: string) =>
+      tickKey === focusedTickKey
+      && ((historicalByKey[tickKey]?.length ?? 0) > 0 || hasWatchlistOhlcCache(tickKey)),
+    [focusedTickKey, historicalByKey],
+  )
+
+  return {
+    candlesByKey,
+    loadHistoricalCandles,
+    loadingTickKey,
+    hasHistorical,
+  }
 }
