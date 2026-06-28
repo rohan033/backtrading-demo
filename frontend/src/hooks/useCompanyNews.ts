@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   fetchCompanyNews,
   mergeCompanyNews,
+  refreshCompanyNews,
   type CompanyNewsItem,
 } from '../lib/companyNews'
 
@@ -64,7 +65,7 @@ export function useCompanyNews(symbol: string | null | undefined) {
     setError(null)
 
     try {
-      const incoming = await fetchCompanyNews(trimmed)
+      const incoming = await refreshCompanyNews(trimmed)
       let result: CompanyNewsRefreshResult = { addedCount: 0, totalCount: incoming.length }
 
       setItems(prev => {

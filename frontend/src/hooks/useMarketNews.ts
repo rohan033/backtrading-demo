@@ -62,7 +62,7 @@ export function useMarketNews() {
 
     try {
       const minId = maxMarketNewsId(items)
-      const incoming = await fetchMarketNews(category, minId)
+      const incoming = await fetchMarketNews(category, minId, true)
       let result: MarketNewsRefreshResult = { addedCount: 0, totalCount: items.length }
 
       setItems(prev => {

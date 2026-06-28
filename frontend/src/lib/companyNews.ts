@@ -38,11 +38,16 @@ export function mergeCompanyNews(
   return { items, addedCount }
 }
 
-export async function fetchCompanyNews(symbol: string, days = 30): Promise<CompanyNewsItem[]> {
+async function loadCompanyNews(
+  symbol: string,
+  days: number,
+  refresh: boolean,
+): Promise<CompanyNewsItem[]> {
   const params = new URLSearchParams({
     symbol: symbol.trim(),
     days: String(days),
   })
+  if (refresh) params.set('refresh', 'true')
   const res = await fetch(`/api/market/company-news?${params.toString()}`)
   if (!res.ok) {
     let detail = res.statusText
@@ -56,6 +61,14 @@ export async function fetchCompanyNews(symbol: string, days = 30): Promise<Compa
   }
   const payload = (await res.json()) as CompanyNewsResponse
   return Array.isArray(payload.data) ? payload.data : []
+}
+
+export function fetchCompanyNews(symbol: string, days = 30): Promise<CompanyNewsItem[]> {
+  return loadCompanyNews(symbol, days, false)
+}
+
+export function refreshCompanyNews(symbol: string, days = 30): Promise<CompanyNewsItem[]> {
+  return loadCompanyNews(symbol, days, true)
 }
 
 export function formatNewsTimestamp(unixSeconds: number): string {

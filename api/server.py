@@ -30,6 +30,7 @@ from api.workspace_media import router as workspace_media_router
 from api.watchlist_routes import router as watchlist_router
 from api.watchlist_panel_routes import router as watchlist_panel_router
 from api.market_news_routes import router as market_news_router
+from api.news_feed import get_news_feed_hub
 from api.watchlist_feed import get_watchlist_feed_hub
 from control_plane.client_mode import normalize_client_mode
 from control_plane.engine_registry import EngineRegistry
@@ -49,6 +50,7 @@ from control_plane.execution_sources import (
     EXECUTION_SOURCE_MOMENTUM_TRADE,
 )
 from control_plane.execution_source_links import ensure_research_source_on_engine
+from control_plane.news_poller import get_news_poller
 from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
 from brokers.angel.adapters.portfolio import angel_portfolio_rows_from_holdings
 from brokers.etoro.adapters.portfolio import (
@@ -126,6 +128,9 @@ _engine_sweeper_task: Optional[asyncio.Task] = None
 _scheduled_executions_task: Optional[asyncio.Task] = None
 execution_scheduler: ExecutionScheduler | None = None
 _live_events_db: Optional[DbEventWriter] = None
+_news_poller = get_news_poller(
+    broadcast=get_news_feed_hub().broadcast_notifications,
+)
 
 
 def get_live_events_db() -> DbEventWriter:
@@ -321,9 +326,11 @@ async def control_plane_lifespan(_app: FastAPI):
     _scheduled_executions_task = asyncio.create_task(_scheduled_executions_loop())
     await cursor_agent_service.startup()
     await start_telegram_inbound_services()
+    await _news_poller.start()
     try:
         yield
     finally:
+        await _news_poller.stop()
         await stop_telegram_inbound_services()
         await cursor_agent_service.shutdown()
         if _scheduled_executions_task:
@@ -2342,6 +2349,11 @@ async def ws_control_cursor_agent(ws: WebSocket):
 @app.websocket("/ws/watchlist")
 async def ws_watchlist(ws: WebSocket):
     await get_watchlist_feed_hub().handle(ws)
+
+
+@app.websocket("/ws/news")
+async def ws_news(ws: WebSocket):
+    await get_news_feed_hub().handle(ws)
 
 
 @app.websocket("/ws/control/market")

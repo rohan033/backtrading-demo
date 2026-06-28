@@ -1,5 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './MinimalShell.css'
+import CompanyNewsPanel from '../../components/watchlist/CompanyNewsPanel'
+import MarketNewsPanel from '../../components/watchlist/MarketNewsPanel'
+import { useWatchlistStream } from '../../context/WatchlistStreamContext'
+import { useNewsNotifications } from '../../hooks/useNewsNotifications'
 import WatchAndTrade from './WatchAndTrade'
 import { useUrlState } from './useUrlState'
 
@@ -11,12 +15,25 @@ const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'strategies']
 const NEWS_TABS: NewsTab[] = ['news', 'market']
 const LEFT_COLLAPSED_KEY = 'minimal-shell-left-collapsed'
 const RIGHT_COLLAPSED_KEY = 'minimal-shell-right-collapsed'
+const RIGHT_WIDTH_KEY = 'minimal-shell-right-width'
+const RIGHT_WIDTH_MIN = 220
+const RIGHT_WIDTH_MAX = 560
 
 function loadStoredBool(key: string, fallback = false) {
   try {
     const value = localStorage.getItem(key)
     if (value == null) return fallback
     return value === 'true'
+  } catch {
+    return fallback
+  }
+}
+
+function loadStoredNumber(key: string, fallback: number, min: number, max: number) {
+  try {
+    const value = Number(localStorage.getItem(key))
+    if (!Number.isFinite(value)) return fallback
+    return Math.min(max, Math.max(min, value))
   } catch {
     return fallback
   }
@@ -92,10 +109,6 @@ function SearchBar({
   )
 }
 
-function NewsCard({ label }: { label: string }) {
-  return <div className="ms-news-card">{label}</div>
-}
-
 /* ─── panels ────────────────────────────────────────────── */
 function LeftDrawer({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   if (collapsed) {
@@ -155,6 +168,9 @@ function RightDrawer({
   setTab,
   search,
   setSearch,
+  activeNewsSymbol,
+  width,
+  onResizeStart,
 }: {
   collapsed: boolean
   onToggle: () => void
@@ -162,6 +178,9 @@ function RightDrawer({
   setTab: (t: NewsTab) => void
   search: string
   setSearch: (v: string) => void
+  activeNewsSymbol: string | null
+  width: number
+  onResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void
 }) {
   if (collapsed) {
     return (
@@ -175,7 +194,15 @@ function RightDrawer({
   }
 
   return (
-    <aside className="ms-drawer ms-drawer--right">
+    <aside className="ms-drawer ms-drawer--right" style={{ width, minWidth: width }}>
+      <div
+        className="ms-drawer-resize ms-drawer-resize--right"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize news panel"
+        title="Drag left to widen news"
+        onMouseDown={onResizeStart}
+      />
       <div className="ms-header ms-header--right">
         <Pill active={tab === 'news'} onClick={() => setTab('news')}>
           {'\u00a0News\u00a0'}
@@ -187,8 +214,21 @@ function RightDrawer({
       </div>
       <SearchBar value={search} onChange={setSearch} />
       <div className="ms-body ms-body--scrollable">
-        <NewsCard label="News-1" />
-        <NewsCard label="News-1" />
+        {tab === 'news' ? (
+          activeNewsSymbol ? (
+            <CompanyNewsPanel
+              symbol={activeNewsSymbol}
+              variant="minimal"
+              filterText={search}
+            />
+          ) : (
+            <div className="ms-news-empty">
+              Select a stock in Watch & Trade to load company news.
+            </div>
+          )
+        ) : (
+          <MarketNewsPanel variant="minimal" filterText={search} />
+        )}
       </div>
     </aside>
   )
@@ -197,12 +237,26 @@ function RightDrawer({
 /* ─── root shell ─────────────────────────────────────────── */
 export default function MinimalShell() {
   const { state, navigate } = useUrlState()
+  const { watchlists } = useWatchlistStream()
+  useNewsNotifications()
   const [leftCollapsed, setLeftCollapsed] = useState(() => loadStoredBool(LEFT_COLLAPSED_KEY))
   const [rightCollapsed, setRightCollapsed] = useState(() => loadStoredBool(RIGHT_COLLAPSED_KEY))
+  const [rightWidth, setRightWidth] = useState(() =>
+    loadStoredNumber(RIGHT_WIDTH_KEY, RIGHT_WIDTH_MIN, RIGHT_WIDTH_MIN, RIGHT_WIDTH_MAX),
+  )
   const [search, setSearch] = useState('')
+  const rightResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
 
   const mainTab: MainTab = MAIN_TABS.includes(state.tab as MainTab) ? (state.tab as MainTab) : 'orders'
   const newsTab: NewsTab = NEWS_TABS.includes(state.news as NewsTab) ? (state.news as NewsTab) : 'news'
+  const activeNewsSymbol = useMemo(() => {
+    if (!state.symboltoken) return null
+    for (const watchlist of watchlists) {
+      const symbol = watchlist.symbols.find(item => item.symboltoken === state.symboltoken)
+      if (symbol) return symbol.tradingsymbol || symbol.symbol || null
+    }
+    return null
+  }, [state.symboltoken, watchlists])
 
   // Canonicalise the URL on first load so the active page is always reflected.
   useEffect(() => {
@@ -212,6 +266,32 @@ export default function MinimalShell() {
 
   const setMainTab = (t: MainTab) => navigate({ tab: t })
   const setNewsTab = (t: NewsTab) => navigate({ news: t })
+  const startRightResize = (event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    rightResizeRef.current = { startX: event.clientX, startWidth: rightWidth }
+    document.body.classList.add('ms-resizing')
+
+    const handleMove = (moveEvent: MouseEvent) => {
+      const active = rightResizeRef.current
+      if (!active) return
+      const next = Math.min(
+        RIGHT_WIDTH_MAX,
+        Math.max(RIGHT_WIDTH_MIN, active.startWidth + active.startX - moveEvent.clientX),
+      )
+      setRightWidth(next)
+      localStorage.setItem(RIGHT_WIDTH_KEY, String(next))
+    }
+
+    const handleUp = () => {
+      rightResizeRef.current = null
+      document.body.classList.remove('ms-resizing')
+      window.removeEventListener('mousemove', handleMove)
+      window.removeEventListener('mouseup', handleUp)
+    }
+
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+  }
   const toggleLeftCollapsed = () => {
     setLeftCollapsed(prev => {
       const next = !prev
@@ -238,6 +318,9 @@ export default function MinimalShell() {
         setTab={setNewsTab}
         search={search}
         setSearch={setSearch}
+        activeNewsSymbol={activeNewsSymbol}
+        width={rightWidth}
+        onResizeStart={startRightResize}
       />
     </div>
   )

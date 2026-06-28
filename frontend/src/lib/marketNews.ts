@@ -53,11 +53,13 @@ export function mergeMarketNews(
 export async function fetchMarketNews(
   category: MarketNewsCategory,
   minId = 0,
+  refresh = false,
 ): Promise<MarketNewsItem[]> {
   const params = new URLSearchParams({
     category,
     minId: String(minId),
   })
+  if (refresh) params.set('refresh', 'true')
   const res = await fetch(`/api/market/market-news?${params.toString()}`)
   if (!res.ok) {
     let detail = res.statusText
