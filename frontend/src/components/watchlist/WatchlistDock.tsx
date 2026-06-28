@@ -1,10 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, PanelRightClose } from 'lucide-react'
+import { useLocation } from 'react-router-dom'
 
+import CompanyNewsPanel from './CompanyNewsPanel'
+import MarketNewsPanel from './MarketNewsPanel'
 import { useWatchlistStream } from '../../context/WatchlistStreamContext'
 import { useWatchlistDock } from '../../layout/watchlist-dock-context'
 import { formatBrokerMoney } from '../../lib/currency'
 import { defaultAccountEnv, type WatchlistBroker } from '../../lib/watchlistBrokers'
+import {
+  WATCHLIST_CHART_LEGACY_PARAM,
+  tickKeyFromRouteParams,
+} from '../../lib/watchlistChartUrl'
 import {
   loadAllHiddenSymbolTokens,
   visibleWatchlistSymbols,
@@ -16,6 +23,7 @@ import {
   type WatchlistChangeWindowId,
 } from '../../lib/watchlistChangeColumns'
 import { applySymbolOrder, loadSymbolOrder } from '../../lib/watchlistMomentumState'
+import { tradingSymbolForTickKey } from '../../lib/watchlistSymbolLookup'
 import { watchlistTickKey, type WatchlistSymbol } from '../../lib/watchlists'
 import {
   DOCK_CHANGE_COLUMNS,
@@ -51,13 +59,34 @@ function windowBadgeClass(value: number | null | undefined): string {
 }
 
 export default function WatchlistDock() {
-  const { open, setOpen } = useWatchlistDock()
+  const location = useLocation()
+  const { open, setOpen, tab, setTab, newsSymbol, setNewsSymbol } = useWatchlistDock()
   // Reuses the shared watchlist stream (same ticks + rolling-window changes that
   // power the sticky feed) — no extra WebSocket connection is opened here.
   const { watchlists, ticks, windowChanges, connected, hasSymbols } = useWatchlistStream()
   const [sort, setSort] = useState<DockSort>(() => loadWatchlistDockSort())
   const [collapsed, setCollapsed] = useState<Set<string>>(() => loadCollapsedWatchlists())
   const [hiddenByWatchlist, setHiddenByWatchlist] = useState(() => loadAllHiddenSymbolTokens())
+
+  const focusedTickKey = useMemo(() => {
+    const match = location.pathname.match(/^\/watchlist\/chart\/([^/]+)\/([^/]+)\/([^/?]+)/)
+    if (match) {
+      return tickKeyFromRouteParams(match[1], match[2], match[3])
+    }
+    const params = new URLSearchParams(location.search)
+    return params.get(WATCHLIST_CHART_LEGACY_PARAM)
+  }, [location.pathname, location.search])
+
+  const chartNewsSymbol = useMemo(() => {
+    if (!focusedTickKey) return null
+    return tradingSymbolForTickKey(focusedTickKey, watchlists)
+  }, [focusedTickKey, watchlists])
+
+  useEffect(() => {
+    if (chartNewsSymbol) setNewsSymbol(chartNewsSymbol)
+  }, [chartNewsSymbol, setNewsSymbol])
+
+  const activeNewsSymbol = newsSymbol ?? chartNewsSymbol
 
   useEffect(() => {
     const refresh = () => setHiddenByWatchlist(loadAllHiddenSymbolTokens())
@@ -103,16 +132,53 @@ export default function WatchlistDock() {
     setCollapsed(prev => toggleCollapsedWatchlist(prev, watchlistId))
   }
 
+  const handleSymbolNews = (tradingsymbol: string) => {
+    setNewsSymbol(tradingsymbol)
+    setTab('news')
+  }
+
   return (
     <aside className="relative z-20 flex h-full w-[340px] shrink-0 flex-col border-l border-border bg-secondary">
       <div className="flex h-16 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
-        <div className="flex min-w-0 items-center gap-2">
-          <h2 className="truncate font-display text-[15px] font-bold tracking-tightest text-text-primary">
-            Watchlists
-          </h2>
-          {hasSymbols && (
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <div className="inline-flex min-w-0 max-w-full overflow-x-auto rounded-md border border-border bg-card p-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <button
+              type="button"
+              onClick={() => setTab('watchlists')}
+              className={`shrink-0 rounded px-2 py-1 text-[11px] font-bold transition-colors ${
+                tab === 'watchlists'
+                  ? 'bg-accent/15 text-accent'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              Watchlists
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('news')}
+              className={`shrink-0 rounded px-2 py-1 text-[11px] font-bold transition-colors ${
+                tab === 'news'
+                  ? 'bg-accent/15 text-accent'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              News
+            </button>
+            <button
+              type="button"
+              onClick={() => setTab('market')}
+              className={`shrink-0 rounded px-2 py-1 text-[11px] font-bold transition-colors ${
+                tab === 'market'
+                  ? 'bg-accent/15 text-accent'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              Market
+            </button>
+          </div>
+          {tab === 'watchlists' && hasSymbols ? (
             <span
-              className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] ${
+              className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em] ${
                 connected
                   ? 'border-green/30 bg-green/10 text-green'
                   : 'border-accent/30 bg-accent/10 text-accent'
@@ -121,7 +187,7 @@ export default function WatchlistDock() {
               <span className={`h-1.5 w-1.5 rounded-full ${connected ? 'bg-green' : 'bg-accent'}`} />
               {connected ? 'Live' : '…'}
             </span>
-          )}
+          ) : null}
         </div>
         <button
           type="button"
@@ -133,6 +199,45 @@ export default function WatchlistDock() {
         </button>
       </div>
 
+      {tab === 'market' ? (
+        <MarketNewsPanel className="min-h-0 flex-1" />
+      ) : tab === 'news' ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {activeNewsSymbol ? (
+            <>
+              <div className="shrink-0 border-b border-border px-4 py-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
+                  Symbol
+                </p>
+                <p className="truncate font-display text-sm font-bold text-text-primary">
+                  {activeNewsSymbol}
+                </p>
+              </div>
+              <CompanyNewsPanel
+                symbol={activeNewsSymbol}
+                variant="dock"
+                showHeader={false}
+                className="min-h-0 flex-1"
+              />
+            </>
+          ) : (
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+              <p className="text-sm font-semibold text-text-primary">No symbol selected</p>
+              <p className="text-xs text-text-secondary">
+                Open a chart or click a symbol in Watchlists to load company news.
+              </p>
+              <button
+                type="button"
+                onClick={() => setTab('watchlists')}
+                className="mt-2 rounded-md border border-border px-3 py-1.5 text-xs font-semibold text-text-primary transition-colors hover:bg-card"
+              >
+                Go to Watchlists
+              </button>
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
       <div
         className="grid shrink-0 items-center gap-x-1.5 border-b border-border bg-secondary/80 px-4 py-1.5 text-[10px] font-bold uppercase tracking-[0.08em] text-text-secondary/70"
         style={{ gridTemplateColumns: COLUMN_GRID }}
@@ -209,8 +314,18 @@ export default function WatchlistDock() {
                       return (
                         <div
                           key={symbol.symboltoken}
-                          className="grid items-center gap-x-1.5 border-b border-border/30 px-4 py-1.5 transition-colors hover:bg-accent/[0.04]"
+                          role="button"
+                          tabIndex={0}
+                          onClick={() => handleSymbolNews(symbol.tradingsymbol)}
+                          onKeyDown={event => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              handleSymbolNews(symbol.tradingsymbol)
+                            }
+                          }}
+                          className="grid cursor-pointer items-center gap-x-1.5 border-b border-border/30 px-4 py-1.5 transition-colors hover:bg-accent/[0.04]"
                           style={{ gridTemplateColumns: COLUMN_GRID }}
+                          title={`View news for ${symbol.tradingsymbol}`}
                         >
                           <div className="flex min-w-0 items-center gap-2">
                             <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-card-hi text-[10px] font-bold text-text-secondary ring-1 ring-inset ring-white/[0.04]">
@@ -246,6 +361,8 @@ export default function WatchlistDock() {
           })
         )}
       </div>
+        </>
+      )}
     </aside>
   )
 }

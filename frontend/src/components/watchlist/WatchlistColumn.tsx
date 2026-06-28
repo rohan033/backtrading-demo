@@ -183,6 +183,22 @@ function directionStyles(direction: WatchlistTick['direction'] | undefined) {
   }
 }
 
+/** Full-row tint when a symbol is armed for momentum or set to live deploy. */
+function momentumRowHighlightClass(
+  symbolMomentumOn: boolean,
+  symbolMomentumNoTpOn: boolean,
+  symbolMomentumLiveOn: boolean,
+  isMomentumWatchlistFirst: boolean,
+): string {
+  if (symbolMomentumLiveOn || symbolMomentumNoTpOn) {
+    return 'bg-red/[0.13] hover:bg-red/[0.18] ring-1 ring-inset ring-red/30'
+  }
+  if (symbolMomentumOn || isMomentumWatchlistFirst) {
+    return 'bg-amber-500/[0.13] hover:bg-amber-500/[0.18] ring-1 ring-inset ring-amber-500/35'
+  }
+  return ''
+}
+
 export default function WatchlistColumn({
   watchlist,
   orderedSymbols,
@@ -252,15 +268,25 @@ export default function WatchlistColumn({
     if (editingName) nameInputRef.current?.focus()
   }, [editingName])
 
+  const displaySymbols = orderedSymbols ?? watchlist.symbols
+  const existingTokens = new Set(watchlist.symbols.map(s => s.symboltoken))
+  const hiddenTokens = hiddenSymbolTokens ?? new Set<string>()
+  const tableGrid = buildWatchlistTableGrid(visibleChangeColumns)
+  const tableMinWidth = watchlistTableMinWidthPx(visibleChangeColumns.length)
+  const density = tableDensity(visibleChangeColumns.length)
+  const windowColumnLabels = new Map(
+    WATCHLIST_CHANGE_WINDOWS.map(window => [window.id, window.label]),
+  )
+
   const lastMetricsRef = useRef<{ symbolCount: number; searchOpen: boolean } | null>(null)
   useEffect(() => {
     if (!onMetricsChange) return
-    const next = { symbolCount: watchlist.symbols.length, searchOpen: adding }
+    const next = { symbolCount: displaySymbols.length, searchOpen: adding }
     const prev = lastMetricsRef.current
     if (prev?.symbolCount === next.symbolCount && prev?.searchOpen === next.searchOpen) return
     lastMetricsRef.current = next
     onMetricsChange(watchlist.id, next)
-  }, [watchlist.id, watchlist.symbols.length, adding, onMetricsChange])
+  }, [watchlist.id, displaySymbols.length, adding, onMetricsChange])
 
   const commitRename = () => {
     const trimmed = nameDraft.trim()
@@ -282,16 +308,6 @@ export default function WatchlistColumn({
       setSearching(false)
     }
   }
-
-  const displaySymbols = orderedSymbols ?? watchlist.symbols
-  const existingTokens = new Set(watchlist.symbols.map(s => s.symboltoken))
-  const hiddenTokens = hiddenSymbolTokens ?? new Set<string>()
-  const tableGrid = buildWatchlistTableGrid(visibleChangeColumns)
-  const tableMinWidth = watchlistTableMinWidthPx(visibleChangeColumns.length)
-  const density = tableDensity(visibleChangeColumns.length)
-  const windowColumnLabels = new Map(
-    WATCHLIST_CHANGE_WINDOWS.map(window => [window.id, window.label]),
-  )
 
   const handleDragStart = (token: string) => {
     dragTokenRef.current = token
@@ -486,23 +502,23 @@ export default function WatchlistColumn({
         </div>
       )}
 
-      <div className="min-w-0 flex-1 px-2.5 pb-2.5 pt-2">
+      <div className="min-w-0 shrink-0 px-2.5 pb-2.5 pt-2">
         <div className="overflow-x-auto rounded-lg border border-border bg-secondary/20 text-sm">
-          <div style={{ minWidth: tableMinWidth }}>
+          <div style={{ width: tableMinWidth, maxWidth: '100%' }}>
           <div
             className="grid items-center gap-x-1.5 border-b border-border bg-secondary/80 text-[10px] font-semibold uppercase tracking-wide text-text-secondary"
             style={{ gridTemplateColumns: tableGrid }}
           >
-            <div className={`truncate py-2 ${density.headPad}`}>Symbol</div>
-            <div className={`py-2 text-right ${density.headPad}`}>Last</div>
-            <div className="px-0.5 py-2 text-center">Trend</div>
+            <div className={`truncate py-1.5 ${density.headPad}`}>Symbol</div>
+            <div className={`py-1.5 text-right ${density.headPad}`}>Last</div>
+            <div className="px-0.5 py-1.5 text-center">Trend</div>
             {visibleChangeColumns.map(columnId => (
-              <div key={columnId} className={`py-2 text-right ${density.headPad}`}>
+              <div key={columnId} className={`py-1.5 text-right ${density.headPad}`}>
                 {windowColumnLabels.get(columnId)}
               </div>
             ))}
-            <div className={`py-2 text-right ${density.headPad}`}>Tick</div>
-            <div className="px-0.5 py-2" aria-hidden />
+            <div className={`py-1.5 text-right ${density.headPad}`}>Tick</div>
+            <div className="px-0.5 py-1.5" aria-hidden />
           </div>
 
           {displaySymbols.length === 0 && (
@@ -528,7 +544,12 @@ export default function WatchlistColumn({
             const symbolMomentumOn = momentumSymbolKeys?.has(symbolMomentumKey) ?? false
             const symbolMomentumNoTpOn = momentumNoTpSymbolKeys?.has(symbolMomentumKey) ?? false
             const symbolMomentumLiveOn = momentumLiveSymbolKeys?.has(symbolMomentumKey) ?? false
-            const symbolMomentumArmed = symbolMomentumOn || symbolMomentumNoTpOn || (isMomentumWatchlist && isFirst)
+            const rowHighlight = momentumRowHighlightClass(
+              symbolMomentumOn,
+              symbolMomentumNoTpOn,
+              symbolMomentumLiveOn,
+              isMomentumWatchlist && isFirst,
+            )
 
             return (
               <div
@@ -544,10 +565,12 @@ export default function WatchlistColumn({
                   if (!autoSortEnabled) handleDrop(e, symbol.symboltoken)
                 }}
                 onDragEnd={handleDragEnd}
-                className={`group grid items-center gap-x-1.5 border-t transition-colors hover:bg-accent/[0.04] ${
+                className={`group grid items-center gap-x-1.5 border-t transition-colors ${
                   isDragOver && !autoSortEnabled
                     ? 'border-t-2 border-t-accent bg-accent/10'
-                    : 'border-t-border/40'
+                    : rowHighlight
+                      ? `border-t-border/40 ${rowHighlight}`
+                      : 'border-t-border/40 hover:bg-accent/[0.04]'
                 }`}
                 style={{ gridTemplateColumns: tableGrid, height: ROW_HEIGHT_PX }}
               >
@@ -580,7 +603,7 @@ export default function WatchlistColumn({
                 </div>
                 <div className="flex justify-center px-0.5">
                   <span
-                    className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${styles.pill}`}
+                    className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full ${styles.pill}`}
                     title={dir === 'up' ? 'Up' : dir === 'down' ? 'Down' : 'Waiting'}
                   >
                     {DirIcon ? (
@@ -615,51 +638,34 @@ export default function WatchlistColumn({
                 </div>
                 <div className="flex min-w-0 max-w-full items-center justify-end gap-px">
                   {onToggleSymbolMomentumLive && (
-                    <div
-                      className={`inline-flex h-6 w-8 shrink-0 items-stretch overflow-hidden rounded-full border border-border/50 bg-secondary/40 p-px transition-opacity ${
-                        symbolMomentumArmed || symbolMomentumLiveOn
-                          ? ''
-                          : 'opacity-0 group-hover:opacity-100'
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={symbolMomentumLiveOn}
+                      aria-label={symbolMomentumLiveOn ? 'Live deploy' : 'Demo deploy'}
+                      data-no-drag
+                      onPointerDown={event => event.stopPropagation()}
+                      onClick={event => {
+                        event.stopPropagation()
+                        onToggleSymbolMomentumLive(watchlist.id, symbol.symboltoken)
+                      }}
+                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+                        symbolMomentumLiveOn
+                          ? 'bg-red ring-1 ring-inset ring-red/50'
+                          : 'bg-green ring-1 ring-inset ring-green/50'
                       }`}
                       title={
                         symbolMomentumLiveOn
-                          ? 'Momentum deploys on live — click D for demo'
-                          : 'Momentum deploys on demo — click L for live'
+                          ? 'Live — click to switch to demo'
+                          : 'Demo — click to switch to live'
                       }
                     >
-                      <button
-                        type="button"
-                        aria-pressed={!symbolMomentumLiveOn}
-                        onClick={() => {
-                          if (symbolMomentumLiveOn) {
-                            onToggleSymbolMomentumLive(watchlist.id, symbol.symboltoken)
-                          }
-                        }}
-                        className={`flex flex-1 items-center justify-center rounded-full text-[8px] font-bold leading-none transition-colors ${
-                          !symbolMomentumLiveOn
-                            ? 'bg-background text-text-primary shadow-sm'
-                            : 'text-text-secondary/50 hover:text-text-secondary'
+                      <span
+                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-sm transition-transform duration-200 ease-out ${
+                          symbolMomentumLiveOn ? 'translate-x-[18px]' : 'translate-x-[2px]'
                         }`}
-                      >
-                        D
-                      </button>
-                      <button
-                        type="button"
-                        aria-pressed={symbolMomentumLiveOn}
-                        onClick={() => {
-                          if (!symbolMomentumLiveOn) {
-                            onToggleSymbolMomentumLive(watchlist.id, symbol.symboltoken)
-                          }
-                        }}
-                        className={`flex flex-1 items-center justify-center rounded-full text-[8px] font-bold leading-none transition-colors ${
-                          symbolMomentumLiveOn
-                            ? 'bg-red/25 text-red shadow-sm'
-                            : 'text-text-secondary/50 hover:text-text-secondary'
-                        }`}
-                      >
-                        L
-                      </button>
-                    </div>
+                      />
+                    </button>
                   )}
                   {onToggleSymbolMomentum && (
                     <button

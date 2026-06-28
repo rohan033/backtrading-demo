@@ -8,12 +8,22 @@ export type WatchlistSymbol = {
 
 export type WatchlistBroker = 'angel' | 'etoro'
 
+export type WatchlistPanel = {
+  id: string
+  name: string
+  position: number
+  created_at: string
+  updated_at: string
+  watchlist_count?: number
+}
+
 export type Watchlist = {
   id: string
   name: string
   position: number
   broker: WatchlistBroker
   account_env: string
+  panel_id?: string | null
   created_at: string
   updated_at: string
   symbols: WatchlistSymbol[]
@@ -62,7 +72,7 @@ export function watchlistTickKey(
 
 export async function createWatchlist(
   name: string,
-  options?: { broker?: WatchlistBroker; account_env?: string },
+  options?: { broker?: WatchlistBroker; account_env?: string; panel_id?: string },
 ): Promise<Watchlist> {
   return parseJson(
     await fetch(API, {
@@ -75,7 +85,7 @@ export async function createWatchlist(
 
 export async function updateWatchlist(
   id: string,
-  patch: { name?: string; broker?: WatchlistBroker; account_env?: string },
+  patch: { name?: string; broker?: WatchlistBroker; account_env?: string; panel_id?: string },
 ): Promise<Watchlist> {
   return parseJson(
     await fetch(`${API}/${id}`, {

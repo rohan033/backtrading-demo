@@ -1,8 +1,10 @@
 from brokers.etoro.candles import (
     compute_candle_fetch_count,
+    compute_desc_fetch_count_for_window,
     extract_etoro_candles,
     normalize_etoro_candle,
     select_candles_before,
+    select_candles_in_window,
 )
 
 
@@ -70,9 +72,35 @@ def test_select_candles_before_returns_older_window():
     assert [item["time"] for item in older] == [100, 160]
 
 
+def test_select_candles_in_window_caps_at_max_count():
+    candles = [
+        {"time": 100, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
+        {"time": 160, "open": 2, "high": 2, "low": 2, "close": 2, "volume": 2},
+        {"time": 220, "open": 3, "high": 3, "low": 3, "close": 3, "volume": 3},
+    ]
+
+    window = select_candles_in_window(
+        candles,
+        start_time=100,
+        end_time=280,
+        max_count=2,
+    )
+
+    assert [item["time"] for item in window] == [160, 220]
+
+
 def test_compute_candle_fetch_count_covers_gap_and_window():
     now = 1_000_000
     before = 1_000_000 - (100 * 60)
     count = compute_candle_fetch_count(before_time=before, minutes=120, now=now)
 
     assert count == min(100 + 120 + 10, 1000)
+
+
+def test_compute_desc_fetch_count_for_window():
+    now = 1_000_000
+    end = 1_000_000 - (100 * 60)
+    start = end - (100 * 60)
+    count = compute_desc_fetch_count_for_window(start_time=start, end_time=end, now=now)
+
+    assert count == min(100 + 100 + 10, 1000)

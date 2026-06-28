@@ -1,4 +1,11 @@
-"""eToro historical OHLCV candles (OpenAPI market-data)."""
+"""eToro historical OHLCV candles (OpenAPI market-data).
+
+The candles endpoint is path-only (no fromDate/toDate query params):
+  GET .../history/candles/{direction}/{interval}/{candlesCount}
+
+We paginate backwards by defining a [start, end) window, fetching desc from now,
+filtering client-side, then using the earliest returned bar as the next `end`.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +20,19 @@ DEFAULT_CANDLE_COUNT = MAX_CANDLE_COUNT
 BOOTSTRAP_CANDLE_COUNT = MAX_CANDLE_COUNT
 SYNC_CANDLE_COUNT = MAX_CANDLE_COUNT
 CANDLE_HISTORY_2H_MINUTES = 120
+DEFAULT_HISTORY_PAGE_COUNT = 100
+
+# Used only when OneMinute desc cannot reach the requested window (eToro max 1000 bars).
+CANDLE_INTERVALS: tuple[tuple[str, int], ...] = (
+    (CANDLE_INTERVAL_ONE_MINUTE, 60),
+    ("FiveMinutes", 300),
+    ("TenMinutes", 600),
+    ("FifteenMinutes", 900),
+    ("ThirtyMinutes", 1800),
+    ("OneHour", 3600),
+    ("FourHours", 14400),
+    ("OneDay", 86400),
+)
 
 
 def _first_value(data: dict[str, Any], *keys: str) -> Any:
@@ -69,7 +89,6 @@ def normalize_etoro_candle(raw: dict[str, Any]) -> dict[str, Any] | None:
     if candle_time is None or min(open_f, high_f, low_f, close_f) <= 0:
         return None
 
-    # lightweight-charts minute bars use unix seconds aligned to minute.
     candle_time = (candle_time // 60) * 60
     return {
         "time": candle_time,
@@ -82,7 +101,6 @@ def normalize_etoro_candle(raw: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _flatten_candle_rows(rows: list[Any]) -> list[dict[str, Any]]:
-    """eToro wraps minute bars inside instrument groups: { candles: [ {fromDate, open, ...}, ... ] }."""
     flattened: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
@@ -132,18 +150,60 @@ def _minute_bucket(ts: float | None = None) -> int:
     return (value // 60) * 60
 
 
+def _align_minute(ts: int) -> int:
+    return (int(ts) // 60) * 60
+
+
 def compute_candle_fetch_count(
     *,
     before_time: int,
     minutes: int,
     now: int | None = None,
+    interval_seconds: int = 60,
 ) -> int:
-    """How many desc candles to request to cover `minutes` bars older than `before_time`."""
-    before = (int(before_time) // 60) * 60
-    safe_minutes = max(1, min(int(minutes), 1000))
+    """How many desc candles to request to cover a window ending at `before_time`."""
+    end_time = _align_minute(before_time)
+    start_time = end_time - max(1, min(int(minutes), 1000)) * 60
+    return compute_desc_fetch_count_for_window(
+        start_time=start_time,
+        end_time=end_time,
+        now=now,
+        interval_seconds=interval_seconds,
+    )
+
+
+def compute_desc_fetch_count_for_window(
+    *,
+    start_time: int,
+    end_time: int,
+    now: int | None = None,
+    interval_seconds: int = 60,
+) -> int:
+    """Bars to request (desc from now) so the response likely covers [start, end)."""
     now_bucket = _minute_bucket(now)
-    bars_to_before = max(0, (now_bucket - before) // 60)
-    return min(bars_to_before + safe_minutes + 10, 1000)
+    end = _align_minute(end_time)
+    start = _align_minute(start_time)
+    safe_interval = max(60, int(interval_seconds))
+    bars_from_now_to_end = max(0, (now_bucket - end) // safe_interval)
+    window_bars = max(1, (max(end - start, safe_interval) + safe_interval - 1) // safe_interval)
+    return min(bars_from_now_to_end + window_bars + 10, MAX_CANDLE_COUNT)
+
+
+def select_candles_in_window(
+    candles: list[dict[str, Any]],
+    *,
+    start_time: int,
+    end_time: int,
+    max_count: int | None = None,
+) -> list[dict[str, Any]]:
+    """Return ascending candles with start_time <= time < end_time."""
+    start = _align_minute(start_time)
+    end = _align_minute(end_time)
+    in_window = [candle for candle in candles if start <= int(candle["time"]) < end]
+    in_window.sort(key=lambda item: item["time"])
+    if max_count is not None and max_count > 0 and len(in_window) > max_count:
+        return in_window[-max_count:]
+    return in_window
 
 
 def select_candles_before(
@@ -151,14 +211,83 @@ def select_candles_before(
     before_time: int,
     minutes: int,
 ) -> list[dict[str, Any]]:
-    """Keep up to `minutes` one-minute bars strictly older than `before_time`."""
-    before = (int(before_time) // 60) * 60
-    safe_minutes = max(1, min(int(minutes), 1000))
-    older = [candle for candle in candles if int(candle["time"]) < before]
-    older.sort(key=lambda item: item["time"])
-    if len(older) > safe_minutes:
-        return older[-safe_minutes:]
-    return older
+    """Keep bars in [before-minutes, before) — backwards-compatible helper."""
+    end = _align_minute(before_time)
+    start = end - max(1, min(int(minutes), 1000)) * 60
+    return select_candles_in_window(
+        candles,
+        start_time=start,
+        end_time=end,
+        max_count=minutes,
+    )
+
+
+async def aget_historical_candles_window(
+    client: Any,
+    instrument_id: str | int,
+    *,
+    start_time: int,
+    end_time: int,
+    count: int = DEFAULT_HISTORY_PAGE_COUNT,
+    interval: str = CANDLE_INTERVAL_ONE_MINUTE,
+    interval_seconds: int = 60,
+) -> tuple[list[dict[str, Any]], str]:
+    """Fetch up to `count` candles in [start_time, end_time).
+
+    eToro has no start/end API params — we fetch desc (or asc fallback) and filter.
+    """
+    safe_count = max(1, min(int(count), MAX_CANDLE_COUNT))
+    start = _align_minute(start_time)
+    end = _align_minute(end_time)
+    if end <= start:
+        return [], interval
+
+    fetch_count = compute_desc_fetch_count_for_window(
+        start_time=start,
+        end_time=end,
+        interval_seconds=interval_seconds,
+    )
+
+    async def _fetch(direction: str) -> list[dict[str, Any]]:
+        candles = await aget_historical_candles(
+            client,
+            instrument_id,
+            interval=interval,
+            count=fetch_count if direction == "desc" else MAX_CANDLE_COUNT,
+            direction=direction,
+        )
+        return select_candles_in_window(
+            candles,
+            start_time=start,
+            end_time=end,
+            max_count=safe_count,
+        )
+
+    window = await _fetch("desc")
+    if window:
+        logger.info(
+            "[eToro] Window candles start=%d end=%d interval=%s desc fetch=%d returned=%d",
+            start,
+            end,
+            interval,
+            fetch_count,
+            len(window),
+        )
+        return window, interval
+
+    window = await _fetch("asc")
+    if window:
+        logger.info(
+            "[eToro] Window candles start=%d end=%d interval=%s asc fetch=%d returned=%d",
+            start,
+            end,
+            interval,
+            MAX_CANDLE_COUNT,
+            len(window),
+        )
+        return window, interval
+
+    return [], interval
 
 
 async def aget_historical_candles_before(
@@ -167,26 +296,35 @@ async def aget_historical_candles_before(
     *,
     before_time: int,
     minutes: int = CANDLE_HISTORY_2H_MINUTES,
+    count: int = DEFAULT_HISTORY_PAGE_COUNT,
     interval: str = CANDLE_INTERVAL_ONE_MINUTE,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str]:
+    """Page backwards: end=before_time, start=before-minutes, up to `count` bars."""
     safe_minutes = max(1, min(int(minutes), 1000))
-    fetch_count = compute_candle_fetch_count(before_time=before_time, minutes=safe_minutes)
-    all_candles = await aget_historical_candles(
-        client,
-        instrument_id,
-        interval=interval,
-        count=fetch_count,
-        direction="desc",
-    )
-    older = select_candles_before(all_candles, before_time, safe_minutes)
+    end = _align_minute(before_time)
+    start = end - safe_minutes * 60
+    safe_count = max(1, min(int(count), safe_minutes, MAX_CANDLE_COUNT))
+
+    for interval_name, interval_seconds in CANDLE_INTERVALS:
+        window, used_interval = await aget_historical_candles_window(
+            client,
+            instrument_id,
+            start_time=start,
+            end_time=end,
+            count=safe_count,
+            interval=interval_name,
+            interval_seconds=interval_seconds,
+        )
+        if window:
+            return window, used_interval
+
     logger.info(
-        "[eToro] Historical candles before=%d minutes=%d fetch=%d returned=%d",
-        (int(before_time) // 60) * 60,
+        "[eToro] Historical candles before=%d minutes=%d count=%d returned=0",
+        end,
         safe_minutes,
-        fetch_count,
-        len(older),
+        safe_count,
     )
-    return older
+    return [], interval
 
 
 async def aget_historical_candles(
@@ -197,7 +335,7 @@ async def aget_historical_candles(
     count: int = DEFAULT_CANDLE_COUNT,
     direction: str = "desc",
 ) -> list[dict[str, Any]]:
-    safe_count = max(1, min(int(count), 1000))
+    safe_count = max(1, min(int(count), MAX_CANDLE_COUNT))
     safe_direction = "asc" if str(direction).lower() == "asc" else "desc"
     path = (
         f"/market-data/instruments/{instrument_id}/history/candles/"

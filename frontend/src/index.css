@@ -293,3 +293,14 @@ input[type="range"]::-webkit-slider-thumb {
   border: 2px solid rgb(var(--c-bg));
   box-shadow: 0 0 0 1px rgb(var(--c-accent) / 0.4);
 }
+
+/* Number inputs: hide spin buttons (wheel scroll blocked in JS when focused) */
+input[type='number'] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

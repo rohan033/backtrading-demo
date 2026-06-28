@@ -29,6 +29,9 @@ import {
 } from './pages/trade/TradePages'
 import { ExecutionProvider } from './ExecutionWorkspace'
 import './index.css'
+import { initDisableNumberInputScroll } from './lib/disableNumberInputScroll'
+
+initDisableNumberInputScroll()
 
 function ResearchLayout() {
   return (
@@ -48,6 +51,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route index element={<Navigate to="/watchlist" replace />} />
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/portfolio" element={<PortfolioPage />} />
+          <Route path="/watchlist/chart/:broker/:accountEnv/:symbolToken" element={<WatchlistPage />} />
           <Route path="/watchlist" element={<WatchlistPage />} />
           <Route path="/market" element={<MarketPage />} />
 

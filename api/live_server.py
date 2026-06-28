@@ -600,7 +600,7 @@ class LiveEngine:
         if instrument_id is None:
             raise HTTPException(status_code=404, detail="Could not resolve instrument id")
 
-        older_candles = await aget_historical_candles_before(
+        older_candles, _interval_used = await aget_historical_candles_before(
             self.client,
             instrument_id,
             before_time=before_time,

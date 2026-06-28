@@ -69,7 +69,10 @@ export default function WatchlistColumnPicker({ visibleColumns, onChange }: Prop
                   <input
                     type="checkbox"
                     checked={checked}
-                    onChange={() => toggle(window.id)}
+                    onChange={event => {
+                      event.stopPropagation()
+                      toggle(window.id)
+                    }}
                     className="rounded border-border"
                   />
                   <span className="font-medium text-text-primary">{window.label}</span>

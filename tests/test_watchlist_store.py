@@ -34,3 +34,34 @@ def test_watchlist_crud():
 
         assert store.delete_watchlist(created["id"])
         assert store.list_watchlists() == []
+
+
+def test_watchlist_panels():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "panels.db")
+        store = WatchlistStore(db_path=path)
+
+        panels = store.list_panels()
+        assert len(panels) == 1
+        default_id = panels[0]["id"]
+        assert panels[0]["name"] == "Default"
+
+        created = store.create_panel("Momentum")
+        assert created["name"] == "Momentum"
+
+        wl = store.create_watchlist("Alpha", panel_id=created["id"])
+        assert wl["panel_id"] == created["id"]
+
+        renamed = store.update_panel(created["id"], name="Hot")
+        assert renamed["name"] == "Hot"
+
+        listed = store.list_panels()
+        assert len(listed) == 2
+        hot = next(p for p in listed if p["id"] == created["id"])
+        assert hot["watchlist_count"] == 1
+
+        assert store.delete_panel(created["id"])
+        moved = store.get_watchlist(wl["id"])
+        assert moved["panel_id"] == default_id
+
+        assert not store.delete_panel(default_id)
