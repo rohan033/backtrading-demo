@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import './MinimalShell.css'
+import WatchAndTrade from './WatchAndTrade'
 
 /* ─── types ─────────────────────────────────────────────── */
 type MainTab = 'home' | 'watch-trade' | 'orders' | 'strategies'
@@ -120,7 +121,13 @@ function MainPanel({ tab, setTab }: { tab: MainTab; setTab: (t: MainTab) => void
           {'\u00a0Strategies\u00a0'}
         </Pill>
       </div>
-      <div className="ms-body" />
+      <div className="ms-body" style={{ padding: 0, overflow: 'hidden' }}>
+        {tab === 'watch-trade' ? (
+          <WatchAndTrade />
+        ) : (
+          <div style={{ height: '100%', background: '#EBEBEB' }} />
+        )}
+      </div>
     </main>
   )
 }
