@@ -9,6 +9,18 @@ type NewsTab = 'news' | 'market'
 
 const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'strategies']
 const NEWS_TABS: NewsTab[] = ['news', 'market']
+const LEFT_COLLAPSED_KEY = 'minimal-shell-left-collapsed'
+const RIGHT_COLLAPSED_KEY = 'minimal-shell-right-collapsed'
+
+function loadStoredBool(key: string, fallback = false) {
+  try {
+    const value = localStorage.getItem(key)
+    if (value == null) return fallback
+    return value === 'true'
+  } catch {
+    return fallback
+  }
+}
 
 /* ─── small reusable pieces ─────────────────────────────── */
 function CollapseBtn({
@@ -185,8 +197,8 @@ function RightDrawer({
 /* ─── root shell ─────────────────────────────────────────── */
 export default function MinimalShell() {
   const { state, navigate } = useUrlState()
-  const [leftCollapsed, setLeftCollapsed] = useState(false)
-  const [rightCollapsed, setRightCollapsed] = useState(false)
+  const [leftCollapsed, setLeftCollapsed] = useState(() => loadStoredBool(LEFT_COLLAPSED_KEY))
+  const [rightCollapsed, setRightCollapsed] = useState(() => loadStoredBool(RIGHT_COLLAPSED_KEY))
   const [search, setSearch] = useState('')
 
   const mainTab: MainTab = MAIN_TABS.includes(state.tab as MainTab) ? (state.tab as MainTab) : 'orders'
@@ -200,14 +212,28 @@ export default function MinimalShell() {
 
   const setMainTab = (t: MainTab) => navigate({ tab: t })
   const setNewsTab = (t: NewsTab) => navigate({ news: t })
+  const toggleLeftCollapsed = () => {
+    setLeftCollapsed(prev => {
+      const next = !prev
+      localStorage.setItem(LEFT_COLLAPSED_KEY, String(next))
+      return next
+    })
+  }
+  const toggleRightCollapsed = () => {
+    setRightCollapsed(prev => {
+      const next = !prev
+      localStorage.setItem(RIGHT_COLLAPSED_KEY, String(next))
+      return next
+    })
+  }
 
   return (
     <div className="ms-root">
-      <LeftDrawer collapsed={leftCollapsed} onToggle={() => setLeftCollapsed(v => !v)} />
+      <LeftDrawer collapsed={leftCollapsed} onToggle={toggleLeftCollapsed} />
       <MainPanel tab={mainTab} setTab={setMainTab} />
       <RightDrawer
         collapsed={rightCollapsed}
-        onToggle={() => setRightCollapsed(v => !v)}
+        onToggle={toggleRightCollapsed}
         tab={newsTab}
         setTab={setNewsTab}
         search={search}

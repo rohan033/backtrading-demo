@@ -72,6 +72,13 @@
   transition: color 0.1s;
 }
 .wt-tab-edit-btn:hover { color: #1a5fb4; }
+.wt-tab-delete-btn {
+  background: none; border: none; cursor: pointer;
+  font-size: 14px; font-weight: 900;
+  color: #CC2A2A;
+  padding: 0 2px; line-height: 1;
+}
+.wt-tab-delete-btn:hover { color: #9E1B1B; transform: scale(1.08); }
 .wt-tab-edit-input {
   width: 80px; height: 18px; border: 1px solid #999;
   border-radius: 3px; font-size: 11px; padding: 0 4px;
@@ -199,6 +206,25 @@
 }
 .wt-add-symbol-btn:hover { background: #EBF3FB; }
 .wt-add-symbol-btn--large { font-size: 12px; padding: 6px 14px; }
+.wt-delete-chip {
+  width: 18px; height: 18px; border-radius: 50%;
+  border: 1px solid #E0B0B0; background: #FFF5F5; color: #CC2A2A;
+  font-size: 12px; font-weight: 900; line-height: 16px; cursor: pointer;
+}
+.wt-delete-chip:hover { background: #FDEAEA; border-color: #CC2A2A; }
+
+.wt-status {
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.wt-status--error {
+  color: #9E1B1B;
+  background: #FDEAEA;
+  border: 1px solid #F2B8B8;
+}
 
 /* ── inline add-stock panel (mirrors old WatchlistColumn search) ── */
 .wt-add-stock-panel {
@@ -304,6 +330,7 @@
 .wt-col-c5m   { width: 42px; }
 .wt-col-chg   { width: 46px; }
 .wt-col-price { width: 68px; }
+.wt-col-actions { width: 24px; }
 
 .wt-sym-thead-row { background: #F5F5F5; }
 .wt-sym-th {
@@ -329,6 +356,13 @@
   white-space: nowrap; padding-right: 6px;
 }
 .wt-price-cell { color: #202020 !important; }
+.wt-td-action { padding: 3px 4px 3px 2px; text-align: right; }
+.wt-row-delete-btn {
+  width: 17px; height: 17px; border-radius: 50%;
+  border: none; background: transparent; color: #B8B8B8;
+  font-size: 13px; font-weight: 900; line-height: 15px; cursor: pointer;
+}
+.wt-row-delete-btn:hover { color: #CC2A2A; background: #FDEAEA; }
 
 .wt-sym-td--sym { display: flex; align-items: center; gap: 6px; overflow: hidden; }
 .wt-sym-icon {
@@ -349,8 +383,25 @@
   display: flex;
   position: relative;
   min-width: 180px;
-  max-width: 480px;
+  max-width: 600px;
 }
+.wt-detail-shell { display: flex; position: relative; flex-shrink: 0; }
+.wt-detail-hide-btn {
+  position: absolute; left: -19px; top: 8px; z-index: 12;
+  width: 18px; height: 32px; border: 1.5px solid #C8C8C8;
+  border-right: none; border-radius: 6px 0 0 6px;
+  background: #fff; color: #777; font-size: 15px; font-weight: 800;
+  cursor: pointer;
+}
+.wt-detail-reveal-btn {
+  align-self: stretch; width: 34px; flex-shrink: 0;
+  border: 1.5px solid #C8C8C8; border-radius: 7px 0 0 7px;
+  background: #fff; color: #777; font-size: 10px; font-weight: 800;
+  writing-mode: vertical-rl; transform: rotate(180deg);
+  cursor: pointer;
+}
+.wt-detail-hide-btn:hover,
+.wt-detail-reveal-btn:hover { color: #1A6DC9; background: #EBF3FB; }
 
 /* drag handle on left edge */
 .wt-resize-handle {
@@ -532,3 +583,5 @@
   background: #2A8A4A; color: #fff; font-size: 12px; font-weight: 700; cursor: pointer;
 }
 .wt-deploy-btn:hover { opacity: 0.9; }
+.wt-deploy-btn:disabled { opacity: 0.55; cursor: wait; }
+.wt-deploy-message { font-size: 10px; font-weight: 600; color: #606060; }

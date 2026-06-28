@@ -1,19 +1,44 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './WatchAndTrade.css'
+import { useWatchlistStream } from '../../context/WatchlistStreamContext'
+import { formatBrokerMoney } from '../../lib/currency'
+import {
+  createWatchlist,
+  updateWatchlist,
+  deleteWatchlist,
+  addWatchlistSymbol,
+  removeWatchlistSymbol,
+  watchlistTickKey,
+  type Watchlist as BackendWatchlist,
+  type WatchlistBroker,
+  type WatchlistPanel as BackendPanel,
+  type WatchlistSymbol,
+} from '../../lib/watchlists'
+import { fetchWatchlistPanels, createWatchlistPanel, updateWatchlistPanel, deleteWatchlistPanel } from '../../lib/watchlistPanelApi'
+import {
+  defaultAccountEnv,
+  pickWatchlistSymbolMatch,
+  searchWatchlistSymbol,
+  type WatchlistSymbolHit,
+} from '../../lib/watchlistBrokers'
+import { formatWindowChangePct } from '../../lib/watchlistChangeColumns'
+import { createAndStartMomentumStrategy } from '../../lib/watchlistMomentumStrategy'
+import { DEFAULT_MOMENTUM_CONFIG, type MomentumConfig } from '../../lib/watchlistMomentum'
 import { useUrlState } from './useUrlState'
 
 /* ═══════════════════════════════════════════════════════════════
    Types
    ═══════════════════════════════════════════════════════════════ */
 type Sym = {
-  id: string; ticker: string; name: string; price: string
+  id: string; symboltoken: string; ticker: string; name: string; exchange: string; price: string
   c1m: string; c1mUp: boolean
   c5m: string; c5mUp: boolean
   chg: string; chgUp: boolean
+  tickKey: string; ltp: number | null
 }
 
 type Watchlist = {
-  id: string; name: string; broker: string; accountEnv: string; symbols: Sym[]
+  id: string; name: string; broker: WatchlistBroker; accountEnv: string; symbols: Sym[]
 }
 
 /** Each panel owns two explicit column arrays — this is what makes cross-column DnD work. */
@@ -24,6 +49,9 @@ type Panel = {
 
 type DragSrc = { col: 0|1; idx: number }
 type DropTgt = { col: 0|1; idx: number; pos: 'before'|'after' } | { col: 0|1; idx: 'end' }
+
+type SelectedSymbol = { watchlist: Watchlist; symbol: Sym }
+type SearchHit = WatchlistSymbolHit & { name?: string; symbol?: string }
 
 /* ─── per-stock momentum config (mirrors old WatchlistMomentumSettings) ─── */
 type MomentumCfg = {
@@ -55,105 +83,67 @@ const DEFAULT_MOMENTUM: MomentumCfg = {
   minLtp: 0, maxLtp: 0, cooldownMin: 15, scanEverySec: 2, entryThreshold: 0.2,
 }
 
-/* ─── mock symbol search ─────────────────────────────────────── */
-const MOCK_SYMS: { ticker: string; name: string }[] = [
-  { ticker:'NVDA', name:'Nvidia' },   { ticker:'AMD',  name:'AMD' },
-  { ticker:'INTC', name:'Intel' },    { ticker:'QCOM', name:'Qualcomm' },
-  { ticker:'AAPL', name:'Apple' },    { ticker:'MSFT', name:'Microsoft' },
-  { ticker:'GOOGL',name:'Alphabet' }, { ticker:'META', name:'Meta' },
-  { ticker:'AMZN', name:'Amazon' },   { ticker:'NFLX', name:'Netflix' },
-  { ticker:'TSLA', name:'Tesla' },    { ticker:'RIVN', name:'Rivian' },
-  { ticker:'LCID', name:'Lucid' },    { ticker:'SQ',   name:'Block' },
-  { ticker:'PYPL', name:'PayPal' },   { ticker:'HOOD', name:'Robinhood' },
-  { ticker:'COIN', name:'Coinbase' }, { ticker:'BTC',  name:'Bitcoin' },
-  { ticker:'ETH',  name:'Ethereum' }, { ticker:'SOL',  name:'Solana' },
-  { ticker:'BNB',  name:'BNB' },      { ticker:'XRP',  name:'XRP' },
-  { ticker:'SPY',  name:'S&P 500 ETF'},{ ticker:'QQQ', name:'Nasdaq ETF' },
-  { ticker:'GLD',  name:'Gold ETF' }, { ticker:'PLTR', name:'Palantir' },
-  { ticker:'ARM',  name:'Arm Holdings'},{ ticker:'SMCI',name:'Super Micro' },
-]
-const searchSymbols = (q: string) => {
-  const u = q.trim().toUpperCase()
-  return u ? MOCK_SYMS.filter(s => s.ticker.includes(u) || s.name.toUpperCase().includes(u)).slice(0, 8) : []
-}
-const makeStub = (ticker: string, name: string): Sym => {
-  const up = Math.random() > 0.5
-  const p = (n: number) => `${up ? '+' : '-'}${(Math.random() * n).toFixed(1)}%`
-  return { id:`sym-${ticker}-${Date.now()}`, ticker, name,
-           price:`$${(Math.random()*300+10).toFixed(2)}`,
-           c1m:p(0.5), c1mUp:up, c5m:p(1), c5mUp:up, chg:p(2), chgUp:up }
+const COLUMN_STORAGE_KEY = 'minimal-watch-trade-columns-v1'
+
+function loadColumnMap(): Record<string, 0|1> {
+  try {
+    const raw = localStorage.getItem(COLUMN_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw) as Record<string, number>
+    const out: Record<string, 0|1> = {}
+    for (const [key, value] of Object.entries(parsed)) {
+      out[key] = value === 1 ? 1 : 0
+    }
+    return out
+  } catch {
+    return {}
+  }
 }
 
-/* ─── seed data ──────────────────────────────────────────────── */
-const SEED: Panel[] = [
-  {
-    id:'p1', name:'US Equities',
-    cols: [
-      [
-        { id:'wl-semis', name:'Semiconductors', broker:'eToro', accountEnv:'Live', symbols:[
-          { id:'s1', ticker:'NVDA', name:'Nvidia',   price:'$138.85', c1m:'+0.3%',c1mUp:true,  c5m:'+0.8%',c5mUp:true,  chg:'+2.1%',chgUp:true  },
-          { id:'s2', ticker:'AMD',  name:'AMD',       price:'$167.20', c1m:'-0.1%',c1mUp:false, c5m:'-0.3%',c5mUp:false, chg:'-0.4%',chgUp:false },
-          { id:'s3', ticker:'INTC', name:'Intel',     price:'$21.45',  c1m:'+0.1%',c1mUp:true,  c5m:'+0.2%',c5mUp:true,  chg:'+0.7%',chgUp:true  },
-          { id:'s4', ticker:'QCOM', name:'Qualcomm',  price:'$168.90', c1m:'+0.2%',c1mUp:true,  c5m:'+0.5%',c5mUp:true,  chg:'+1.1%',chgUp:true  },
-        ]},
-        { id:'wl-bigtech', name:'Big Tech', broker:'eToro', accountEnv:'Live', symbols:[
-          { id:'s5', ticker:'AAPL',  name:'Apple',     price:'$211.42', c1m:'+0.2%',c1mUp:true,  c5m:'+0.6%',c5mUp:true,  chg:'+1.2%',chgUp:true  },
-          { id:'s6', ticker:'MSFT',  name:'Microsoft', price:'$446.90', c1m:'+0.1%',c1mUp:true,  c5m:'+0.3%',c5mUp:true,  chg:'+0.5%',chgUp:true  },
-          { id:'s7', ticker:'GOOGL', name:'Alphabet',  price:'$193.50', c1m:'+0.2%',c1mUp:true,  c5m:'+0.4%',c5mUp:true,  chg:'+0.9%',chgUp:true  },
-          { id:'s8', ticker:'META',  name:'Meta',      price:'$620.15', c1m:'-0.1%',c1mUp:false, c5m:'-0.2%',c5mUp:false, chg:'-0.3%',chgUp:false },
-        ]},
-      ],
-      [
-        { id:'wl-ev', name:'EV & Mobility', broker:'eToro', accountEnv:'Demo', symbols:[
-          { id:'s9',  ticker:'TSLA', name:'Tesla',  price:'$248.71', c1m:'-0.2%',c1mUp:false, c5m:'-0.5%',c5mUp:false, chg:'-0.8%',chgUp:false },
-          { id:'s10', ticker:'RIVN', name:'Rivian', price:'$14.20',  c1m:'-0.3%',c1mUp:false, c5m:'-0.7%',c5mUp:false, chg:'-1.4%',chgUp:false },
-          { id:'s11', ticker:'LCID', name:'Lucid',  price:'$2.85',   c1m:'+0.1%',c1mUp:true,  c5m:'+0.2%',c5mUp:true,  chg:'+0.4%',chgUp:true  },
-        ]},
-      ],
-    ],
-  },
-  {
-    id:'p2', name:'Fintech & Crypto',
-    cols: [
-      [
-        { id:'wl-fintech', name:'Fintech', broker:'eToro', accountEnv:'Live', symbols:[
-          { id:'s12', ticker:'SQ',   name:'Block',     price:'$73.40',  c1m:'+0.3%',c1mUp:true, c5m:'+0.7%',c5mUp:true, chg:'+1.6%',chgUp:true },
-          { id:'s13', ticker:'PYPL', name:'PayPal',    price:'$68.15',  c1m:'+0.1%',c1mUp:true, c5m:'+0.1%',c5mUp:true, chg:'+0.2%',chgUp:true },
-        ]},
-      ],
-      [
-        { id:'wl-crypto', name:'Crypto Top 5', broker:'eToro', accountEnv:'Live', symbols:[
-          { id:'s15', ticker:'BTC', name:'Bitcoin',  price:'$62,840', c1m:'+0.2%',c1mUp:true,  c5m:'+0.6%',c5mUp:true,  chg:'+1.4%',chgUp:true  },
-          { id:'s16', ticker:'ETH', name:'Ethereum', price:'$3,410',  c1m:'+0.1%',c1mUp:true,  c5m:'+0.4%',c5mUp:true,  chg:'+0.8%',chgUp:true  },
-          { id:'s17', ticker:'SOL', name:'Solana',   price:'$148.60', c1m:'-0.2%',c1mUp:false, c5m:'-0.4%',c5mUp:false, chg:'-0.9%',chgUp:false },
-        ]},
-      ],
-    ],
-  },
-  {
-    id:'p3', name:'Macro',
-    cols: [
-      [
-        { id:'wl-idx', name:'Indices', broker:'eToro', accountEnv:'Live', symbols:[
-          { id:'s20', ticker:'SPY', name:'S&P 500', price:'$524.30', c1m:'+0.1%',c1mUp:true, c5m:'+0.3%',c5mUp:true, chg:'+0.6%',chgUp:true },
-          { id:'s21', ticker:'QQQ', name:'Nasdaq',  price:'$447.80', c1m:'+0.2%',c1mUp:true, c5m:'+0.4%',c5mUp:true, chg:'+0.9%',chgUp:true },
-        ]},
-      ],
-      [],
-    ],
-  },
-]
+function saveColumnMap(map: Record<string, 0|1>) {
+  localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(map))
+}
+
+function toMomentumConfig(cfg: MomentumCfg): MomentumConfig {
+  return {
+    ...DEFAULT_MOMENTUM_CONFIG,
+    min30sPct: cfg.min30sPct,
+    min1mPct: cfg.min1mPct,
+    min5mPct: cfg.min5mPct,
+    min10mPct: cfg.min10mPct,
+    require10mPositive: cfg.require10mPositive,
+    maxSpike1mPct: cfg.maxSpike1mPct,
+    max10mPct: cfg.max10mPct,
+    accelerationFactor: cfg.accelerationFactor,
+    require5mAbove10mRate: cfg.require5mAbove10mRate,
+    minLtp: cfg.minLtp,
+    maxLtp: cfg.maxLtp,
+    cooldownMs: Math.round(cfg.cooldownMin * 60_000),
+    scanEveryMs: Math.max(500, Math.round(cfg.scanEverySec * 1000)),
+    longPercent: cfg.tpPct,
+    shortPercent: cfg.slPct,
+    initialThreshold: cfg.entryThreshold,
+    maxCapital: cfg.maxCapital,
+  }
+}
 
 /* ═══════════════════════════════════════════════════════════════
    Panel tabs bar
    ═══════════════════════════════════════════════════════════════ */
-function PanelTabs({ panels, activeId, onSelect, onAdd }: {
+function PanelTabs({ panels, activeId, onSelect, onAdd, onRename, onDelete }: {
   panels: Panel[]; activeId: string
   onSelect: (id: string) => void; onAdd: () => void
+  onRename: (id: string, name: string) => void
+  onDelete: (id: string) => void
 }) {
   const [editingId, setEditingId] = useState<string|null>(null)
   const [draft, setDraft] = useState('')
   const startEdit = (p: Panel) => { setEditingId(p.id); setDraft(p.name) }
+  const finishEdit = (id: string) => {
+    const next = draft.trim()
+    setEditingId(null)
+    if (next) onRename(id, next)
+  }
   return (
     <div className="wt-panel-tabs-bar">
       <div className="wt-panel-tabs-scroll">
@@ -165,8 +155,11 @@ function PanelTabs({ panels, activeId, onSelect, onAdd }: {
             <div key={p.id} className={`wt-panel-tab ${active ? 'wt-panel-tab--active':''}`}>
               {editing ? (
                 <input autoFocus value={draft} onChange={e=>setDraft(e.target.value)}
-                  onBlur={()=>setEditingId(null)}
-                  onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape')setEditingId(null)}}
+                  onBlur={()=>finishEdit(p.id)}
+                  onKeyDown={e=>{
+                    if(e.key==='Enter')finishEdit(p.id)
+                    if(e.key==='Escape')setEditingId(null)
+                  }}
                   className="wt-tab-edit-input"/>
               ) : (
                 <>
@@ -175,6 +168,7 @@ function PanelTabs({ panels, activeId, onSelect, onAdd }: {
                     {p.name}<span className="wt-tab-count">{total}</span>
                   </button>
                   <button type="button" className="wt-tab-edit-btn" onClick={()=>startEdit(p)}>✎</button>
+                  <button type="button" className="wt-tab-delete-btn" onClick={()=>onDelete(p.id)}>×</button>
                 </>
               )}
             </div>
@@ -191,7 +185,7 @@ function PanelTabs({ panels, activeId, onSelect, onAdd }: {
    ═══════════════════════════════════════════════════════════════ */
 function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
   isDragging, dropPos, onDragStart, onDragOver, onDrop, onDragEnd,
-  onAddSymbol, onBrokerChange,
+  onSearchSymbol, onAddSymbol, onRemoveSymbol, onBrokerChange, onDeleteWatchlist,
 }: {
   watchlist: Watchlist; selectedSymbolId: string|null
   onSelectSymbol: (id: string) => void
@@ -200,18 +194,35 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
   onDragOver: (e: React.DragEvent) => void
   onDrop: (e: React.DragEvent) => void
   onDragEnd: () => void
-  onAddSymbol: (wlId: string, ticker: string, name: string) => void
-  onBrokerChange: (wlId: string, broker: string, accountEnv: string) => void
+  onSearchSymbol: (wlId: string, query: string) => Promise<SearchHit[]>
+  onAddSymbol: (wlId: string, hit: SearchHit) => Promise<void>
+  onRemoveSymbol: (wlId: string, symboltoken: string) => void
+  onBrokerChange: (wlId: string, broker: WatchlistBroker, accountEnv: string) => void
+  onDeleteWatchlist: (wlId: string) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const [adding, setAdding] = useState(false)
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<{ticker:string;name:string}[]>([])
+  const [results, setResults] = useState<SearchHit[]>([])
+  const [searching, setSearching] = useState(false)
+  const [error, setError] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
 
-  const openSearch = () => { setAdding(true); setQuery(''); setResults([]); setTimeout(()=>inputRef.current?.focus(),0) }
-  const closeSearch = () => { setAdding(false); setQuery(''); setResults([]) }
-  const existing = new Set(watchlist.symbols.map(s=>s.ticker))
+  const openSearch = () => { setAdding(true); setQuery(''); setResults([]); setError(''); setTimeout(()=>inputRef.current?.focus(),0) }
+  const closeSearch = () => { setAdding(false); setQuery(''); setResults([]); setError('') }
+  const existing = new Set(watchlist.symbols.map(s=>s.symboltoken))
+  const runSearch = async () => {
+    setSearching(true)
+    setError('')
+    try {
+      setResults(await onSearchSymbol(watchlist.id, query))
+    } catch (err) {
+      setResults([])
+      setError(err instanceof Error ? err.message : 'Search failed')
+    } finally {
+      setSearching(false)
+    }
+  }
 
   return (
     <div
@@ -244,13 +255,14 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
                 key={b}
                 type="button"
                 className={`wt-broker-pill${watchlist.broker === b ? ' wt-broker-pill--active' : ''}`}
-                onClick={() => onBrokerChange(watchlist.id, b, b === 'etoro' ? 'demo' : 'live')}
+                onClick={() => onBrokerChange(watchlist.id, b, defaultAccountEnv(b))}
               >
                 {b === 'etoro' ? 'eToro' : 'Angel'}
               </button>
             ))}
           </div>
           <button type="button" className="wt-add-symbol-btn" onClick={openSearch}>+ Add stock</button>
+          <button type="button" className="wt-delete-chip" title="Delete watchlist" onClick={()=>onDeleteWatchlist(watchlist.id)}>×</button>
         </div>
       </div>
 
@@ -258,28 +270,31 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
         <div className="wt-add-stock-panel">
           <div className="wt-add-stock-row">
             <input ref={inputRef} value={query} onChange={e=>setQuery(e.target.value)}
-              onKeyDown={e=>e.key==='Enter'&&setResults(searchSymbols(query))}
+              onKeyDown={e=>{ if(e.key==='Enter') void runSearch() }}
               placeholder="Search ticker or name…" className="wt-add-stock-input"/>
             <button type="button" className="wt-add-stock-search-btn"
-              onClick={()=>setResults(searchSymbols(query))}>Search</button>
+              onClick={()=>void runSearch()}>{searching ? '...' : 'Search'}</button>
           </div>
           {results.length > 0 && (
             <div className="wt-add-stock-results">
               {results.map(r => {
-                const already = existing.has(r.ticker)
+                const already = existing.has(r.symboltoken)
+                const label = r.tradingsymbol
+                const name = r.name || r.symbol || r.exchange
                 return (
-                  <button key={r.ticker} type="button" disabled={already}
+                  <button key={r.symboltoken} type="button" disabled={already}
                     className={`wt-add-stock-result-row ${already?'wt-add-stock-result-row--disabled':''}`}
-                    onClick={()=>{ if(!already){ onAddSymbol(watchlist.id,r.ticker,r.name); closeSearch() } }}>
-                    <span className="wt-add-result-ticker">{r.ticker}</span>
-                    <span className="wt-add-result-name">{r.name}</span>
+                    onClick={()=>{ if(!already){ void onAddSymbol(watchlist.id,r).then(closeSearch) } }}>
+                    <span className="wt-add-result-ticker">{label}</span>
+                    <span className="wt-add-result-name">{name}</span>
                     {already && <span className="wt-add-result-exists">added</span>}
                   </button>
                 )
               })}
             </div>
           )}
-          {results.length===0 && query && <p className="wt-add-stock-no-results">No results for "{query}"</p>}
+          {error && <p className="wt-add-stock-no-results">{error}</p>}
+          {results.length===0 && query && !searching && !error && <p className="wt-add-stock-no-results">No results for "{query}"</p>}
           <button type="button" className="wt-add-stock-cancel" onClick={closeSearch}>Cancel</button>
         </div>
       )}
@@ -292,6 +307,7 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
             <col className="wt-col-c5m"/>
             <col className="wt-col-chg"/>
             <col className="wt-col-price"/>
+            <col className="wt-col-actions"/>
           </colgroup>
           <thead>
             <tr className="wt-sym-thead-row">
@@ -300,6 +316,7 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
               <th className="wt-sym-th wt-th-right">5m</th>
               <th className="wt-sym-th wt-th-right">Chg%</th>
               <th className="wt-sym-th wt-th-right">Price</th>
+              <th className="wt-sym-th wt-th-right"></th>
             </tr>
           </thead>
           <tbody>
@@ -318,6 +335,19 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
                 <td className={`wt-sym-td wt-td-num ${sym.c5mUp?'wt-up':'wt-down'}`}>{sym.c5m}</td>
                 <td className={`wt-sym-td wt-td-num ${sym.chgUp?'wt-up':'wt-down'}`}>{sym.chg}</td>
                 <td className="wt-sym-td wt-td-num wt-price-cell">{sym.price}</td>
+                <td className="wt-sym-td wt-td-action">
+                  <button
+                    type="button"
+                    className="wt-row-delete-btn"
+                    title={`Remove ${sym.ticker}`}
+                    onClick={e => {
+                      e.stopPropagation()
+                      onRemoveSymbol(watchlist.id, sym.symboltoken)
+                    }}
+                  >
+                    ×
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -336,7 +366,7 @@ function WatchlistColumn({ colIdx, watchlists, selectedSymbolId, onSelectSymbol,
   dragSrc, dropTgt,
   onDragStart, onCardDragOver, onCardDrop, onDragEnd,
   onColDragOver, onColDrop,
-  onAddSymbol, onBrokerChange,
+  onSearchSymbol, onAddSymbol, onRemoveSymbol, onBrokerChange, onDeleteWatchlist,
 }: {
   colIdx: 0|1
   watchlists: Watchlist[]
@@ -350,8 +380,11 @@ function WatchlistColumn({ colIdx, watchlists, selectedSymbolId, onSelectSymbol,
   onDragEnd: () => void
   onColDragOver: (e:React.DragEvent, col:0|1) => void
   onColDrop: (e:React.DragEvent) => void
-  onAddSymbol: (wlId:string, ticker:string, name:string) => void
-  onBrokerChange: (wlId:string, broker:string, accountEnv:string) => void
+  onSearchSymbol: (wlId:string, query:string) => Promise<SearchHit[]>
+  onAddSymbol: (wlId:string, hit:SearchHit) => Promise<void>
+  onRemoveSymbol: (wlId:string, symboltoken:string) => void
+  onBrokerChange: (wlId:string, broker:WatchlistBroker, accountEnv:string) => void
+  onDeleteWatchlist: (wlId:string) => void
 }) {
   return (
     <div
@@ -375,8 +408,11 @@ function WatchlistColumn({ colIdx, watchlists, selectedSymbolId, onSelectSymbol,
             onDragOver={e => onCardDragOver(e, colIdx, idx)}
             onDrop={onCardDrop}
             onDragEnd={onDragEnd}
+            onSearchSymbol={onSearchSymbol}
             onAddSymbol={onAddSymbol}
+            onRemoveSymbol={onRemoveSymbol}
             onBrokerChange={onBrokerChange}
+            onDeleteWatchlist={onDeleteWatchlist}
           />
         )
       })}
@@ -428,15 +464,31 @@ function CfgToggle({ label, checked, disabled, onChange }: {
 }
 
 /* ─── per-stock momentum / quick-trade config ─── */
-function MomentumPanel({ cfg, custom, onPatch, onToggleCustom, onReset }: {
+function MomentumPanel({ cfg, custom, onPatch, onToggleCustom, onReset, onDeploy }: {
   cfg: MomentumCfg; custom: boolean
   onPatch: (next: Partial<MomentumCfg>) => void
   onToggleCustom: (v: boolean) => void
   onReset: () => void
+  onDeploy: (env: 'demo'|'live', cfg: MomentumCfg) => Promise<void>
 }) {
   const [advanced, setAdvanced] = useState(false)
   const [env, setEnv] = useState<'demo'|'live'>('demo')
+  const [deploying, setDeploying] = useState(false)
+  const [message, setMessage] = useState('')
   const off = !custom
+
+  const handleDeploy = async () => {
+    setDeploying(true)
+    setMessage('')
+    try {
+      await onDeploy(env, cfg)
+      setMessage(`Started ${env} momentum strategy`)
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Deploy failed')
+    } finally {
+      setDeploying(false)
+    }
+  }
 
   return (
     <div className="wt-mom">
@@ -530,8 +582,11 @@ function MomentumPanel({ cfg, custom, onPatch, onToggleCustom, onReset }: {
           <button type="button" className={`wt-env-pill${env==='live'?' wt-env-pill--active wt-env-pill--live':''}`}
             onClick={() => setEnv('live')}>Live</button>
         </div>
-        <button type="button" className="wt-deploy-btn">⚡ Deploy</button>
+        <button type="button" className="wt-deploy-btn" disabled={deploying} onClick={() => void handleDeploy()}>
+          {deploying ? 'Deploying…' : '⚡ Deploy'}
+        </button>
       </div>
+      {message ? <div className="wt-deploy-message">{message}</div> : null}
     </div>
   )
 }
@@ -539,8 +594,8 @@ function MomentumPanel({ cfg, custom, onPatch, onToggleCustom, onReset }: {
 /* ═══════════════════════════════════════════════════════════════
    Detail panel (resizable)
    ═══════════════════════════════════════════════════════════════ */
-function DetailPanel({ sym, width, onResizeStart }: {
-  sym: Sym|null; width: number; onResizeStart: (e:React.MouseEvent) => void
+function DetailPanel({ selected, width, onResizeStart }: {
+  selected: SelectedSymbol|null; width: number; onResizeStart: (e:React.MouseEvent) => void
 }) {
   const [chartHeight, setChartHeight] = useState(240)
   const chartResizingRef = useRef(false)
@@ -565,6 +620,7 @@ function DetailPanel({ sym, width, onResizeStart }: {
     window.addEventListener('mouseup', onUp)
   }
 
+  const sym = selected?.symbol ?? null
   const symId = sym?.id ?? ''
   const cfg = configs[symId] ?? DEFAULT_MOMENTUM
   const custom = customMap[symId] ?? false
@@ -576,6 +632,24 @@ function DetailPanel({ sym, width, onResizeStart }: {
     if (v && !configs[symId]) setConfigs(prev => ({ ...prev, [symId]: { ...DEFAULT_MOMENTUM } }))
   }
   const resetCfg = () => setConfigs(prev => ({ ...prev, [symId]: { ...DEFAULT_MOMENTUM } }))
+  const deploy = async (env: 'demo'|'live', nextCfg: MomentumCfg) => {
+    if (!selected || selected.symbol.ltp == null) {
+      throw new Error('No live price yet — try again in a moment')
+    }
+    await createAndStartMomentumStrategy(
+      {
+        broker: selected.watchlist.broker,
+        tradingsymbol: selected.symbol.ticker,
+        token: selected.symbol.symboltoken,
+        exchange: selected.symbol.exchange,
+        closePrice: selected.symbol.ltp,
+        watchlistId: selected.watchlist.id,
+        noTakeProfit: false,
+      },
+      env,
+      toMomentumConfig(nextCfg),
+    )
+  }
 
   return (
     <div className="wt-detail-wrap" style={{ width }}>
@@ -608,6 +682,7 @@ function DetailPanel({ sym, width, onResizeStart }: {
               onPatch={patchCfg}
               onToggleCustom={toggleCustom}
               onReset={resetCfg}
+              onDeploy={deploy}
             />
           </div>
         </div>
@@ -621,83 +696,259 @@ function DetailPanel({ sym, width, onResizeStart }: {
    ═══════════════════════════════════════════════════════════════ */
 export default function WatchAndTrade() {
   const { state, navigate } = useUrlState()
-  const [panels, setPanels] = useState<Panel[]>(SEED)
+  const {
+    watchlists: backendWatchlists,
+    setWatchlists,
+    watchlistsReady,
+    refreshWatchlists,
+    ticks,
+    windowChanges,
+  } = useWatchlistStream()
+  const [backendPanels, setBackendPanels] = useState<BackendPanel[]>([])
+  const [panelsReady, setPanelsReady] = useState(false)
+  const [error, setError] = useState('')
+  const [columnMap, setColumnMap] = useState<Record<string, 0|1>>(() => loadColumnMap())
   const [dragSrc, setDragSrc] = useState<DragSrc|null>(null)
   const [dropTgt, setDropTgt] = useState<DropTgt|null>(null)
   const [detailWidth, setDetailWidth] = useState(380)
+  const [detailHidden, setDetailHidden] = useState(false)
   const resizingRef = useRef(false)
 
-  // Active panel / selection are derived from the URL (?panel=&watchlist=&stock=)
-  // so back/forward navigation restores exactly what the user was looking at.
-  const activePanel = panels.find(p => p.name === state.panel) ?? panels[0]
-  const activePanelId = activePanel.id
-  const allWatchlists = [...activePanel.cols[0], ...activePanel.cols[1]]
-  const selectedWl = allWatchlists.find(w => w.name === state.watchlist)
-  const selectedSym =
-    selectedWl?.symbols.find(s => s.ticker === state.stock) ??
-    allWatchlists.flatMap(wl => wl.symbols).find(s => s.ticker === state.stock) ??
-    null
-  const selectedSymbolId = selectedSym?.id ?? null
+  const loadPanels = useCallback(async () => {
+    try {
+      setError('')
+      const next = await fetchWatchlistPanels()
+      setBackendPanels(next)
+      setPanelsReady(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load panels')
+      setPanelsReady(true)
+    }
+  }, [])
 
-  // Reflect the active panel in the URL when arriving without one.
   useEffect(() => {
-    if (!state.panel) navigate({ panel: activePanel.name }, { replace: true })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.panel])
+    void loadPanels()
+  }, [loadPanels])
+
+  const patchWatchlist = (updated: BackendWatchlist) => {
+    setWatchlists(prev => prev.map(wl => wl.id === updated.id ? updated : wl))
+  }
+
+  const toDisplaySymbol = useCallback((wl: BackendWatchlist, symbol: WatchlistSymbol): Sym => {
+    const tickKey = watchlistTickKey(wl.broker, wl.account_env, symbol.symboltoken)
+    const tick = ticks[tickKey]
+    const changes = windowChanges[tickKey]
+    const c1m = changes?.['1m']
+    const c5m = changes?.['5m']
+    const dayChange = tick?.change_pct
+    const ticker = symbol.tradingsymbol || symbol.symbol
+    const name = symbol.symbol || symbol.tradingsymbol
+    return {
+      id: `${wl.id}:${symbol.symboltoken}`,
+      symboltoken: symbol.symboltoken,
+      ticker,
+      name,
+      exchange: symbol.exchange,
+      price: tick ? formatBrokerMoney(wl.broker, tick.ltp) : '—',
+      c1m: formatWindowChangePct(c1m),
+      c1mUp: (c1m ?? 0) >= 0,
+      c5m: formatWindowChangePct(c5m),
+      c5mUp: (c5m ?? 0) >= 0,
+      chg: formatWindowChangePct(dayChange),
+      chgUp: (dayChange ?? 0) >= 0,
+      tickKey,
+      ltp: tick?.ltp ?? null,
+    }
+  }, [ticks, windowChanges])
+
+  const panels = useMemo<Panel[]>(() => {
+    return backendPanels
+      .slice()
+      .sort((a, b) => a.position - b.position)
+      .map(panel => {
+        const cols: [Watchlist[], Watchlist[]] = [[], []]
+        backendWatchlists
+          .filter(wl => wl.panel_id === panel.id)
+          .slice()
+          .sort((a, b) => a.position - b.position)
+          .forEach((wl, index) => {
+            const col = columnMap[wl.id] ?? ((index % 2) as 0|1)
+            cols[col].push({
+              id: wl.id,
+              name: wl.name,
+              broker: wl.broker,
+              accountEnv: wl.account_env,
+              symbols: wl.symbols.map(symbol => toDisplaySymbol(wl, symbol)),
+            })
+          })
+        return { id: panel.id, name: panel.name, cols }
+      })
+  }, [backendPanels, backendWatchlists, columnMap, toDisplaySymbol])
+
+  const activePanel = panels.find(p => p.id === state.panel_id) ?? panels[0] ?? null
+  const activePanelId = activePanel?.id ?? ''
+  const allWatchlists = activePanel ? [...activePanel.cols[0], ...activePanel.cols[1]] : []
+  const selectedWl = allWatchlists.find(w => w.id === state.watchlist_id)
+  const selectedSym =
+    selectedWl?.symbols.find(s => s.symboltoken === state.symboltoken) ??
+    allWatchlists.flatMap(wl => wl.symbols).find(s => s.symboltoken === state.symboltoken) ??
+    null
+  const selectedWatchlist = selectedSym
+    ? allWatchlists.find(wl => wl.symbols.some(sym => sym.symboltoken === selectedSym.symboltoken)) ?? null
+    : null
+  const selectedSymbolId = selectedSym?.id ?? null
+  const selected = selectedSym && selectedWatchlist ? { watchlist: selectedWatchlist, symbol: selectedSym } : null
+
+  useEffect(() => {
+    if (!activePanel || state.panel_id) return
+    navigate({ panel_id: activePanel.id, panel: '', watchlist: '', stock: '' }, { replace: true })
+  }, [activePanel, navigate, state.panel_id])
 
   /* ── selection ── */
   const handleSelectSymbol = (id: string) => {
     const wl = allWatchlists.find(w => w.symbols.some(s => s.id === id))
     const sym = wl?.symbols.find(s => s.id === id)
-    if (!wl || !sym) return
-    navigate({ tab: 'watch-trade', panel: activePanel.name, watchlist: wl.name, stock: sym.ticker })
+    if (!wl || !sym || !activePanel) return
+    if (selectedSymbolId === id) {
+      setDetailHidden(prev => !prev)
+      return
+    }
+    setDetailHidden(false)
+    navigate({
+      tab: 'watch-trade',
+      panel_id: activePanel.id,
+      watchlist_id: wl.id,
+      symboltoken: sym.symboltoken,
+      panel: '',
+      watchlist: '',
+      stock: '',
+    })
   }
 
   /* ── panel actions ── */
   const handleSelectPanel = (id: string) => {
-    const p = panels.find(pp => pp.id === id)
-    if (!p) return
-    navigate({ tab: 'watch-trade', panel: p.name, watchlist: '', stock: '' })
+    navigate({ tab: 'watch-trade', panel_id: id, watchlist_id: '', symboltoken: '', panel: '', watchlist: '', stock: '' })
   }
-  const handleAddPanel = () => {
-    const id = `p${Date.now()}`
-    const name = `Panel ${panels.length + 1}`
-    setPanels(prev => [...prev, { id, name, cols:[[],[]] }])
-    navigate({ tab: 'watch-trade', panel: name, watchlist: '', stock: '' })
+  const handleAddPanel = async () => {
+    try {
+      setError('')
+      const panel = await createWatchlistPanel(`Panel ${backendPanels.length + 1}`)
+      setBackendPanels(prev => [...prev, panel])
+      void refreshWatchlists()
+      navigate({ tab: 'watch-trade', panel_id: panel.id, watchlist_id: '', symboltoken: '', panel: '', watchlist: '', stock: '' })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create panel')
+    }
+  }
+  const handleRenamePanel = async (id: string, name: string) => {
+    try {
+      const panel = await updateWatchlistPanel(id, { name })
+      setBackendPanels(prev => prev.map(p => p.id === id ? panel : p))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not rename panel')
+    }
+  }
+  const handleDeletePanel = async (id: string) => {
+    const panel = backendPanels.find(p => p.id === id)
+    if (!panel) return
+    try {
+      setError('')
+      await deleteWatchlistPanel(id)
+      const nextPanels = backendPanels.filter(p => p.id !== id)
+      setBackendPanels(nextPanels)
+      void refreshWatchlists()
+      if (activePanelId === id) {
+        navigate({ tab: 'watch-trade', panel_id: nextPanels[0]?.id ?? '', watchlist_id: '', symboltoken: '' })
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete panel')
+    }
   }
 
   /* ── add watchlist — goes to the shorter column ── */
-  const handleAddWatchlist = () => {
-    const wlId = `wl-${Date.now()}`
-    setPanels(prev => prev.map(p => {
-      if (p.id !== activePanelId) return p
-      const [l, r] = p.cols
-      const newWl: Watchlist = {
-        id: wlId, name: `Watchlist ${l.length + r.length + 1}`,
-        broker: 'eToro', accountEnv: 'Live', symbols: [],
-      }
-      return { ...p, cols: l.length <= r.length ? [[...l, newWl], r] : [l, [...r, newWl]] }
-    }))
+  const handleAddWatchlist = async () => {
+    if (!activePanel) return
+    try {
+      setError('')
+      const [left, right] = activePanel.cols
+      const targetCol: 0|1 = left.length <= right.length ? 0 : 1
+      const created = await createWatchlist(`Watchlist ${left.length + right.length + 1}`, {
+        broker: 'etoro',
+        account_env: defaultAccountEnv('etoro'),
+        panel_id: activePanel.id,
+      })
+      setWatchlists(prev => [...prev, created])
+      const nextMap = { ...columnMap, [created.id]: targetCol }
+      setColumnMap(nextMap)
+      saveColumnMap(nextMap)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create watchlist')
+    }
   }
 
   /* ── change broker/env for a watchlist ── */
-  const handleBrokerChange = (wlId: string, broker: string, accountEnv: string) => {
-    setPanels(prev => prev.map(p => {
-      if (p.id !== activePanelId) return p
-      return { ...p, cols: p.cols.map(col =>
-        col.map(wl => wl.id !== wlId ? wl : { ...wl, broker, accountEnv })
-      ) as [Watchlist[], Watchlist[]] }
-    }))
+  const handleBrokerChange = async (wlId: string, broker: WatchlistBroker, accountEnv: string) => {
+    try {
+      const updated = await updateWatchlist(wlId, { broker, account_env: accountEnv })
+      patchWatchlist(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not update broker')
+    }
+  }
+  const handleDeleteWatchlist = async (wlId: string) => {
+    const wl = backendWatchlists.find(w => w.id === wlId)
+    if (!wl) return
+    try {
+      setError('')
+      await deleteWatchlist(wlId)
+      setWatchlists(prev => prev.filter(item => item.id !== wlId))
+      const nextMap = { ...columnMap }
+      delete nextMap[wlId]
+      setColumnMap(nextMap)
+      saveColumnMap(nextMap)
+      if (state.watchlist_id === wlId) {
+        navigate({ watchlist_id: '', symboltoken: '' })
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete watchlist')
+    }
+  }
+
+  const handleSearchSymbol = async (wlId: string, query: string): Promise<SearchHit[]> => {
+    const wl = backendWatchlists.find(w => w.id === wlId)
+    if (!wl) return []
+    return searchWatchlistSymbol(wl.broker, query, wl.account_env) as Promise<SearchHit[]>
   }
 
   /* ── add symbol to watchlist ── */
-  const handleAddSymbol = (wlId: string, ticker: string, name: string) => {
-    setPanels(prev => prev.map(p => {
-      if (p.id !== activePanelId) return p
-      return { ...p, cols: p.cols.map(col =>
-        col.map(wl => wl.id !== wlId ? wl : { ...wl, symbols:[...wl.symbols, makeStub(ticker,name)] })
-      ) as [Watchlist[], Watchlist[]] }
-    }))
+  const handleAddSymbol = async (wlId: string, hit: SearchHit) => {
+    try {
+      const results = [hit]
+      const picked = pickWatchlistSymbolMatch(results, hit.tradingsymbol) ?? hit
+      const updated = await addWatchlistSymbol(wlId, {
+        symboltoken: picked.symboltoken,
+        tradingsymbol: picked.tradingsymbol,
+        exchange: picked.exchange || 'NSE',
+      })
+      patchWatchlist(updated)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not add symbol')
+    }
+  }
+  const handleRemoveSymbol = async (wlId: string, symboltoken: string) => {
+    const wl = backendWatchlists.find(w => w.id === wlId)
+    const sym = wl?.symbols.find(item => item.symboltoken === symboltoken)
+    if (!wl || !sym) return
+    try {
+      setError('')
+      const updated = await removeWatchlistSymbol(wlId, symboltoken)
+      patchWatchlist(updated)
+      if (state.watchlist_id === wlId && state.symboltoken === symboltoken) {
+        navigate({ symboltoken: '' })
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not remove symbol')
+    }
   }
 
   /* ── drag handlers ── */
@@ -723,26 +974,25 @@ export default function WatchAndTrade() {
     e.stopPropagation()
     if (!dragSrc || !dropTgt) { setDragSrc(null); setDropTgt(null); return }
 
-    setPanels(prev => prev.map(p => {
-      if (p.id !== activePanelId) return p
-      const cols: [Watchlist[], Watchlist[]] = [[ ...p.cols[0] ], [ ...p.cols[1] ]]
+    if (!activePanel) { setDragSrc(null); setDropTgt(null); return }
+    const cols: [Watchlist[], Watchlist[]] = [[...activePanel.cols[0]], [...activePanel.cols[1]]]
+    const [moved] = cols[dragSrc.col].splice(dragSrc.idx, 1)
+    if (!moved) { setDragSrc(null); setDropTgt(null); return }
 
-      // Remove from source
-      const [moved] = cols[dragSrc.col].splice(dragSrc.idx, 1)
+    if (dropTgt.idx === 'end') {
+      cols[dropTgt.col].push(moved)
+    } else {
+      let insertAt = dropTgt.pos === 'after' ? dropTgt.idx + 1 : dropTgt.idx
+      if (dragSrc.col === dropTgt.col && dragSrc.idx < insertAt) insertAt--
+      cols[dropTgt.col].splice(Math.max(0, insertAt), 0, moved)
+    }
 
-      // Insert at target
-      if (dropTgt.idx === 'end') {
-        cols[dropTgt.col].push(moved)
-      } else {
-        let insertAt = dropTgt.pos === 'after' ? dropTgt.idx + 1 : dropTgt.idx
-        // If same column, adjust for removed item
-        if (dragSrc.col === dropTgt.col && dragSrc.idx < insertAt) insertAt--
-        cols[dropTgt.col].splice(Math.max(0, insertAt), 0, moved)
-      }
-
-      return { ...p, cols }
-    }))
-
+    const nextMap = { ...columnMap }
+    cols.forEach((col, colIdx) => {
+      col.forEach(wl => { nextMap[wl.id] = colIdx as 0|1 })
+    })
+    setColumnMap(nextMap)
+    saveColumnMap(nextMap)
     setDragSrc(null)
     setDropTgt(null)
   }
@@ -767,15 +1017,28 @@ export default function WatchAndTrade() {
     window.addEventListener('mouseup', onUp)
   }
 
-  const hasAny = activePanel.cols[0].length + activePanel.cols[1].length > 0
+  const loading = !watchlistsReady || !panelsReady
+  const hasAny = activePanel ? activePanel.cols[0].length + activePanel.cols[1].length > 0 : false
 
   return (
     <div className="wt-root">
-      <PanelTabs panels={panels} activeId={activePanelId} onSelect={handleSelectPanel} onAdd={handleAddPanel}/>
+      <PanelTabs
+        panels={panels}
+        activeId={activePanelId}
+        onSelect={handleSelectPanel}
+        onAdd={handleAddPanel}
+        onRename={handleRenamePanel}
+        onDelete={handleDeletePanel}
+      />
 
       <div className="wt-body">
         <div className="wt-wl-grid-wrap">
-          {!hasAny ? (
+          {error ? <div className="wt-status wt-status--error">{error}</div> : null}
+          {loading ? (
+            <div className="wt-empty-panel"><p>Loading watchlists…</p></div>
+          ) : !activePanel ? (
+            <div className="wt-empty-panel"><p>No panels found.</p></div>
+          ) : !hasAny ? (
             <div className="wt-empty-panel">
               <p>No watchlists in this panel.</p>
               <button type="button" className="wt-add-symbol-btn wt-add-symbol-btn--large" onClick={handleAddWatchlist}>
@@ -800,8 +1063,11 @@ export default function WatchAndTrade() {
                     onDragEnd={handleDragEnd}
                     onColDragOver={handleColDragOver}
                     onColDrop={handleDrop}
+                    onSearchSymbol={handleSearchSymbol}
                     onAddSymbol={handleAddSymbol}
+                    onRemoveSymbol={handleRemoveSymbol}
                     onBrokerChange={handleBrokerChange}
+                    onDeleteWatchlist={handleDeleteWatchlist}
                   />
                 ))}
               </div>
@@ -812,7 +1078,28 @@ export default function WatchAndTrade() {
           )}
         </div>
 
-        <DetailPanel sym={selectedSym} width={detailWidth} onResizeStart={handleResizeStart}/>
+        {detailHidden ? (
+          <button
+            type="button"
+            className="wt-detail-reveal-btn"
+            onClick={() => setDetailHidden(false)}
+            title="Show stock detail"
+          >
+            ‹ Detail
+          </button>
+        ) : (
+          <div className="wt-detail-shell">
+            <button
+              type="button"
+              className="wt-detail-hide-btn"
+              onClick={() => setDetailHidden(true)}
+              title="Hide stock detail"
+            >
+              ›
+            </button>
+            <DetailPanel selected={selected} width={detailWidth} onResizeStart={handleResizeStart}/>
+          </div>
+        )}
       </div>
     </div>
   )
