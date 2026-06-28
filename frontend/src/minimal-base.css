@@ -1,0 +1,19 @@
+/* Bare global reset — no dark theme, no Tailwind variables */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: #E8E8E8;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* scrollbars */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #C0C0C0; border-radius: 3px; }

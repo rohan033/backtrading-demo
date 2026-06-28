@@ -1,0 +1,87 @@
+/* Wireframe pastel palette — scoped to .minimal-shell only */
+
+.minimal-shell {
+  --m-bg: 232 232 232;
+  --m-left-header: 255 204 153;
+  --m-main-header: 176 208 233;
+  --m-right-header: 194 226 194;
+  --m-tab-active: 255 229 153;
+  --m-tab-idle: 255 255 255;
+  --m-surface: 255 255 255;
+  --m-panel-body: 240 240 240;
+  --m-border: 48 48 48;
+  --m-text: 32 32 32;
+  --m-text-muted: 96 96 96;
+  --m-search: 205 225 245;
+  --m-accent-btn: 96 149 214;
+
+  background: rgb(var(--m-bg));
+  color: rgb(var(--m-text));
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+}
+
+.minimal-shell .m-border {
+  border: 1px solid rgb(var(--m-border));
+}
+
+.minimal-shell .m-left-header {
+  background: rgb(var(--m-left-header));
+}
+
+.minimal-shell .m-main-header {
+  background: rgb(var(--m-main-header));
+}
+
+.minimal-shell .m-right-header {
+  background: rgb(var(--m-right-header));
+}
+
+.minimal-shell .m-panel-body {
+  background: rgb(var(--m-panel-body));
+}
+
+.minimal-shell .m-surface {
+  background: rgb(var(--m-surface));
+}
+
+.minimal-shell .m-search-bg {
+  background: rgb(var(--m-search));
+}
+
+.minimal-shell .m-tab-active {
+  background: rgb(var(--m-tab-active));
+}
+
+.minimal-shell .m-tab-idle {
+  background: rgb(var(--m-tab-idle));
+}
+
+.minimal-shell .m-collapse-btn {
+  background: rgb(var(--m-accent-btn));
+  color: white;
+}
+
+.minimal-shell ::selection {
+  background: rgb(var(--m-tab-active) / 0.65);
+}
+
+/* So nested pages sit on the light panel instead of dark canvas */
+.minimal-shell .m-panel-body > * {
+  height: 100%;
+}
+
+.minimal-shell .m-panel-body [class*='bg-primary'] {
+  background-color: rgb(var(--m-panel-body) / 1) !important;
+}
+
+.minimal-shell .m-panel-body [class*='text-text-primary'] {
+  color: rgb(var(--m-text)) !important;
+}
+
+.minimal-shell .m-panel-body [class*='text-text-secondary'] {
+  color: rgb(var(--m-text-muted)) !important;
+}
+
+.minimal-shell .m-panel-body [class*='border-border'] {
+  border-color: rgb(var(--m-border) / 0.35) !important;
+}

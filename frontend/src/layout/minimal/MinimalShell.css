@@ -1,0 +1,214 @@
+/* ═══════════════════════════════════════════════════════════
+   Minimal Shell — exact wireframe implementation
+   Pastel zones, black borders, yellow/white pills
+   ═══════════════════════════════════════════════════════════ */
+
+/* tokens */
+:root {
+  --ms-bg:            #E8E8E8;
+  --ms-panel-body:    #EBEBEB;
+  --ms-border:        #303030;
+  --ms-left-hdr:      #F5C3A0;
+  --ms-main-hdr:      #B4D4EB;
+  --ms-right-hdr:     #C2E2C2;
+  --ms-pill-active:   #FFE599;
+  --ms-pill-idle:     #FFFFFF;
+  --ms-btn:           #6295D6;
+  --ms-search-bg:     #CDE1F5;
+  --ms-card-bg:       #FFFFFF;
+  --ms-text:          #202020;
+  --ms-muted:         #606060;
+  --ms-drawer-w:      220px;
+  --ms-drawer-w-col:  40px;
+  --ms-header-h:      44px;
+  --ms-search-h:      34px;
+  --ms-radius:        8px;
+  --ms-font:          'Hanken Grotesk', system-ui, sans-serif;
+}
+
+/* root */
+.ms-root {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background: var(--ms-bg);
+  font-family: var(--ms-font);
+  color: var(--ms-text);
+  overflow: hidden;
+  padding: 20px;
+  gap: 0;
+  box-sizing: border-box;
+}
+
+/* ── drawers ── */
+.ms-drawer {
+  display: flex;
+  flex-direction: column;
+  width: var(--ms-drawer-w);
+  min-width: var(--ms-drawer-w);
+  border: 1.5px solid var(--ms-border);
+  border-radius: var(--ms-radius);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.ms-drawer--left  { margin-right: 12px; }
+.ms-drawer--right { margin-left: 12px; }
+
+.ms-drawer--collapsed {
+  width: var(--ms-drawer-w-col);
+  min-width: var(--ms-drawer-w-col);
+}
+
+/* ── main ── */
+.ms-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  border: 1.5px solid var(--ms-border);
+  border-radius: var(--ms-radius);
+  overflow: hidden;
+}
+
+/* ── headers ── */
+.ms-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 10px;
+  height: var(--ms-header-h);
+  flex-shrink: 0;
+  border-bottom: 1.5px solid var(--ms-border);
+}
+
+.ms-header--left  { background: var(--ms-left-hdr); }
+.ms-header--main  { background: var(--ms-main-hdr); }
+.ms-header--right {
+  background: var(--ms-right-hdr);
+  justify-content: flex-start;
+}
+.ms-header--right .ms-collapse-btn {
+  margin-left: auto;
+}
+.ms-header--collapsed {
+  justify-content: center;
+}
+
+/* ── body ── */
+.ms-body {
+  flex: 1;
+  background: var(--ms-panel-body);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ms-body--scrollable {
+  overflow-y: auto;
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── pills ── */
+.ms-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  padding: 0 12px;
+  border: 1.5px solid var(--ms-border);
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: var(--ms-font);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s;
+  flex-shrink: 0;
+}
+
+.ms-pill--active {
+  background: var(--ms-pill-active);
+  color: var(--ms-text);
+}
+
+.ms-pill--idle {
+  background: var(--ms-pill-idle);
+  color: var(--ms-muted);
+}
+.ms-pill--idle:hover {
+  background: #F5F5F5;
+  color: var(--ms-text);
+}
+
+/* ── collapse button ── */
+.ms-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--ms-btn);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
+  transition: opacity 0.12s;
+  user-select: none;
+}
+.ms-collapse-btn:hover { opacity: 0.85; }
+
+/* ── search ── */
+.ms-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 5px 8px;
+  background: var(--ms-search-bg);
+  border-bottom: 1.5px solid var(--ms-border);
+  flex-shrink: 0;
+  height: var(--ms-search-h);
+}
+
+.ms-search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+}
+
+.ms-search-input {
+  width: 100%;
+  height: 22px;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 11.5px;
+  font-family: var(--ms-font);
+  color: var(--ms-text);
+  padding-left: 22px;
+}
+.ms-search-input::placeholder { color: var(--ms-muted); }
+
+/* ── news cards ── */
+.ms-news-card {
+  background: var(--ms-card-bg);
+  border: 1.5px solid var(--ms-border);
+  border-radius: 6px;
+  padding: 14px 12px;
+  font-size: 12px;
+  color: var(--ms-text);
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
