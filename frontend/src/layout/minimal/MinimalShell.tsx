@@ -7,20 +7,23 @@ import {
   useNewsNotifications,
   type NewsUpdateGroup,
 } from '../../hooks/useNewsNotifications'
+import { formatWindowChangePct } from '../../lib/watchlistChangeColumns'
+import { formatBrokerMoney } from '../../lib/currency'
+import { watchlistTickKey, type Watchlist } from '../../lib/watchlists'
 import WatchAndTrade from './WatchAndTrade'
+import MarketClockBar from './MarketClockBar'
 import { useUrlState } from './useUrlState'
 
 /* ─── types ─────────────────────────────────────────────── */
 type MainTab = 'home' | 'watch-trade' | 'orders' | 'strategies'
-type NewsTab = 'new' | 'news' | 'market'
+type NewsTab = 'watchlist' | 'new' | 'news' | 'market'
 
 const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'strategies']
-const NEWS_TABS: NewsTab[] = ['new', 'news', 'market']
+const NEWS_TABS: NewsTab[] = ['watchlist', 'news', 'market', 'new']
 const LEFT_COLLAPSED_KEY = 'minimal-shell-left-collapsed'
-const RIGHT_COLLAPSED_KEY = 'minimal-shell-right-collapsed'
 const RIGHT_WIDTH_KEY = 'minimal-shell-right-width'
-const RIGHT_WIDTH_MIN = 220
-const RIGHT_WIDTH_MAX = 560
+const RIGHT_WIDTH_MIN = 260
+const RIGHT_WIDTH_MAX = 620
 
 function loadStoredBool(key: string, fallback = false) {
   try {
@@ -47,17 +50,19 @@ function CollapseBtn({
   direction,
   onClick,
   label,
+  className,
 }: {
   direction: 'left' | 'right'
   onClick: () => void
   label: string
+  className?: string
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-label={label}
-      className="ms-collapse-btn"
+      className={className ? `ms-collapse-btn ${className}` : 'ms-collapse-btn'}
     >
       {direction === 'left' ? '‹' : '›'}
     </button>
@@ -113,45 +118,25 @@ function SearchBar({
 }
 
 /* ─── panels ────────────────────────────────────────────── */
-function LeftDrawer({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
-  if (collapsed) {
-    return (
-      <aside className="ms-drawer ms-drawer--left ms-drawer--collapsed">
-        <div className="ms-header ms-header--left ms-header--collapsed">
-          <CollapseBtn direction="right" onClick={onToggle} label="Expand watchlist drawer" />
-        </div>
-        <div className="ms-body" />
-      </aside>
-    )
-  }
-
-  return (
-    <aside className="ms-drawer ms-drawer--left">
-      <div className="ms-header ms-header--left">
-        <CollapseBtn direction="left" onClick={onToggle} label="Collapse watchlist drawer" />
-        <Pill active wide>{'\u00a0Watchlist\u00a0'}</Pill>
-      </div>
-      <div className="ms-body" />
-    </aside>
-  )
-}
-
 function MainPanel({ tab, setTab }: { tab: MainTab; setTab: (t: MainTab) => void }) {
   return (
     <main className="ms-main">
       <div className="ms-header ms-header--main">
-        <Pill active={tab === 'home'} onClick={() => setTab('home')}>
-          {'\u00a0Home\u00a0'}
-        </Pill>
-        <Pill active={tab === 'watch-trade'} onClick={() => setTab('watch-trade')}>
-          {'\u00a0Watch\u00a0&\u00a0Trade\u00a0'}
-        </Pill>
-        <Pill active={tab === 'orders'} onClick={() => setTab('orders')}>
-          {'\u00a0Orders\u00a0'}
-        </Pill>
-        <Pill active={tab === 'strategies'} onClick={() => setTab('strategies')}>
-          {'\u00a0Strategies\u00a0'}
-        </Pill>
+        <div className="ms-header-tabs">
+          <Pill active={tab === 'home'} onClick={() => setTab('home')}>
+            {'\u00a0Home\u00a0'}
+          </Pill>
+          <Pill active={tab === 'watch-trade'} onClick={() => setTab('watch-trade')}>
+            {'\u00a0Watch\u00a0&\u00a0Trade\u00a0'}
+          </Pill>
+          <Pill active={tab === 'orders'} onClick={() => setTab('orders')}>
+            {'\u00a0Orders\u00a0'}
+          </Pill>
+          <Pill active={tab === 'strategies'} onClick={() => setTab('strategies')}>
+            {'\u00a0Strategies\u00a0'}
+          </Pill>
+        </div>
+        <MarketClockBar />
       </div>
       <div className="ms-body" style={{ padding: 0, overflow: 'hidden' }}>
         {tab === 'watch-trade' ? (
@@ -164,7 +149,115 @@ function MainPanel({ tab, setTab }: { tab: MainTab; setTab: (t: MainTab) => void
   )
 }
 
+function WatchlistDrawerPanel({
+  watchlists,
+  ticks,
+  windowChanges,
+  filterText,
+  onSelectSymbol,
+}: {
+  watchlists: Watchlist[]
+  ticks: ReturnType<typeof useWatchlistStream>['ticks']
+  windowChanges: ReturnType<typeof useWatchlistStream>['windowChanges']
+  filterText: string
+  onSelectSymbol: (watchlist: Watchlist, symboltoken: string) => void
+}) {
+  const rows = useMemo(() => {
+    const seen = new Set<string>()
+    const query = filterText.trim().toLowerCase()
+    const next: Array<{
+      key: string
+      label: string
+      watchlist: Watchlist
+      symboltoken: string
+      price: string
+      c1m: string
+      c1mUp: boolean
+      c5m: string
+      c5mUp: boolean
+    }> = []
+
+    for (const watchlist of watchlists) {
+      for (const symbol of watchlist.symbols) {
+        const label = symbol.tradingsymbol || symbol.symbol
+        const dedupeKey = label.trim().toUpperCase()
+        if (!dedupeKey || seen.has(dedupeKey)) continue
+        seen.add(dedupeKey)
+
+        if (
+          query
+          && !label.toLowerCase().includes(query)
+          && !(symbol.symbol || '').toLowerCase().includes(query)
+        ) {
+          continue
+        }
+
+        const tickKey = watchlistTickKey(watchlist.broker, watchlist.account_env, symbol.symboltoken)
+        const tick = ticks[tickKey]
+        const changes = windowChanges[tickKey]
+        const c1m = changes?.['1m']
+        const c5m = changes?.['5m']
+
+        next.push({
+          key: dedupeKey,
+          label,
+          watchlist,
+          symboltoken: symbol.symboltoken,
+          price: tick ? formatBrokerMoney(watchlist.broker, tick.ltp) : '—',
+          c1m: formatWindowChangePct(c1m),
+          c1mUp: (c1m ?? 0) >= 0,
+          c5m: formatWindowChangePct(c5m),
+          c5mUp: (c5m ?? 0) >= 0,
+        })
+      }
+    }
+
+    return next.sort((a, b) => a.label.localeCompare(b.label))
+  }, [watchlists, ticks, windowChanges, filterText])
+
+  if (!watchlists.length) {
+    return <div className="ms-news-empty">No watchlists yet.</div>
+  }
+
+  if (!rows.length) {
+    return <div className="ms-news-empty">No matching symbols.</div>
+  }
+
+  return (
+    <div className="ms-side-symbols">
+      {rows.map(row => (
+        <button
+          type="button"
+          className="ms-side-symbol"
+          key={row.key}
+          onClick={() => onSelectSymbol(row.watchlist, row.symboltoken)}
+        >
+          <span className="ms-side-symbol__name">{row.label}</span>
+          <span className="ms-side-symbol__price">{row.price}</span>
+          <span className={`ms-side-symbol__change ${row.c1mUp ? 'wt-up' : 'wt-down'}`}>
+            {row.c1m}
+          </span>
+          <span className={`ms-side-symbol__change ${row.c5mUp ? 'wt-up' : 'wt-down'}`}>
+            {row.c5m}
+          </span>
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function NewNewsPanel({ groups }: { groups: NewsUpdateGroup[] }) {
+  const [closedTopics, setClosedTopics] = useState<Set<string>>(() => new Set())
+
+  const toggleTopic = (topic: string) => {
+    setClosedTopics(prev => {
+      const next = new Set(prev)
+      if (next.has(topic)) next.delete(topic)
+      else next.add(topic)
+      return next
+    })
+  }
+
   if (!groups.length) {
     return (
       <div className="ms-news-empty">
@@ -176,28 +269,34 @@ function NewNewsPanel({ groups }: { groups: NewsUpdateGroup[] }) {
   return (
     <div className="ms-news-new-panel">
       <div className="ms-news-new-panel__header">
-        <strong>New updates</strong>
+        <strong>News Updates</strong>
         <span>{groups.length} tickers</span>
       </div>
       <div className="ms-news-new-list">
-        {groups.map(group => (
-          <section className="ms-news-new-card" key={group.topic}>
-            <div className="ms-news-new-card__top">
+        {groups.map(group => {
+          const collapsed = closedTopics.has(group.topic)
+          return (
+          <section
+            className={`ms-news-new-card ${collapsed ? 'ms-news-new-card--collapsed' : ''}`}
+            key={group.topic}
+          >
+            <button
+              type="button"
+              className="ms-news-new-card__top"
+              onClick={() => toggleTopic(group.topic)}
+              aria-expanded={!collapsed}
+            >
               <div>
                 <h3>{group.topic}</h3>
                 <p>+{group.count} news update{group.count === 1 ? '' : 's'}</p>
               </div>
-              {group.latest.url ? (
-                <button
-                  type="button"
-                  onClick={() => window.open(group.latest.url || '', '_blank', 'noopener,noreferrer')}
-                >
-                  Open
-                </button>
-              ) : null}
-            </div>
-            <ul>
-              {group.items.slice(0, 4).map(item => (
+              <span className="ms-news-new-card__chevron" aria-hidden="true">
+                {collapsed ? '▸' : '▾'}
+              </span>
+            </button>
+            {!collapsed ? (
+            <ul className="ms-news-new-card__items">
+              {group.items.map(item => (
                 <li key={item.id}>
                   <a href={item.url || '#'} target="_blank" rel="noopener noreferrer">
                     <span>{item.headline}</span>
@@ -206,14 +305,16 @@ function NewNewsPanel({ groups }: { groups: NewsUpdateGroup[] }) {
                 </li>
               ))}
             </ul>
+            ) : null}
           </section>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
 }
 
-function RightDrawer({
+function SideDrawer({
   collapsed,
   onToggle,
   tab,
@@ -224,6 +325,10 @@ function RightDrawer({
   width,
   onResizeStart,
   newsGroups,
+  watchlists,
+  ticks,
+  windowChanges,
+  onSelectWatchlistSymbol,
 }: {
   collapsed: boolean
   onToggle: () => void
@@ -235,31 +340,41 @@ function RightDrawer({
   width: number
   onResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void
   newsGroups: NewsUpdateGroup[]
+  watchlists: Watchlist[]
+  ticks: ReturnType<typeof useWatchlistStream>['ticks']
+  windowChanges: ReturnType<typeof useWatchlistStream>['windowChanges']
+  onSelectWatchlistSymbol: (watchlist: Watchlist, symboltoken: string) => void
 }) {
   if (collapsed) {
     return (
-      <aside className="ms-drawer ms-drawer--right ms-drawer--collapsed">
-        <div className="ms-header ms-header--right ms-header--collapsed">
-          <CollapseBtn direction="left" onClick={onToggle} label="Expand right drawer" />
-        </div>
-        <div className="ms-body" />
-      </aside>
+      <button
+        type="button"
+        className="ms-news-drawer-tab ms-news-drawer-tab--left"
+        onClick={onToggle}
+        aria-label="Open side drawer"
+        title="Open watchlist and news"
+      >
+        ›
+      </button>
     )
   }
 
   return (
-    <aside className="ms-drawer ms-drawer--right" style={{ width, minWidth: width }}>
+    <aside
+      className="ms-drawer ms-drawer--left ms-drawer--left-overlay"
+      style={{ width, minWidth: width }}
+    >
       <div
-        className="ms-drawer-resize ms-drawer-resize--right"
+        className="ms-drawer-resize ms-drawer-resize--left"
         role="separator"
         aria-orientation="vertical"
-        aria-label="Resize news panel"
-        title="Drag left to widen news"
+        aria-label="Resize side drawer"
+        title="Drag right to widen drawer"
         onMouseDown={onResizeStart}
       />
-      <div className="ms-header ms-header--right">
-        <Pill active={tab === 'new'} onClick={() => setTab('new')}>
-          {'\u00a0New\u00a0'}
+      <div className="ms-header ms-header--left">
+        <Pill active={tab === 'watchlist'} onClick={() => setTab('watchlist')}>
+          {'\u00a0Watchlist\u00a0'}
         </Pill>
         <Pill active={tab === 'news'} onClick={() => setTab('news')}>
           {'\u00a0News\u00a0'}
@@ -267,11 +382,27 @@ function RightDrawer({
         <Pill active={tab === 'market'} onClick={() => setTab('market')}>
           {'\u00a0Market News\u00a0'}
         </Pill>
-        <CollapseBtn direction="right" onClick={onToggle} label="Collapse right drawer" />
+        <Pill active={tab === 'new'} onClick={() => setTab('new')}>
+          {'\u00a0News Updates\u00a0'}
+        </Pill>
       </div>
+      <CollapseBtn
+        direction="left"
+        onClick={onToggle}
+        label="Collapse side drawer"
+        className="ms-drawer-collapse-edge"
+      />
       <SearchBar value={search} onChange={setSearch} />
       <div className="ms-body ms-body--scrollable">
-        {tab === 'new' ? (
+        {tab === 'watchlist' ? (
+          <WatchlistDrawerPanel
+            watchlists={watchlists}
+            ticks={ticks}
+            windowChanges={windowChanges}
+            filterText={search}
+            onSelectSymbol={onSelectWatchlistSymbol}
+          />
+        ) : tab === 'new' ? (
           <NewNewsPanel groups={newsGroups} />
         ) : tab === 'news' ? (
           activeNewsSymbol ? (
@@ -296,13 +427,12 @@ function RightDrawer({
 /* ─── root shell ─────────────────────────────────────────── */
 export default function MinimalShell() {
   const { state, navigate } = useUrlState()
-  const { watchlists } = useWatchlistStream()
+  const { watchlists, ticks, windowChanges } = useWatchlistStream()
   const setNewsTab = (t: NewsTab) => navigate({ news: t })
   const { groups: newsGroups } = useNewsNotifications({
     onOpenUpdates: () => setNewsTab('new'),
   })
-  const [leftCollapsed, setLeftCollapsed] = useState(() => loadStoredBool(LEFT_COLLAPSED_KEY))
-  const [rightCollapsed, setRightCollapsed] = useState(() => loadStoredBool(RIGHT_COLLAPSED_KEY))
+  const [rightCollapsed, setRightCollapsed] = useState(() => loadStoredBool(LEFT_COLLAPSED_KEY))
   const [rightWidth, setRightWidth] = useState(() =>
     loadStoredNumber(RIGHT_WIDTH_KEY, RIGHT_WIDTH_MIN, RIGHT_WIDTH_MIN, RIGHT_WIDTH_MAX),
   )
@@ -310,7 +440,7 @@ export default function MinimalShell() {
   const rightResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
 
   const mainTab: MainTab = MAIN_TABS.includes(state.tab as MainTab) ? (state.tab as MainTab) : 'orders'
-  const newsTab: NewsTab = NEWS_TABS.includes(state.news as NewsTab) ? (state.news as NewsTab) : 'news'
+  const newsTab: NewsTab = NEWS_TABS.includes(state.news as NewsTab) ? (state.news as NewsTab) : 'watchlist'
   const activeNewsSymbol = useMemo(() => {
     if (!state.symboltoken) return null
     for (const watchlist of watchlists) {
@@ -327,6 +457,15 @@ export default function MinimalShell() {
   }, [])
 
   const setMainTab = (t: MainTab) => navigate({ tab: t })
+  const handleSelectWatchlistSymbol = (watchlist: Watchlist, symboltoken: string) => {
+    navigate({
+      tab: 'watch-trade',
+      news: 'news',
+      panel_id: watchlist.panel_id || undefined,
+      watchlist_id: watchlist.id,
+      symboltoken,
+    })
+  }
   const startRightResize = (event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault()
     rightResizeRef.current = { startX: event.clientX, startWidth: rightWidth }
@@ -335,10 +474,7 @@ export default function MinimalShell() {
     const handleMove = (moveEvent: MouseEvent) => {
       const active = rightResizeRef.current
       if (!active) return
-      const next = Math.min(
-        RIGHT_WIDTH_MAX,
-        Math.max(RIGHT_WIDTH_MIN, active.startWidth + active.startX - moveEvent.clientX),
-      )
+      const next = Math.min(RIGHT_WIDTH_MAX, Math.max(RIGHT_WIDTH_MIN, active.startWidth + moveEvent.clientX - active.startX))
       setRightWidth(next)
       localStorage.setItem(RIGHT_WIDTH_KEY, String(next))
     }
@@ -353,26 +489,18 @@ export default function MinimalShell() {
     window.addEventListener('mousemove', handleMove)
     window.addEventListener('mouseup', handleUp)
   }
-  const toggleLeftCollapsed = () => {
-    setLeftCollapsed(prev => {
-      const next = !prev
-      localStorage.setItem(LEFT_COLLAPSED_KEY, String(next))
-      return next
-    })
-  }
   const toggleRightCollapsed = () => {
     setRightCollapsed(prev => {
       const next = !prev
-      localStorage.setItem(RIGHT_COLLAPSED_KEY, String(next))
+      localStorage.setItem(LEFT_COLLAPSED_KEY, String(next))
       return next
     })
   }
 
   return (
     <div className="ms-root">
-      <LeftDrawer collapsed={leftCollapsed} onToggle={toggleLeftCollapsed} />
       <MainPanel tab={mainTab} setTab={setMainTab} />
-      <RightDrawer
+      <SideDrawer
         collapsed={rightCollapsed}
         onToggle={toggleRightCollapsed}
         tab={newsTab}
@@ -383,6 +511,10 @@ export default function MinimalShell() {
         width={rightWidth}
         onResizeStart={startRightResize}
         newsGroups={newsGroups}
+        watchlists={watchlists}
+        ticks={ticks}
+        windowChanges={windowChanges}
+        onSelectWatchlistSymbol={handleSelectWatchlistSymbol}
       />
     </div>
   )

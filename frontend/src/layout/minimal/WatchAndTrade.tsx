@@ -37,6 +37,7 @@ import {
 } from '../../lib/watchlistCandles'
 import { createAndStartMomentumStrategy } from '../../lib/watchlistMomentumStrategy'
 import { DEFAULT_MOMENTUM_CONFIG, type MomentumConfig } from '../../lib/watchlistMomentum'
+import { createQuickStrategy, loadQuickStrategySchedule } from '../../lib/quickStrategy'
 import { useUrlState } from './useUrlState'
 
 /* ═══════════════════════════════════════════════════════════════
@@ -327,17 +328,18 @@ function MiniDetailChart({ selected, height }: { selected: SelectedSymbol; heigh
   )
 }
 
-function DetailChangeStrip({ sym }: { sym: Sym }) {
+function DetailChangeStrip({ sym, compact = false }: { sym: Sym; compact?: boolean }) {
   const windows = WATCHLIST_CHANGE_WINDOWS.filter(window =>
     ['1m', '2m', '5m', '10m', '30m', '4h'].includes(window.id),
   )
   return (
-    <div className="wt-change-strip">
+    <div className={`wt-change-strip${compact ? ' wt-change-strip--compact' : ''}`}>
       {windows.map(window => {
         const value = sym.changes[window.id]
-        const cls = value == null || Number.isNaN(value) ? 'wt-change-mini' : `wt-change-mini ${value >= 0 ? 'wt-up' : 'wt-down'}`
+        const direction = value == null || Number.isNaN(value) ? '' : value >= 0 ? 'wt-up' : 'wt-down'
+        const cls = direction ? `wt-change-mini ${direction}` : 'wt-change-mini'
         return (
-          <div key={window.id} className="wt-change-mini-card">
+          <div key={window.id} className={`wt-change-mini-card ${direction}`}>
             <span className="wt-change-mini-label">{window.label}</span>
             <span className={cls}>{formatWindowChangePct(value)}</span>
           </div>
@@ -683,13 +685,98 @@ function CfgToggle({ label, checked, disabled, onChange }: {
   )
 }
 
+function TargetField({ label, pctValue, amountValue, pctSamples, amountSamples, onPctChange, onAmountChange }: {
+  label: string
+  pctValue: number
+  amountValue: number | null
+  pctSamples: number[]
+  amountSamples: number[]
+  onPctChange: (value: number) => void
+  onAmountChange: (value: number | null) => void
+}) {
+  const amountActive = amountValue != null && amountValue > 0
+
+  return (
+    <label className="wt-mf">
+      <div className="wt-target-head">
+        <span className="wt-mf-label">
+          {label}
+          <span className={`wt-target-mode wt-target-mode--${amountActive ? 'amount' : 'pct'}`}>
+            {amountActive ? '$ amount' : '% percent'}
+          </span>
+        </span>
+        <div className="wt-mode-toggle wt-mode-toggle--compact">
+          <button
+            type="button"
+            className={`wt-mode-pill${!amountActive ? ' wt-mode-pill--active' : ''}`}
+            onClick={() => {
+              onAmountChange(null)
+              if (!pctValue) onPctChange(pctSamples[0] ?? 1)
+            }}
+          >
+            %
+          </button>
+          <button
+            type="button"
+            className={`wt-mode-pill${amountActive ? ' wt-mode-pill--active' : ''}`}
+            onClick={() => onAmountChange(amountValue ?? amountSamples[0] ?? 50)}
+          >
+            $
+          </button>
+        </div>
+      </div>
+      <div className="wt-mf-input-wrap">
+        <input
+          type="number"
+          className="wt-mf-input wt-mf-input--with-unit"
+          value={amountActive ? amountValue : pctValue}
+          step={amountActive ? 1 : 0.1}
+          min={0}
+          onChange={event => {
+            const next = Number(event.target.value)
+            if (amountActive) onAmountChange(next)
+            else onPctChange(next)
+          }}
+        />
+        <span className="wt-mf-unit-badge">{amountActive ? '$' : '%'}</span>
+      </div>
+      <span className="wt-mf-samples">
+        {pctSamples.map(sample => (
+          <button
+            key={`${label}-pct-${sample}`}
+            type="button"
+            className={`wt-mf-chip${!amountActive && pctValue === sample ? ' wt-mf-chip--on' : ''}${label.startsWith('TP') ? ' wt-mf-chip--green' : ' wt-mf-chip--red'}`}
+            onClick={() => {
+              onAmountChange(null)
+              onPctChange(sample)
+            }}
+          >
+            {sample}%
+          </button>
+        ))}
+        {amountSamples.map(sample => (
+          <button
+            key={`${label}-amt-${sample}`}
+            type="button"
+            className={`wt-mf-chip${amountActive && amountValue === sample ? ' wt-mf-chip--on' : ''}${label.startsWith('TP') ? ' wt-mf-chip--green' : ' wt-mf-chip--red'}`}
+            onClick={() => onAmountChange(sample)}
+          >
+            ${sample}
+          </button>
+        ))}
+      </span>
+    </label>
+  )
+}
+
 /* ─── per-stock momentum / quick-trade config ─── */
-function MomentumPanel({ cfg, custom, onPatch, onToggleCustom, onReset, onDeploy }: {
+function MomentumPanel({ cfg, custom, onPatch, onToggleCustom, onReset, onDeploy, tabbed = false }: {
   cfg: MomentumCfg; custom: boolean
   onPatch: (next: Partial<MomentumCfg>) => void
   onToggleCustom: (v: boolean) => void
   onReset: () => void
   onDeploy: (env: 'demo'|'live', cfg: MomentumCfg) => Promise<void>
+  tabbed?: boolean
 }) {
   const [advanced, setAdvanced] = useState(false)
   const [env, setEnv] = useState<'demo'|'live'>('demo')
@@ -712,8 +799,8 @@ function MomentumPanel({ cfg, custom, onPatch, onToggleCustom, onReset, onDeploy
 
   return (
     <div className="wt-mom">
-      <div className="wt-mom-head">
-        <span className="wt-mom-title">⚡ Quick Trade</span>
+      <div className={`wt-mom-head${tabbed ? ' wt-mom-head--controls-only' : ''}`}>
+        {!tabbed ? <span className="wt-mom-title">⚡ Quick Trade</span> : null}
         {/* default vs custom config toggle */}
         <div className="wt-mode-toggle">
           <button type="button" className={`wt-mode-pill${!custom ? ' wt-mode-pill--active' : ''}`}
@@ -811,13 +898,185 @@ function MomentumPanel({ cfg, custom, onPatch, onToggleCustom, onReset, onDeploy
   )
 }
 
+function QuickStrategyPanel({
+  selected,
+  tabbed = false,
+}: {
+  selected: SelectedSymbol
+  tabbed?: boolean
+}) {
+  const [env, setEnv] = useState<'demo' | 'live'>('demo')
+  const [useLiveTrigger, setUseLiveTrigger] = useState(true)
+  const [customTrigger, setCustomTrigger] = useState('')
+  const [tpPct, setTpPct] = useState(5)
+  const [tpAmount, setTpAmount] = useState<number | null>(null)
+  const [slPct, setSlPct] = useState(1)
+  const [slAmount, setSlAmount] = useState<number | null>(null)
+  const [maxCapital, setMaxCapital] = useState(100_000)
+  const [scheduled, setScheduled] = useState(false)
+  const [scheduledDate, setScheduledDate] = useState('')
+  const [scheduleOptions, setScheduleOptions] = useState<Array<{ trading_day: string; label: string }>>([])
+  const [busy, setBusy] = useState<'save' | 'deploy' | ''>('')
+  const [message, setMessage] = useState('')
+
+  const sym = selected.symbol
+  const livePrice = sym.ltp
+
+  useEffect(() => {
+    let cancelled = false
+    void loadQuickStrategySchedule(selected.watchlist.broker).then(options => {
+      if (cancelled) return
+      setScheduleOptions(options)
+      setScheduledDate(prev => prev || options[0]?.trading_day || '')
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [selected.watchlist.broker])
+
+  useEffect(() => {
+    if (useLiveTrigger && livePrice != null) {
+      setCustomTrigger(String(livePrice))
+    }
+  }, [useLiveTrigger, livePrice])
+
+  const resolvedTrigger = useLiveTrigger
+    ? livePrice
+    : Number(customTrigger)
+
+  const submit = async (deployNow: boolean) => {
+    setBusy(deployNow ? 'deploy' : 'save')
+    setMessage('')
+    try {
+      if (!Number.isFinite(resolvedTrigger) || resolvedTrigger <= 0) {
+        throw new Error('Set a valid trigger price')
+      }
+      if (scheduled && !deployNow && !scheduledDate) {
+        throw new Error('Select a schedule date')
+      }
+      const executionId = await createQuickStrategy({
+        broker: selected.watchlist.broker,
+        accountEnv: env,
+        symbol: sym.ticker,
+        token: sym.symboltoken,
+        exchange: sym.exchange,
+        closePrice: resolvedTrigger,
+        tpPct,
+        tpAmount,
+        slPct,
+        slAmount,
+        maxCapital,
+        scheduled,
+        scheduledDate: scheduled ? scheduledDate : null,
+        deployNow,
+      })
+      setMessage(deployNow ? `Deployed ${executionId}` : scheduled ? `Scheduled ${executionId}` : `Saved ${executionId}`)
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Strategy action failed')
+    } finally {
+      setBusy('')
+    }
+  }
+
+  return (
+    <div className="wt-mom">
+      <div className={`wt-mom-head${tabbed ? ' wt-mom-head--controls-only' : ''}`}>
+        {!tabbed ? <span className="wt-mom-title">Quick Strategy</span> : null}
+        <div className="wt-env-toggle">
+          <button type="button" className={`wt-env-pill${env === 'demo' ? ' wt-env-pill--active' : ''}`}
+            onClick={() => setEnv('demo')}>Demo</button>
+          <button type="button" className={`wt-env-pill${env === 'live' ? ' wt-env-pill--active wt-env-pill--live' : ''}`}
+            onClick={() => setEnv('live')}>Live</button>
+        </div>
+      </div>
+
+      <div className="wt-strategy-trigger">
+        <div className="wt-strategy-trigger__head">
+          <span className="wt-mf-label">Trigger price</span>
+          <div className="wt-mode-toggle">
+            <button type="button" className={`wt-mode-pill${useLiveTrigger ? ' wt-mode-pill--active' : ''}`}
+              onClick={() => setUseLiveTrigger(true)}>Live</button>
+            <button type="button" className={`wt-mode-pill${!useLiveTrigger ? ' wt-mode-pill--active' : ''}`}
+              onClick={() => setUseLiveTrigger(false)}>Custom</button>
+          </div>
+        </div>
+        <input
+          type="number"
+          className="wt-mf-input"
+          value={useLiveTrigger ? (livePrice ?? '') : customTrigger}
+          step="0.01"
+          min="0"
+          disabled={useLiveTrigger}
+          onChange={event => setCustomTrigger(event.target.value)}
+        />
+      </div>
+
+      <div className="wt-mom-grid">
+        <TargetField
+          label="TP"
+          pctValue={tpPct}
+          amountValue={tpAmount}
+          pctSamples={[1, 3, 5, 10]}
+          amountSamples={[50, 100, 250, 500]}
+          onPctChange={setTpPct}
+          onAmountChange={setTpAmount}
+        />
+        <TargetField
+          label="SL"
+          pctValue={slPct}
+          amountValue={slAmount}
+          pctSamples={[0.5, 1, 2, 5]}
+          amountSamples={[25, 50, 100, 200]}
+          onPctChange={setSlPct}
+          onAmountChange={setSlAmount}
+        />
+        <NumField label="Max cap" value={maxCapital} step={1000} min={100}
+          onChange={setMaxCapital} />
+      </div>
+
+      <CfgToggle label="Scheduled?" checked={scheduled} onChange={setScheduled} />
+      {scheduled ? (
+        <label className="wt-mf">
+          <span className="wt-mf-label">Trading day</span>
+          <select
+            className="wt-mf-input"
+            value={scheduledDate}
+            onChange={event => setScheduledDate(event.target.value)}
+          >
+            {scheduleOptions.map(option => (
+              <option key={option.trading_day} value={option.trading_day}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+
+      <div className="wt-deploy-row">
+        <button type="button" className="wt-save-btn" disabled={busy !== ''}
+          onClick={() => void submit(false)}>
+          {busy === 'save' ? 'Saving…' : 'Save'}
+        </button>
+        <button type="button" className="wt-deploy-btn" disabled={busy !== '' || scheduled}
+          onClick={() => void submit(true)}>
+          {busy === 'deploy' ? 'Deploying…' : 'Deploy'}
+        </button>
+      </div>
+      {message ? <div className="wt-deploy-message">{message}</div> : null}
+    </div>
+  )
+}
+
 /* ═══════════════════════════════════════════════════════════════
    Detail panel (resizable)
    ═══════════════════════════════════════════════════════════════ */
+type TradePanelTab = 'quick-trade' | 'quick-strategy'
+
 function DetailPanel({ selected, width, onResizeStart }: {
   selected: SelectedSymbol|null; width: number; onResizeStart: (e:React.MouseEvent) => void
 }) {
   const [chartHeight, setChartHeight] = useState(240)
+  const [tradeTab, setTradeTab] = useState<TradePanelTab>('quick-trade')
   const chartResizingRef = useRef(false)
   // per-stock config map: each stock keeps its own override + custom flag
   const [configs, setConfigs] = useState<Record<string, MomentumCfg>>({})
@@ -882,16 +1141,19 @@ function DetailPanel({ selected, width, onResizeStart }: {
         <div className="wt-detail">
           <div className="wt-detail-top-row">
             <div className="wt-detail-price-card">
-              <div className="wt-detail-title-row">
-                <div className="wt-detail-logo-inline">
-                  <SymbolLogo sym={sym} size="large" />
+              <div className="wt-detail-head-row">
+                <div className="wt-detail-title-row">
+                  <div className="wt-detail-logo-inline">
+                    <SymbolLogo sym={sym} size="large" />
+                  </div>
+                  <div className="wt-detail-title-copy">
+                    <div className="wt-detail-ticker">{sym.ticker}</div>
+                    <div className="wt-detail-fullname">{sym.name}</div>
+                    <div className="wt-detail-price">{sym.price}</div>
+                    <div className={`wt-detail-change ${sym.chgUp?'wt-up':'wt-down'}`}>{sym.chg}</div>
+                  </div>
                 </div>
-                <div className="wt-detail-title-copy">
-                  <div className="wt-detail-ticker">{sym.ticker}</div>
-                  <div className="wt-detail-fullname">{sym.name}</div>
-                  <div className="wt-detail-price">{sym.price}</div>
-                  <div className={`wt-detail-change ${sym.chgUp?'wt-up':'wt-down'}`}>{sym.chg}</div>
-                </div>
+                <DetailChangeStrip sym={sym} compact />
               </div>
             </div>
           </div>
@@ -900,16 +1162,38 @@ function DetailPanel({ selected, width, onResizeStart }: {
             <div className="wt-chart-resize-handle" onMouseDown={handleChartResizeStart} title="Drag to resize chart" />
           </div>
           <div className="wt-detail-trade-box">
-            <MomentumPanel
-              cfg={cfg}
-              custom={custom}
-              onPatch={patchCfg}
-              onToggleCustom={toggleCustom}
-              onReset={resetCfg}
-              onDeploy={deploy}
-            />
+            <div className="wt-trade-tabs">
+              <button
+                type="button"
+                className={`wt-trade-tab${tradeTab === 'quick-trade' ? ' wt-trade-tab--active' : ''}`}
+                onClick={() => setTradeTab('quick-trade')}
+              >
+                Quick Trade
+              </button>
+              <button
+                type="button"
+                className={`wt-trade-tab${tradeTab === 'quick-strategy' ? ' wt-trade-tab--active' : ''}`}
+                onClick={() => setTradeTab('quick-strategy')}
+              >
+                Quick Strategy
+              </button>
+            </div>
+            <div className="wt-trade-panel">
+              {tradeTab === 'quick-trade' ? (
+                <MomentumPanel
+                  cfg={cfg}
+                  custom={custom}
+                  onPatch={patchCfg}
+                  onToggleCustom={toggleCustom}
+                  onReset={resetCfg}
+                  onDeploy={deploy}
+                  tabbed
+                />
+              ) : (
+                <QuickStrategyPanel selected={selected as SelectedSymbol} tabbed />
+              )}
+            </div>
           </div>
-          <DetailChangeStrip sym={sym} />
         </div>
       )}
     </div>

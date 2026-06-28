@@ -61,3 +61,15 @@ async def get_news_notifications(limit: int = Query(50, ge=1, le=200)):
         "status": True,
         "data": get_news_store().recent_notifications(limit=limit),
     }
+
+
+@router.get(
+    "/market-status",
+    operation_id="get_market_status",
+    summary="Market open status for an exchange (Finnhub)",
+)
+async def get_market_status(
+    exchange: str = Query("US", min_length=1, max_length=16),
+    refresh: bool = Query(False),
+):
+    return await get_news_service().market_status(exchange, refresh=refresh)

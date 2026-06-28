@@ -164,3 +164,32 @@ def test_company_news_route_uses_service_refresh(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["data"][0]["headline"] == "AAPL:7:True:False"
+
+
+def test_market_status_route_uses_service(monkeypatch):
+    class FakeService:
+        async def market_status(self, exchange="US", *, refresh=False):
+            return {
+                "status": True,
+                "data": {
+                    "exchange": exchange,
+                    "holiday": None,
+                    "isOpen": False,
+                    "session": "pre-market",
+                    "timezone": "America/New_York",
+                    "t": 1697018041,
+                },
+                "meta": {"cached": False, "refresh": refresh},
+            }
+
+    monkeypatch.setattr(market_news_routes, "get_news_service", lambda: FakeService())
+    app = FastAPI()
+    app.include_router(market_news_routes.router)
+    client = TestClient(app)
+
+    response = client.get("/api/market/market-status?exchange=US")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["session"] == "pre-market"
+    assert body["data"]["exchange"] == "US"

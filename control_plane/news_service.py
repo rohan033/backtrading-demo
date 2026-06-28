@@ -74,6 +74,45 @@ async def _finnhub_get(path: str, params: dict[str, str | int]) -> list[dict[str
     return payload if isinstance(payload, list) else []
 
 
+async def _finnhub_get_object(path: str, params: dict[str, str | int]) -> dict[str, Any]:
+    token = os.getenv("FINNHUB_API_KEY", "").strip()
+    if not token:
+        raise HTTPException(status_code=503, detail="FINNHUB_API_KEY is not configured")
+
+    query = urlencode({**params, "token": token})
+
+    def _fetch_json() -> tuple[int, str]:
+        req = Request(f"{FINNHUB_BASE}{path}?{query}", headers={"User-Agent": "backtrading-demo"})
+        with urlopen(req, timeout=15) as resp:
+            status = int(getattr(resp, "status", 200))
+            body = resp.read().decode("utf-8")
+        return status, body
+
+    try:
+        status_code, body = await asyncio.to_thread(_fetch_json)
+    except HTTPError as exc:
+        status_code = int(getattr(exc, "code", 502))
+        body = exc.read().decode("utf-8") if hasattr(exc, "read") else ""
+    except URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Finnhub request failed: {exc}") from exc
+
+    if status_code == 429:
+        raise HTTPException(status_code=429, detail="Finnhub rate limit exceeded")
+    if status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Finnhub error ({status_code})")
+
+    try:
+        payload = json.loads(body) if body else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail="Finnhub returned invalid JSON") from exc
+
+    return payload if isinstance(payload, dict) else {}
+
+
+def market_status_cache_ttl_seconds() -> int:
+    return max(15, int(os.getenv("MARKET_STATUS_CACHE_TTL_SECONDS", "60")))
+
+
 def _sort_news(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(items, key=lambda row: int(row.get("datetime") or 0), reverse=True)
 
@@ -108,6 +147,33 @@ class NewsService:
     def __init__(self, store: NewsStore | None = None):
         self.store = store or get_news_store()
         self._locks: dict[str, asyncio.Lock] = {}
+        self._market_status_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+    async def market_status(self, exchange: str = "US", *, refresh: bool = False) -> dict[str, Any]:
+        exchange_key = exchange.strip().upper() or "US"
+        cache_key = f"status:{exchange_key}"
+        cached = self._market_status_cache.get(cache_key)
+        ttl = market_status_cache_ttl_seconds()
+
+        if cached and not refresh and (time.time() - cached[0]) < ttl:
+            return {
+                "status": True,
+                "data": cached[1],
+                "meta": {"cached": True, "ageSeconds": round(time.time() - cached[0], 1)},
+            }
+
+        async with self._lock_for(cache_key):
+            cached = self._market_status_cache.get(cache_key)
+            if cached and not refresh and (time.time() - cached[0]) < ttl:
+                return {
+                    "status": True,
+                    "data": cached[1],
+                    "meta": {"cached": True, "ageSeconds": round(time.time() - cached[0], 1)},
+                }
+
+            payload = await _finnhub_get_object("/stock/market-status", {"exchange": exchange_key})
+            self._market_status_cache[cache_key] = (time.time(), payload)
+            return {"status": True, "data": payload, "meta": {"cached": False, "ageSeconds": 0}}
 
     def _lock_for(self, key: str) -> asyncio.Lock:
         lock = self._locks.get(key)

@@ -440,13 +440,25 @@
 .wt-detail-logo-letter { font-size: 22px; font-weight: 800; color: #404040; }
 
 .wt-detail-price-card {
-  flex: 1; min-width: 0; min-height: 76px;
+  flex: 1; min-width: 0;
   border: 1.5px solid var(--ms-border, #303030);
   border-radius: 7px; background: #fff;
   display: flex; flex-direction: column; justify-content: center;
-  padding: 7px 10px; gap: 1px;
+  padding: 7px 10px;
 }
-.wt-detail-title-row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.wt-detail-head-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.wt-detail-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-shrink: 0;
+}
 .wt-detail-logo-inline {
   width: 52px; height: 52px; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
@@ -490,10 +502,56 @@
 .wt-chart-resize-handle:hover { background: rgba(74,144,217,0.35); }
 
 .wt-detail-trade-box {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 11px 10px; background: #fff;
+  display: flex; flex-direction: column; gap: 0;
+  padding: 0; background: #fff;
   border: 1.5px solid var(--ms-border, #303030);
   border-radius: 7px; flex-shrink: 0;
+  overflow: hidden;
+}
+
+.wt-trade-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1.5px solid var(--ms-border, #303030);
+  background: #F2F2F2;
+}
+
+.wt-trade-tab {
+  flex: 1;
+  border: 0;
+  border-right: 1.5px solid var(--ms-border, #303030);
+  background: #F2F2F2;
+  color: #666;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  padding: 8px 10px;
+  text-transform: uppercase;
+  transition: background 0.12s, color 0.12s;
+}
+
+.wt-trade-tab:last-child {
+  border-right: 0;
+}
+
+.wt-trade-tab:hover {
+  color: #303030;
+  background: #ECECEC;
+}
+
+.wt-trade-tab--active {
+  background: #FFE599;
+  color: #202020;
+}
+
+.wt-trade-panel {
+  padding: 11px 10px;
+}
+
+.wt-mom-head--controls-only {
+  justify-content: flex-end;
 }
 
 /* ── momentum / quick-trade config ── */
@@ -519,7 +577,49 @@
 
 /* numeric field */
 .wt-mf { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.wt-mf-label { font-size: 9.5px; font-weight: 600; color: #777; white-space: nowrap; }
+.wt-mf-label { font-size: 9.5px; font-weight: 600; color: #777; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+.wt-target-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.wt-target-mode {
+  border-radius: 999px;
+  padding: 1px 5px;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.wt-target-mode--pct {
+  background: #EEF4FF;
+  color: #1A6DC9;
+}
+.wt-target-mode--amount {
+  background: #FFF4E8;
+  color: #B45309;
+}
+.wt-mode-toggle--compact .wt-mode-pill {
+  min-width: 24px;
+  padding: 2px 7px;
+}
+.wt-mf-input-wrap {
+  position: relative;
+}
+.wt-mf-input--with-unit {
+  padding-right: 22px;
+}
+.wt-mf-unit-badge {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  color: #888;
+  font-size: 10px;
+  font-weight: 900;
+  pointer-events: none;
+  transform: translateY(-50%);
+}
 .wt-mf-unit { color: #aaa; font-weight: 500; }
 .wt-mf-input {
   height: 25px; border: 1.5px solid #D2D2D2; border-radius: 5px;
@@ -598,32 +698,105 @@
 }
 .wt-deploy-btn:hover { opacity: 0.9; }
 .wt-deploy-btn:disabled { opacity: 0.55; cursor: wait; }
+.wt-save-btn {
+  flex: 0 0 auto;
+  border: 1.5px solid var(--ms-border, #303030);
+  border-radius: 8px;
+  background: #FFFFFF;
+  color: var(--ms-text, #202020);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 8px 14px;
+}
+.wt-save-btn:hover { background: #F7F7F7; }
+.wt-save-btn:disabled { opacity: 0.55; cursor: wait; }
 .wt-deploy-message { font-size: 10px; font-weight: 600; color: #606060; }
+
+.wt-strategy-trigger {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wt-strategy-trigger__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wt-strategy-trigger .wt-mf-input {
+  width: 100%;
+}
 
 .wt-change-strip {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 5px;
 }
+.wt-change-strip--compact {
+  flex: 1;
+  min-width: 0;
+  gap: 4px;
+  align-self: center;
+}
 .wt-change-mini-card {
-  border: 1px solid #D8D8D8;
+  border: 1px solid #CFCFCF;
   border-radius: 5px;
-  background: #fff;
+  background: #F7F7F7;
   padding: 5px 4px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
 }
+.wt-change-strip--compact .wt-change-mini-card {
+  padding: 4px 3px;
+  border-radius: 5px;
+  border-width: 1.5px;
+  gap: 2px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+.wt-change-mini-card.wt-up {
+  border-color: #5FAF82;
+  background: #DDF3E6;
+}
+.wt-change-mini-card.wt-down {
+  border-color: #D96A6A;
+  background: #F8DEDE;
+}
 .wt-change-mini-label {
   font-size: 8px;
   font-weight: 800;
-  color: #AAAAAA;
+  color: #404040;
   text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.wt-change-strip--compact .wt-change-mini-label {
+  font-size: 8.5px;
+  font-weight: 900;
+  color: #303030;
+  letter-spacing: 0.05em;
 }
 .wt-change-mini {
   font-size: 10px;
   font-weight: 800;
-  color: #999;
+  color: #505050;
   white-space: nowrap;
+}
+.wt-change-strip--compact .wt-change-mini {
+  font-size: 10px;
+  font-weight: 900;
+  color: #303030;
+}
+.wt-change-mini.wt-up { color: #126B3A; }
+.wt-change-mini.wt-down { color: #A61F1F; }
+.wt-change-mini-card.wt-up .wt-change-mini-label {
+  color: #126B3A;
+  font-weight: 900;
+}
+.wt-change-mini-card.wt-down .wt-change-mini-label {
+  color: #A61F1F;
+  font-weight: 900;
 }
