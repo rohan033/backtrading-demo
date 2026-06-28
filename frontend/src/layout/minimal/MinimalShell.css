@@ -263,6 +263,126 @@
   line-height: 1.35;
 }
 
+.ms-news-new-panel {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ms-news-new-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1.5px solid var(--ms-border);
+  border-radius: 6px;
+  background: #FFFFFF;
+  font-size: 11px;
+}
+
+.ms-news-new-panel__header strong {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ms-news-new-panel__header span {
+  color: var(--ms-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ms-news-new-list {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.ms-news-new-card {
+  border: 1.5px solid var(--ms-border);
+  border-radius: 6px;
+  background: #FFFFFF;
+  overflow: hidden;
+}
+
+.ms-news-new-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 10px;
+  border-bottom: 1px solid #D0D0D0;
+  background: #F8F8F8;
+}
+
+.ms-news-new-card h3 {
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.ms-news-new-card p {
+  margin-top: 2px;
+  color: #1C8C61;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.ms-news-new-card button {
+  height: 25px;
+  border: 1.5px solid var(--ms-border);
+  border-radius: 5px;
+  background: #FFFFFF;
+  color: var(--ms-text);
+  cursor: pointer;
+  font-family: var(--ms-font);
+  font-size: 10px;
+  font-weight: 800;
+  padding: 0 9px;
+}
+
+.ms-news-new-card ul {
+  list-style: none;
+}
+
+.ms-news-new-card li + li {
+  border-top: 1px solid #E1E1E1;
+}
+
+.ms-news-new-card a {
+  display: block;
+  padding: 8px 10px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.ms-news-new-card a:hover {
+  background: #FAFAFA;
+}
+
+.ms-news-new-card span {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.ms-news-new-card em {
+  display: block;
+  margin-top: 3px;
+  color: var(--ms-muted);
+  font-size: 9.5px;
+  font-style: normal;
+}
+
 .ms-news-panel {
   min-height: 0;
   display: flex;

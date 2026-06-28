@@ -3,16 +3,19 @@ import './MinimalShell.css'
 import CompanyNewsPanel from '../../components/watchlist/CompanyNewsPanel'
 import MarketNewsPanel from '../../components/watchlist/MarketNewsPanel'
 import { useWatchlistStream } from '../../context/WatchlistStreamContext'
-import { useNewsNotifications } from '../../hooks/useNewsNotifications'
+import {
+  useNewsNotifications,
+  type NewsUpdateGroup,
+} from '../../hooks/useNewsNotifications'
 import WatchAndTrade from './WatchAndTrade'
 import { useUrlState } from './useUrlState'
 
 /* ─── types ─────────────────────────────────────────────── */
 type MainTab = 'home' | 'watch-trade' | 'orders' | 'strategies'
-type NewsTab = 'news' | 'market'
+type NewsTab = 'new' | 'news' | 'market'
 
 const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'strategies']
-const NEWS_TABS: NewsTab[] = ['news', 'market']
+const NEWS_TABS: NewsTab[] = ['new', 'news', 'market']
 const LEFT_COLLAPSED_KEY = 'minimal-shell-left-collapsed'
 const RIGHT_COLLAPSED_KEY = 'minimal-shell-right-collapsed'
 const RIGHT_WIDTH_KEY = 'minimal-shell-right-width'
@@ -161,6 +164,55 @@ function MainPanel({ tab, setTab }: { tab: MainTab; setTab: (t: MainTab) => void
   )
 }
 
+function NewNewsPanel({ groups }: { groups: NewsUpdateGroup[] }) {
+  if (!groups.length) {
+    return (
+      <div className="ms-news-empty">
+        No new watchlist news yet. Updates will appear here grouped by ticker.
+      </div>
+    )
+  }
+
+  return (
+    <div className="ms-news-new-panel">
+      <div className="ms-news-new-panel__header">
+        <strong>New updates</strong>
+        <span>{groups.length} tickers</span>
+      </div>
+      <div className="ms-news-new-list">
+        {groups.map(group => (
+          <section className="ms-news-new-card" key={group.topic}>
+            <div className="ms-news-new-card__top">
+              <div>
+                <h3>{group.topic}</h3>
+                <p>+{group.count} news update{group.count === 1 ? '' : 's'}</p>
+              </div>
+              {group.latest.url ? (
+                <button
+                  type="button"
+                  onClick={() => window.open(group.latest.url || '', '_blank', 'noopener,noreferrer')}
+                >
+                  Open
+                </button>
+              ) : null}
+            </div>
+            <ul>
+              {group.items.slice(0, 4).map(item => (
+                <li key={item.id}>
+                  <a href={item.url || '#'} target="_blank" rel="noopener noreferrer">
+                    <span>{item.headline}</span>
+                    {item.source ? <em>{item.source}</em> : null}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function RightDrawer({
   collapsed,
   onToggle,
@@ -171,6 +223,7 @@ function RightDrawer({
   activeNewsSymbol,
   width,
   onResizeStart,
+  newsGroups,
 }: {
   collapsed: boolean
   onToggle: () => void
@@ -181,6 +234,7 @@ function RightDrawer({
   activeNewsSymbol: string | null
   width: number
   onResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void
+  newsGroups: NewsUpdateGroup[]
 }) {
   if (collapsed) {
     return (
@@ -204,6 +258,9 @@ function RightDrawer({
         onMouseDown={onResizeStart}
       />
       <div className="ms-header ms-header--right">
+        <Pill active={tab === 'new'} onClick={() => setTab('new')}>
+          {'\u00a0New\u00a0'}
+        </Pill>
         <Pill active={tab === 'news'} onClick={() => setTab('news')}>
           {'\u00a0News\u00a0'}
         </Pill>
@@ -214,7 +271,9 @@ function RightDrawer({
       </div>
       <SearchBar value={search} onChange={setSearch} />
       <div className="ms-body ms-body--scrollable">
-        {tab === 'news' ? (
+        {tab === 'new' ? (
+          <NewNewsPanel groups={newsGroups} />
+        ) : tab === 'news' ? (
           activeNewsSymbol ? (
             <CompanyNewsPanel
               symbol={activeNewsSymbol}
@@ -238,7 +297,10 @@ function RightDrawer({
 export default function MinimalShell() {
   const { state, navigate } = useUrlState()
   const { watchlists } = useWatchlistStream()
-  useNewsNotifications()
+  const setNewsTab = (t: NewsTab) => navigate({ news: t })
+  const { groups: newsGroups } = useNewsNotifications({
+    onOpenUpdates: () => setNewsTab('new'),
+  })
   const [leftCollapsed, setLeftCollapsed] = useState(() => loadStoredBool(LEFT_COLLAPSED_KEY))
   const [rightCollapsed, setRightCollapsed] = useState(() => loadStoredBool(RIGHT_COLLAPSED_KEY))
   const [rightWidth, setRightWidth] = useState(() =>
@@ -265,7 +327,6 @@ export default function MinimalShell() {
   }, [])
 
   const setMainTab = (t: MainTab) => navigate({ tab: t })
-  const setNewsTab = (t: NewsTab) => navigate({ news: t })
   const startRightResize = (event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault()
     rightResizeRef.current = { startX: event.clientX, startWidth: rightWidth }
@@ -321,6 +382,7 @@ export default function MinimalShell() {
         activeNewsSymbol={activeNewsSymbol}
         width={rightWidth}
         onResizeStart={startRightResize}
+        newsGroups={newsGroups}
       />
     </div>
   )

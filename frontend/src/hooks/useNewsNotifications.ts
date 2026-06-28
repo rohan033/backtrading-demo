@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { showPlatformToast } from '../lib/platform-toast'
 
@@ -14,6 +14,18 @@ export type NewsNotification = {
   created_at: string
 }
 
+export type NewsUpdateGroup = {
+  topic: string
+  count: number
+  latest: NewsNotification
+  items: NewsNotification[]
+}
+
+type UseNewsNotificationsOptions = {
+  enabled?: boolean
+  onOpenUpdates?: () => void
+}
+
 function newsWsUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${proto}//${window.location.host}/ws/news`
@@ -26,27 +38,70 @@ async function fetchRecentNewsNotifications(): Promise<NewsNotification[]> {
   return Array.isArray(payload.data) ? payload.data : []
 }
 
-function toastNewsNotification(notification: NewsNotification) {
+function sortNotifications(items: NewsNotification[]) {
+  return [...items].sort((a, b) => {
+    const byCreated = Date.parse(b.created_at || '') - Date.parse(a.created_at || '')
+    if (Number.isFinite(byCreated) && byCreated !== 0) return byCreated
+    return (b.datetime || 0) - (a.datetime || 0)
+  })
+}
+
+function groupNotifications(items: NewsNotification[]): NewsUpdateGroup[] {
+  const byTopic = new Map<string, NewsNotification[]>()
+  for (const item of sortNotifications(items)) {
+    const topic = item.topic || 'Market'
+    const bucket = byTopic.get(topic) || []
+    bucket.push(item)
+    byTopic.set(topic, bucket)
+  }
+  return [...byTopic.entries()]
+    .map(([topic, groupedItems]) => ({
+      topic,
+      count: groupedItems.length,
+      latest: groupedItems[0],
+      items: groupedItems,
+    }))
+    .sort((a, b) => (b.latest.datetime || 0) - (a.latest.datetime || 0))
+}
+
+function toastNewsGroup(topic: string, notifications: NewsNotification[], onOpenUpdates?: () => void) {
+  if (!notifications.length) return
+  const count = notifications.length
   showPlatformToast({
-    title: `${notification.topic} news`,
-    message: notification.source
-      ? `${notification.headline} (${notification.source})`
-      : notification.headline,
+    title: `News updates for ${topic} (+${count})`,
+    message: count === 1 ? notifications[0].headline : `${count} new headlines available`,
     variant: 'success',
-    duration: 8000,
-    actions: notification.url
+    duration: 7000,
+    actions: onOpenUpdates
       ? {
-          label: 'Open',
-          onClick: () => window.open(notification.url || '', '_blank', 'noopener,noreferrer'),
+          label: 'View',
+          onClick: onOpenUpdates,
         }
       : undefined,
   })
 }
 
-export function useNewsNotifications(enabled = true) {
+export function useNewsNotifications(options: UseNewsNotificationsOptions = {}) {
+  const { enabled = true, onOpenUpdates } = options
+  const [notifications, setNotifications] = useState<NewsNotification[]>([])
   const seenRef = useRef<Set<string>>(new Set())
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onOpenUpdatesRef = useRef(onOpenUpdates)
+
+  useEffect(() => {
+    onOpenUpdatesRef.current = onOpenUpdates
+  }, [onOpenUpdates])
+
+  const mergeNotifications = useCallback((incoming: NewsNotification[]) => {
+    setNotifications(prev => {
+      const byId = new Map(prev.map(item => [item.id, item]))
+      for (const item of incoming) {
+        if (item.id) byId.set(item.id, item)
+      }
+      return sortNotifications([...byId.values()]).slice(0, 100)
+    })
+  }, [])
 
   useEffect(() => {
     if (!enabled) return
@@ -56,6 +111,7 @@ export function useNewsNotifications(enabled = true) {
       .then(items => {
         if (cancelled) return
         for (const item of items) seenRef.current.add(item.id)
+        mergeNotifications(items)
       })
       .catch(() => {
         // Notification history is best-effort; live WebSocket alerts still work.
@@ -81,10 +137,17 @@ export function useNewsNotifications(enabled = true) {
           return
         }
         if (msg.type !== 'news' || !Array.isArray(msg.notifications)) return
+        const fresh: NewsNotification[] = []
         for (const notification of msg.notifications) {
           if (!notification.id || seenRef.current.has(notification.id)) continue
           seenRef.current.add(notification.id)
-          toastNewsNotification(notification)
+          fresh.push(notification)
+        }
+        if (!fresh.length) return
+        mergeNotifications(fresh)
+        const grouped = groupNotifications(fresh)
+        for (const group of grouped) {
+          toastNewsGroup(group.topic, group.items, onOpenUpdatesRef.current)
         }
       }
 
@@ -101,5 +164,13 @@ export function useNewsNotifications(enabled = true) {
       wsRef.current?.close()
       wsRef.current = null
     }
-  }, [enabled])
+  }, [enabled, mergeNotifications])
+
+  return useMemo(
+    () => ({
+      notifications,
+      groups: groupNotifications(notifications),
+    }),
+    [notifications],
+  )
 }
