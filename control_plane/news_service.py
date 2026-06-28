@@ -15,6 +15,7 @@ from fastapi import HTTPException
 from control_plane.news_store import NewsCacheEntry, NewsStore, get_news_store
 
 FINNHUB_BASE = "https://finnhub.io/api/v1"
+FINNHUB_MARKET_STATUS_PATH = "/stock/market-status"
 NEWS_LIMIT = 20
 MARKET_NEWS_CATEGORIES = frozenset({"general", "forex", "crypto", "merger"})
 
@@ -80,9 +81,10 @@ async def _finnhub_get_object(path: str, params: dict[str, str | int]) -> dict[s
         raise HTTPException(status_code=503, detail="FINNHUB_API_KEY is not configured")
 
     query = urlencode({**params, "token": token})
+    url = f"{FINNHUB_BASE}{path}?{query}"
 
     def _fetch_json() -> tuple[int, str]:
-        req = Request(f"{FINNHUB_BASE}{path}?{query}", headers={"User-Agent": "backtrading-demo"})
+        req = Request(url, headers={"User-Agent": "backtrading-demo"})
         with urlopen(req, timeout=15) as resp:
             status = int(getattr(resp, "status", 200))
             body = resp.read().decode("utf-8")
@@ -98,15 +100,26 @@ async def _finnhub_get_object(path: str, params: dict[str, str | int]) -> dict[s
 
     if status_code == 429:
         raise HTTPException(status_code=429, detail="Finnhub rate limit exceeded")
+    if status_code == 401:
+        raise HTTPException(status_code=502, detail="Finnhub API key invalid or lacks market-status access")
+    if status_code == 404:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Finnhub market-status endpoint not found ({url.split('token=')[0]}…)",
+        )
     if status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"Finnhub error ({status_code})")
+        detail = body.strip() or f"Finnhub error ({status_code})"
+        raise HTTPException(status_code=502, detail=detail)
 
     try:
         payload = json.loads(body) if body else {}
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=502, detail="Finnhub returned invalid JSON") from exc
 
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Finnhub market-status returned unexpected payload")
+
+    return payload
 
 
 def market_status_cache_ttl_seconds() -> int:
@@ -171,7 +184,10 @@ class NewsService:
                     "meta": {"cached": True, "ageSeconds": round(time.time() - cached[0], 1)},
                 }
 
-            payload = await _finnhub_get_object("/stock/market-status", {"exchange": exchange_key})
+            payload = await _finnhub_get_object(
+                FINNHUB_MARKET_STATUS_PATH,
+                {"exchange": exchange_key},
+            )
             self._market_status_cache[cache_key] = (time.time(), payload)
             return {"status": True, "data": payload, "meta": {"cached": False, "ageSeconds": 0}}
 

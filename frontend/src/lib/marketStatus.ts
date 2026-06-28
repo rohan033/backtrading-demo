@@ -33,9 +33,12 @@ export async function fetchMarketStatus(exchange = 'US', refresh = false): Promi
   const params = new URLSearchParams({ exchange })
   if (refresh) params.set('refresh', 'true')
   const res = await fetch(`/api/market/market-status?${params.toString()}`)
-  const data = await res.json()
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 404) {
+    throw new Error('Market status route missing — restart the control plane server')
+  }
   if (!res.ok) {
-    throw new Error(data.detail || 'Failed to load market status')
+    throw new Error(typeof data.detail === 'string' ? data.detail : 'Failed to load market status')
   }
   return data
 }
