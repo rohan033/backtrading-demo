@@ -1,10 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import './MinimalShell.css'
 import WatchAndTrade from './WatchAndTrade'
+import { useUrlState } from './useUrlState'
 
 /* ─── types ─────────────────────────────────────────────── */
 type MainTab = 'home' | 'watch-trade' | 'orders' | 'strategies'
 type NewsTab = 'news' | 'market'
+
+const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'strategies']
+const NEWS_TABS: NewsTab[] = ['news', 'market']
 
 /* ─── small reusable pieces ─────────────────────────────── */
 function CollapseBtn({
@@ -180,11 +184,22 @@ function RightDrawer({
 
 /* ─── root shell ─────────────────────────────────────────── */
 export default function MinimalShell() {
+  const { state, navigate } = useUrlState()
   const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [rightCollapsed, setRightCollapsed] = useState(false)
-  const [mainTab, setMainTab] = useState<MainTab>('orders')
-  const [newsTab, setNewsTab] = useState<NewsTab>('news')
   const [search, setSearch] = useState('')
+
+  const mainTab: MainTab = MAIN_TABS.includes(state.tab as MainTab) ? (state.tab as MainTab) : 'orders'
+  const newsTab: NewsTab = NEWS_TABS.includes(state.news as NewsTab) ? (state.news as NewsTab) : 'news'
+
+  // Canonicalise the URL on first load so the active page is always reflected.
+  useEffect(() => {
+    if (!state.tab) navigate({ tab: mainTab }, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const setMainTab = (t: MainTab) => navigate({ tab: t })
+  const setNewsTab = (t: NewsTab) => navigate({ news: t })
 
   return (
     <div className="ms-root">

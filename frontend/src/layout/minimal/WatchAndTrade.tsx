@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './WatchAndTrade.css'
+import { useUrlState } from './useUrlState'
 
 /* ═══════════════════════════════════════════════════════════════
    Types
@@ -619,24 +620,50 @@ function DetailPanel({ sym, width, onResizeStart }: {
    Root
    ═══════════════════════════════════════════════════════════════ */
 export default function WatchAndTrade() {
+  const { state, navigate } = useUrlState()
   const [panels, setPanels] = useState<Panel[]>(SEED)
-  const [activePanelId, setActivePanelId] = useState(SEED[0].id)
-  const [selectedSymbolId, setSelectedSymbolId] = useState<string|null>(null)
   const [dragSrc, setDragSrc] = useState<DragSrc|null>(null)
   const [dropTgt, setDropTgt] = useState<DropTgt|null>(null)
   const [detailWidth, setDetailWidth] = useState(380)
   const resizingRef = useRef(false)
 
-  const activePanel = panels.find(p=>p.id===activePanelId) ?? panels[0]
+  // Active panel / selection are derived from the URL (?panel=&watchlist=&stock=)
+  // so back/forward navigation restores exactly what the user was looking at.
+  const activePanel = panels.find(p => p.name === state.panel) ?? panels[0]
+  const activePanelId = activePanel.id
   const allWatchlists = [...activePanel.cols[0], ...activePanel.cols[1]]
-  const selectedSym = allWatchlists.flatMap(wl=>wl.symbols).find(s=>s.id===selectedSymbolId) ?? null
+  const selectedWl = allWatchlists.find(w => w.name === state.watchlist)
+  const selectedSym =
+    selectedWl?.symbols.find(s => s.ticker === state.stock) ??
+    allWatchlists.flatMap(wl => wl.symbols).find(s => s.ticker === state.stock) ??
+    null
+  const selectedSymbolId = selectedSym?.id ?? null
+
+  // Reflect the active panel in the URL when arriving without one.
+  useEffect(() => {
+    if (!state.panel) navigate({ panel: activePanel.name }, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.panel])
+
+  /* ── selection ── */
+  const handleSelectSymbol = (id: string) => {
+    const wl = allWatchlists.find(w => w.symbols.some(s => s.id === id))
+    const sym = wl?.symbols.find(s => s.id === id)
+    if (!wl || !sym) return
+    navigate({ tab: 'watch-trade', panel: activePanel.name, watchlist: wl.name, stock: sym.ticker })
+  }
 
   /* ── panel actions ── */
-  const handleSelectPanel = (id: string) => { setActivePanelId(id); setSelectedSymbolId(null) }
+  const handleSelectPanel = (id: string) => {
+    const p = panels.find(pp => pp.id === id)
+    if (!p) return
+    navigate({ tab: 'watch-trade', panel: p.name, watchlist: '', stock: '' })
+  }
   const handleAddPanel = () => {
     const id = `p${Date.now()}`
-    setPanels(prev => [...prev, { id, name:`Panel ${prev.length+1}`, cols:[[],[]] }])
-    setActivePanelId(id)
+    const name = `Panel ${panels.length + 1}`
+    setPanels(prev => [...prev, { id, name, cols:[[],[]] }])
+    navigate({ tab: 'watch-trade', panel: name, watchlist: '', stock: '' })
   }
 
   /* ── add watchlist — goes to the shorter column ── */
@@ -764,7 +791,7 @@ export default function WatchAndTrade() {
                     colIdx={ci}
                     watchlists={activePanel.cols[ci]}
                     selectedSymbolId={selectedSymbolId}
-                    onSelectSymbol={setSelectedSymbolId}
+                    onSelectSymbol={handleSelectSymbol}
                     dragSrc={dragSrc}
                     dropTgt={dropTgt}
                     onDragStart={handleDragStart}
