@@ -936,7 +936,7 @@ export default function WatchAndTrade() {
   const [columnMap, setColumnMap] = useState<Record<string, 0|1>>(() => loadColumnMap())
   const [dragSrc, setDragSrc] = useState<DragSrc|null>(null)
   const [dropTgt, setDropTgt] = useState<DropTgt|null>(null)
-  const [detailWidth, setDetailWidth] = useState(440)
+  const [detailWidth, setDetailWidth] = useState(600)
   const [detailHidden, setDetailHidden] = useState(false)
   const resizingRef = useRef(false)
 
