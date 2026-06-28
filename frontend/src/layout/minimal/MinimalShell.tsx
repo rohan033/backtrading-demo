@@ -2,7 +2,7 @@ import { useState } from 'react'
 import './MinimalShell.css'
 
 /* ─── types ─────────────────────────────────────────────── */
-type MainTab = 'home' | 'watchlist' | 'strategies'
+type MainTab = 'home' | 'watch-trade' | 'orders' | 'strategies'
 type NewsTab = 'news' | 'market'
 
 /* ─── small reusable pieces ─────────────────────────────── */
@@ -31,16 +31,18 @@ function Pill({
   active,
   onClick,
   children,
+  wide,
 }: {
   active: boolean
   onClick?: () => void
   children: React.ReactNode
+  wide?: boolean
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`ms-pill ${active ? 'ms-pill--active' : 'ms-pill--idle'}`}
+      className={`ms-pill ${active ? 'ms-pill--active' : 'ms-pill--idle'} ${wide ? 'ms-pill--wide' : ''}`}
     >
       {children}
     </button>
@@ -83,7 +85,7 @@ function LeftDrawer({ collapsed, onToggle }: { collapsed: boolean; onToggle: () 
     return (
       <aside className="ms-drawer ms-drawer--left ms-drawer--collapsed">
         <div className="ms-header ms-header--left ms-header--collapsed">
-          <CollapseBtn direction="right" onClick={onToggle} label="Expand left drawer" />
+          <CollapseBtn direction="right" onClick={onToggle} label="Expand watchlist drawer" />
         </div>
         <div className="ms-body" />
       </aside>
@@ -93,8 +95,8 @@ function LeftDrawer({ collapsed, onToggle }: { collapsed: boolean; onToggle: () 
   return (
     <aside className="ms-drawer ms-drawer--left">
       <div className="ms-header ms-header--left">
-        <CollapseBtn direction="left" onClick={onToggle} label="Collapse left drawer" />
-        <Pill active>{'\u00a0Orders\u00a0'}</Pill>
+        <CollapseBtn direction="left" onClick={onToggle} label="Collapse watchlist drawer" />
+        <Pill active wide>{'\u00a0Watchlist\u00a0'}</Pill>
       </div>
       <div className="ms-body" />
     </aside>
@@ -108,8 +110,11 @@ function MainPanel({ tab, setTab }: { tab: MainTab; setTab: (t: MainTab) => void
         <Pill active={tab === 'home'} onClick={() => setTab('home')}>
           {'\u00a0Home\u00a0'}
         </Pill>
-        <Pill active={tab === 'watchlist'} onClick={() => setTab('watchlist')}>
-          {'\u00a0Watchlist\u00a0'}
+        <Pill active={tab === 'watch-trade'} onClick={() => setTab('watch-trade')}>
+          {'\u00a0Watch\u00a0&\u00a0Trade\u00a0'}
+        </Pill>
+        <Pill active={tab === 'orders'} onClick={() => setTab('orders')}>
+          {'\u00a0Orders\u00a0'}
         </Pill>
         <Pill active={tab === 'strategies'} onClick={() => setTab('strategies')}>
           {'\u00a0Strategies\u00a0'}
@@ -170,7 +175,7 @@ function RightDrawer({
 export default function MinimalShell() {
   const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [rightCollapsed, setRightCollapsed] = useState(false)
-  const [mainTab, setMainTab] = useState<MainTab>('home')
+  const [mainTab, setMainTab] = useState<MainTab>('orders')
   const [newsTab, setNewsTab] = useState<NewsTab>('news')
   const [search, setSearch] = useState('')
 

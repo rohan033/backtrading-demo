@@ -143,6 +143,12 @@
   color: var(--ms-text);
 }
 
+.ms-pill--wide {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+}
+
 /* ── collapse button ── */
 .ms-collapse-btn {
   display: inline-flex;
