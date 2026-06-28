@@ -16,6 +16,7 @@ import {
   loadWatchlistChromeHidden,
   WL_CHROME_HIDDEN_CHANGED_EVENT,
 } from '../../lib/watchlistChromeHidden'
+import UsMarketClock from './UsMarketClock'
 import type { WindowChangesLookup } from '../../lib/watchlistAutoSort'
 import type { WatchlistChangeWindowId } from '../../lib/watchlistChangeColumns'
 import type { RankedWatchlistSymbol } from '../../lib/watchlistTopPerformers'
@@ -299,7 +300,13 @@ export default function StickyWatchlistFeed() {
     })
   }, [deploySymbolMomentum])
 
-  if (!hasSymbols || chromeHidden) return null
+  if (!hasSymbols || chromeHidden) {
+    return (
+      <div className={`${STICKY_BAR_CLASS} flex items-center px-3 py-1.5`}>
+        <UsMarketClock />
+      </div>
+    )
+  }
 
   const columnLabel = STICKY_FEED_RANK_WINDOWS.find(window => window.id === config.column)?.label
     ?? config.column
@@ -309,6 +316,7 @@ export default function StickyWatchlistFeed() {
     return (
       <div className={`${STICKY_BAR_CLASS} px-3 py-2`}>
         <div className="flex items-center justify-between gap-2">
+          <UsMarketClock />
           <button
             type="button"
             onClick={() => updateConfig({ expanded: true })}
@@ -346,6 +354,12 @@ export default function StickyWatchlistFeed() {
         />
       ) : null}
       <div className={`${STICKY_BAR_CLASS} overflow-hidden`}>
+      <div className="flex items-center justify-between gap-2 border-b border-border/50 px-3 py-1.5">
+        <UsMarketClock />
+        <span className="hidden text-[10px] font-medium uppercase tracking-[0.12em] text-text-secondary/70 sm:inline">
+          NYSE · NASDAQ
+        </span>
+      </div>
       <div className="flex h-20 min-h-20 items-stretch">
         <div className="flex h-full min-h-0 min-w-0 flex-1 items-center gap-2.5 overflow-x-auto px-2.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {topPerformers.length ? (
