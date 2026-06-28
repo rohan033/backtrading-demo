@@ -1,4 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  createChart,
+  type IChartApi,
+  type ISeriesApi,
+  type LineData,
+} from 'lightweight-charts'
 import './WatchAndTrade.css'
 import { useWatchlistStream } from '../../context/WatchlistStreamContext'
 import { formatBrokerMoney } from '../../lib/currency'
@@ -21,7 +27,14 @@ import {
   searchWatchlistSymbol,
   type WatchlistSymbolHit,
 } from '../../lib/watchlistBrokers'
-import { formatWindowChangePct } from '../../lib/watchlistChangeColumns'
+import { formatWindowChangePct, WATCHLIST_CHANGE_WINDOWS, type PriceSample } from '../../lib/watchlistChangeColumns'
+import {
+  candlesToVolumeData,
+  fetchWatchlistSymbolCandles,
+  mergeLiveTickIntoWatchlistCandles,
+  samplesToWatchlistCandles,
+  type WatchlistSanitizedCandle,
+} from '../../lib/watchlistCandles'
 import { createAndStartMomentumStrategy } from '../../lib/watchlistMomentumStrategy'
 import { DEFAULT_MOMENTUM_CONFIG, type MomentumConfig } from '../../lib/watchlistMomentum'
 import { useUrlState } from './useUrlState'
@@ -37,6 +50,7 @@ type Sym = {
   tickKey: string; ltp: number | null
   logo35x35?: string | null; logo50x50?: string | null; logo150x150?: string | null
   assetClass?: string | null
+  changes: Record<string, number | null | undefined>
 }
 
 type Watchlist = {
@@ -52,7 +66,7 @@ type Panel = {
 type DragSrc = { col: 0|1; idx: number }
 type DropTgt = { col: 0|1; idx: number; pos: 'before'|'after' } | { col: 0|1; idx: 'end' }
 
-type SelectedSymbol = { watchlist: Watchlist; symbol: Sym }
+type SelectedSymbol = { watchlist: Watchlist; symbol: Sym; samples: PriceSample[] }
 type SearchHit = WatchlistSymbolHit
 
 /* ─── per-stock momentum config (mirrors old WatchlistMomentumSettings) ─── */
@@ -148,6 +162,188 @@ function SymbolLogo({ sym, size }: { sym: Pick<Sym, 'ticker'|'logo35x35'|'logo50
     <span className={size === 'large' ? 'wt-detail-logo-letter' : 'wt-sym-icon-letter'}>
       {sym.ticker.charAt(0)}
     </span>
+  )
+}
+
+function linePoints(samples: PriceSample[], liveLtp: number | null): LineData[] {
+  const byTime = new Map<number, number>()
+  for (const sample of samples) {
+    if (!Number.isFinite(sample.ltp) || sample.ltp <= 0) continue
+    byTime.set(Math.floor(sample.ts / 1000), sample.ltp)
+  }
+  if (liveLtp != null && Number.isFinite(liveLtp) && liveLtp > 0) {
+    byTime.set(Math.floor(Date.now() / 1000), liveLtp)
+  }
+  return [...byTime.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([time, value]) => ({ time: time as LineData['time'], value }))
+}
+
+function sortedUniqueCandles(candles: WatchlistSanitizedCandle[]): WatchlistSanitizedCandle[] {
+  const byTime = new Map<number, WatchlistSanitizedCandle>()
+  for (const candle of candles) {
+    if (!Number.isFinite(candle.time)) continue
+    byTime.set(candle.time, candle)
+  }
+  return [...byTime.values()].sort((a, b) => a.time - b.time)
+}
+
+function MiniDetailChart({ selected, height }: { selected: SelectedSymbol; height: number }) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<IChartApi | null>(null)
+  const lineRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const userInteractedRef = useRef(false)
+  const lastAutoFitKeyRef = useRef<string | null>(null)
+  const [candles, setCandles] = useState<WatchlistSanitizedCandle[]>([])
+  const [loadedCandleKey, setLoadedCandleKey] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
+  const candleData = useMemo(() => {
+    return sortedUniqueCandles(
+      mergeLiveTickIntoWatchlistCandles(candles, selected.symbol.ltp),
+    )
+  }, [candles, selected.symbol.ltp])
+  const lineData = useMemo(
+    () => linePoints(selected.samples, selected.symbol.ltp),
+    [selected.samples, selected.symbol.ltp],
+  )
+  const lineVolumeData = useMemo(() => {
+    const source = candleData.length
+      ? candleData
+      : mergeLiveTickIntoWatchlistCandles(samplesToWatchlistCandles(selected.samples), selected.symbol.ltp)
+    return candlesToVolumeData(sortedUniqueCandles(source))
+  }, [candleData, selected.samples, selected.symbol.ltp])
+  const hasVolume = lineVolumeData.some(item => Number(item.value) > 0)
+
+  useEffect(() => {
+    const el = hostRef.current
+    if (!el) return
+    userInteractedRef.current = false
+    lastAutoFitKeyRef.current = null
+    const chart = createChart(el, {
+      width: Math.max(1, el.clientWidth),
+      height: Math.max(80, height),
+      attributionLogo: false,
+      layout: { background: { color: '#FFFFFF' }, textColor: '#9A9A9A' },
+      grid: {
+        vertLines: { color: '#F1F1F1' },
+        horzLines: { color: '#F1F1F1' },
+      },
+      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.24 } },
+      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
+      crosshair: { mode: 0 },
+    })
+    chartRef.current = chart
+    lineRef.current = null
+    volumeRef.current = null
+    const resize = () => chart.applyOptions({ width: Math.max(1, el.clientWidth), height: Math.max(80, height) })
+    const observer = new ResizeObserver(resize)
+    observer.observe(el)
+    const markUserInteracted = () => { userInteractedRef.current = true }
+    el.addEventListener('wheel', markUserInteracted, { passive: true })
+    el.addEventListener('pointerdown', markUserInteracted)
+    return () => {
+      el.removeEventListener('wheel', markUserInteracted)
+      el.removeEventListener('pointerdown', markUserInteracted)
+      observer.disconnect()
+      chart.remove()
+      chartRef.current = null
+      lineRef.current = null
+      volumeRef.current = null
+    }
+  }, [height, selected.symbol.tickKey])
+
+  useEffect(() => {
+    if (loading || loadedCandleKey === selected.symbol.tickKey) return
+    let cancelled = false
+    setLoading(true)
+    fetchWatchlistSymbolCandles({
+      broker: selected.watchlist.broker,
+      accountEnv: selected.watchlist.accountEnv,
+      watchlistId: selected.watchlist.id,
+      tradingsymbol: selected.symbol.ticker,
+      symboltoken: selected.symbol.symboltoken,
+      exchange: selected.symbol.exchange,
+      tickKey: selected.symbol.tickKey,
+    }, 180)
+      .then(next => {
+        if (cancelled) return
+        setCandles(sortedUniqueCandles(next))
+        setLoadedCandleKey(selected.symbol.tickKey)
+      })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [
+    loading,
+    loadedCandleKey,
+    selected.symbol.exchange,
+    selected.symbol.symboltoken,
+    selected.symbol.tickKey,
+    selected.symbol.ticker,
+    selected.watchlist.accountEnv,
+    selected.watchlist.broker,
+    selected.watchlist.id,
+  ])
+
+  useEffect(() => {
+    setCandles([])
+    setLoadedCandleKey(null)
+  }, [selected.symbol.tickKey])
+
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+    if (!lineRef.current) {
+      lineRef.current = chart.addLineSeries({
+        color: '#2F80ED',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+      })
+      volumeRef.current = chart.addHistogramSeries({
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'volume',
+      })
+      chart.priceScale('volume').applyOptions({
+        scaleMargins: { top: 0.78, bottom: 0 },
+      })
+    }
+    lineRef.current.setData(lineData)
+    volumeRef.current?.setData(hasVolume ? lineVolumeData : [])
+    const autoFitKey = `${selected.symbol.tickKey}:line`
+    if (lineData.length && !userInteractedRef.current && lastAutoFitKeyRef.current !== autoFitKey) {
+      chart.timeScale().fitContent()
+      lastAutoFitKeyRef.current = autoFitKey
+    }
+  }, [lineData, lineVolumeData, hasVolume, selected.symbol.tickKey])
+
+  return (
+    <div className="wt-mini-chart">
+      <div ref={hostRef} className="wt-mini-chart-host" />
+      {!lineData.length ? <span className="wt-chart-label">waiting for live price</span> : null}
+      {lineData.length > 0 && !hasVolume ? <span className="wt-volume-note">volume unavailable</span> : null}
+      {loading && lineData.length === 0 ? <span className="wt-chart-label">loading chart…</span> : null}
+    </div>
+  )
+}
+
+function DetailChangeStrip({ sym }: { sym: Sym }) {
+  const windows = WATCHLIST_CHANGE_WINDOWS.filter(window =>
+    ['1m', '2m', '5m', '10m', '30m', '4h'].includes(window.id),
+  )
+  return (
+    <div className="wt-change-strip">
+      {windows.map(window => {
+        const value = sym.changes[window.id]
+        const cls = value == null || Number.isNaN(value) ? 'wt-change-mini' : `wt-change-mini ${value >= 0 ? 'wt-up' : 'wt-down'}`
+        return (
+          <div key={window.id} className="wt-change-mini-card">
+            <span className="wt-change-mini-label">{window.label}</span>
+            <span className={cls}>{formatWindowChangePct(value)}</span>
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -685,18 +881,22 @@ function DetailPanel({ selected, width, onResizeStart }: {
       ) : (
         <div className="wt-detail">
           <div className="wt-detail-top-row">
-            <div className="wt-detail-img-box">
-              <SymbolLogo sym={sym} size="large" />
-            </div>
             <div className="wt-detail-price-card">
-              <div className="wt-detail-ticker">{sym.ticker}</div>
-              <div className="wt-detail-fullname">{sym.name}</div>
-              <div className="wt-detail-price">{sym.price}</div>
-              <div className={`wt-detail-change ${sym.chgUp?'wt-up':'wt-down'}`}>{sym.chg}</div>
+              <div className="wt-detail-title-row">
+                <div className="wt-detail-logo-inline">
+                  <SymbolLogo sym={sym} size="large" />
+                </div>
+                <div className="wt-detail-title-copy">
+                  <div className="wt-detail-ticker">{sym.ticker}</div>
+                  <div className="wt-detail-fullname">{sym.name}</div>
+                  <div className="wt-detail-price">{sym.price}</div>
+                  <div className={`wt-detail-change ${sym.chgUp?'wt-up':'wt-down'}`}>{sym.chg}</div>
+                </div>
+              </div>
             </div>
           </div>
           <div className="wt-detail-chart-box" style={{ height: chartHeight }}>
-            <span className="wt-chart-label">small chart</span>
+            <MiniDetailChart selected={selected} height={chartHeight} />
             <div className="wt-chart-resize-handle" onMouseDown={handleChartResizeStart} title="Drag to resize chart" />
           </div>
           <div className="wt-detail-trade-box">
@@ -709,6 +909,7 @@ function DetailPanel({ selected, width, onResizeStart }: {
               onDeploy={deploy}
             />
           </div>
+          <DetailChangeStrip sym={sym} />
         </div>
       )}
     </div>
@@ -727,6 +928,7 @@ export default function WatchAndTrade() {
     refreshWatchlists,
     ticks,
     windowChanges,
+    historyRef,
   } = useWatchlistStream()
   const [backendPanels, setBackendPanels] = useState<BackendPanel[]>([])
   const [panelsReady, setPanelsReady] = useState(false)
@@ -786,6 +988,7 @@ export default function WatchAndTrade() {
       logo50x50: symbol.logo50x50,
       logo150x150: symbol.logo150x150,
       assetClass: symbol.internal_asset_class_name,
+      changes: changes ?? {},
     }
   }, [ticks, windowChanges])
 
@@ -825,7 +1028,13 @@ export default function WatchAndTrade() {
     ? allWatchlists.find(wl => wl.symbols.some(sym => sym.symboltoken === selectedSym.symboltoken)) ?? null
     : null
   const selectedSymbolId = selectedSym?.id ?? null
-  const selected = selectedSym && selectedWatchlist ? { watchlist: selectedWatchlist, symbol: selectedSym } : null
+  const selected = selectedSym && selectedWatchlist
+    ? {
+      watchlist: selectedWatchlist,
+      symbol: selectedSym,
+      samples: historyRef.current[selectedSym.tickKey] ?? [],
+    }
+    : null
 
   useEffect(() => {
     if (!activePanel || state.panel_id) return
