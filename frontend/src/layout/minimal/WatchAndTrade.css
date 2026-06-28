@@ -370,7 +370,11 @@
   background: #E8E8E8; border: 1px solid #C8C8C8;
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 9px; font-weight: 700; color: #404040; flex-shrink: 0;
+  overflow: hidden;
 }
+.wt-sym-icon-letter { font-size: 9px; font-weight: 700; color: #404040; }
+.wt-symbol-logo { width: 100%; height: 100%; object-fit: cover; display: block; }
+.wt-symbol-logo--large { width: 52px; height: 52px; border-radius: 12px; object-fit: contain; }
 .wt-sym-ticker { font-size: 11.5px; font-weight: 700; color: #202020; }
 .wt-sym-name-small { font-size: 9.5px; color: #AAAAAA; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -436,8 +440,8 @@
 
 .wt-detail-img-box {
   width: 60px; min-width: 60px; height: 76px;
-  border: 1.5px solid var(--ms-border, #303030);
-  border-radius: 7px; background: #F5F5F5;
+  border: none;
+  border-radius: 0; background: transparent;
   display: flex; align-items: center; justify-content: center; flex-shrink: 0;
 }
 .wt-detail-logo-letter { font-size: 22px; font-weight: 800; color: #404040; }

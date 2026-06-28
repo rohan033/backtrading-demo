@@ -35,6 +35,8 @@ type Sym = {
   c5m: string; c5mUp: boolean
   chg: string; chgUp: boolean
   tickKey: string; ltp: number | null
+  logo35x35?: string | null; logo50x50?: string | null; logo150x150?: string | null
+  assetClass?: string | null
 }
 
 type Watchlist = {
@@ -51,7 +53,7 @@ type DragSrc = { col: 0|1; idx: number }
 type DropTgt = { col: 0|1; idx: number; pos: 'before'|'after' } | { col: 0|1; idx: 'end' }
 
 type SelectedSymbol = { watchlist: Watchlist; symbol: Sym }
-type SearchHit = WatchlistSymbolHit & { name?: string; symbol?: string }
+type SearchHit = WatchlistSymbolHit
 
 /* ─── per-stock momentum config (mirrors old WatchlistMomentumSettings) ─── */
 type MomentumCfg = {
@@ -125,6 +127,28 @@ function toMomentumConfig(cfg: MomentumCfg): MomentumConfig {
     initialThreshold: cfg.entryThreshold,
     maxCapital: cfg.maxCapital,
   }
+}
+
+function SymbolLogo({ sym, size }: { sym: Pick<Sym, 'ticker'|'logo35x35'|'logo50x50'|'logo150x150'>; size: 'small'|'large' }) {
+  const [failed, setFailed] = useState(false)
+  const src = size === 'large'
+    ? (sym.logo150x150 || sym.logo50x50 || sym.logo35x35)
+    : (sym.logo35x35 || sym.logo50x50 || sym.logo150x150)
+  if (src && !failed) {
+    return (
+      <img
+        src={src}
+        alt={sym.ticker}
+        className={size === 'large' ? 'wt-symbol-logo wt-symbol-logo--large' : 'wt-symbol-logo'}
+        onError={() => setFailed(true)}
+      />
+    )
+  }
+  return (
+    <span className={size === 'large' ? 'wt-detail-logo-letter' : 'wt-sym-icon-letter'}>
+      {sym.ticker.charAt(0)}
+    </span>
+  )
 }
 
 /* ═══════════════════════════════════════════════════════════════
@@ -325,7 +349,7 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
                 className={`wt-sym-row ${selectedSymbolId===sym.id?'wt-sym-row--selected':''}`}
                 onClick={()=>onSelectSymbol(sym.id)}>
                 <td className="wt-sym-td wt-sym-td--sym">
-                  <span className="wt-sym-icon">{sym.ticker.charAt(0)}</span>
+                  <span className="wt-sym-icon"><SymbolLogo sym={sym} size="small" /></span>
                   <div>
                     <div className="wt-sym-ticker">{sym.ticker}</div>
                     <div className="wt-sym-name-small">{sym.name}</div>
@@ -662,7 +686,7 @@ function DetailPanel({ selected, width, onResizeStart }: {
         <div className="wt-detail">
           <div className="wt-detail-top-row">
             <div className="wt-detail-img-box">
-              <span className="wt-detail-logo-letter">{sym.ticker.charAt(0)}</span>
+              <SymbolLogo sym={sym} size="large" />
             </div>
             <div className="wt-detail-price-card">
               <div className="wt-detail-ticker">{sym.ticker}</div>
@@ -710,7 +734,7 @@ export default function WatchAndTrade() {
   const [columnMap, setColumnMap] = useState<Record<string, 0|1>>(() => loadColumnMap())
   const [dragSrc, setDragSrc] = useState<DragSrc|null>(null)
   const [dropTgt, setDropTgt] = useState<DropTgt|null>(null)
-  const [detailWidth, setDetailWidth] = useState(380)
+  const [detailWidth, setDetailWidth] = useState(440)
   const [detailHidden, setDetailHidden] = useState(false)
   const resizingRef = useRef(false)
 
@@ -758,6 +782,10 @@ export default function WatchAndTrade() {
       chgUp: (dayChange ?? 0) >= 0,
       tickKey,
       ltp: tick?.ltp ?? null,
+      logo35x35: symbol.logo35x35,
+      logo50x50: symbol.logo50x50,
+      logo150x150: symbol.logo150x150,
+      assetClass: symbol.internal_asset_class_name,
     }
   }, [ticks, windowChanges])
 
@@ -929,6 +957,13 @@ export default function WatchAndTrade() {
         symboltoken: picked.symboltoken,
         tradingsymbol: picked.tradingsymbol,
         exchange: picked.exchange || 'NSE',
+        symbol: picked.name || picked.symbol || picked.tradingsymbol,
+        internal_asset_class_name: picked.internalAssetClassName ?? null,
+        instrument_display_name: picked.instrumentDisplayName || picked.name || picked.tradingsymbol,
+        logo35x35: picked.logo35x35 ?? null,
+        logo50x50: picked.logo50x50 ?? null,
+        logo150x150: picked.logo150x150 ?? null,
+        raw_metadata: picked.raw ?? null,
       })
       patchWatchlist(updated)
     } catch (err) {

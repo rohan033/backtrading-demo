@@ -38,6 +38,14 @@ export type WatchlistSymbolHit = {
   symboltoken: string
   tradingsymbol: string
   exchange: string
+  name?: string
+  symbol?: string
+  internalAssetClassName?: string | null
+  instrumentDisplayName?: string | null
+  logo35x35?: string | null
+  logo50x50?: string | null
+  logo150x150?: string | null
+  raw?: Record<string, unknown> | null
 }
 
 /**

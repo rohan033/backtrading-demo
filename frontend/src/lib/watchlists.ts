@@ -4,6 +4,13 @@ export type WatchlistSymbol = {
   tradingsymbol: string
   exchange: string
   symbol: string
+  internal_asset_class_name?: string | null
+  instrument_display_name?: string | null
+  logo35x35?: string | null
+  logo50x50?: string | null
+  logo150x150?: string | null
+  raw_metadata_json?: string | null
+  metadata_updated_at?: string | null
 }
 
 export type WatchlistBroker = 'angel' | 'etoro'
@@ -117,7 +124,18 @@ export async function deleteWatchlist(id: string): Promise<void> {
 
 export async function addWatchlistSymbol(
   watchlistId: string,
-  symbol: { symboltoken: string; tradingsymbol: string; exchange: string },
+  symbol: {
+    symboltoken: string
+    tradingsymbol: string
+    exchange: string
+    symbol?: string
+    internal_asset_class_name?: string | null
+    instrument_display_name?: string | null
+    logo35x35?: string | null
+    logo50x50?: string | null
+    logo150x150?: string | null
+    raw_metadata?: Record<string, unknown> | null
+  },
 ): Promise<Watchlist> {
   return parseJson(
     await fetch(`${API}/${watchlistId}/symbols`, {

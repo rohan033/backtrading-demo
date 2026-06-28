@@ -36,6 +36,47 @@ def test_watchlist_crud():
         assert store.list_watchlists() == []
 
 
+def test_watchlist_symbol_metadata_is_persisted_and_updated():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "metadata.db")
+        store = WatchlistStore(db_path=path)
+
+        created = store.create_watchlist("Crypto", broker="etoro")
+        updated = store.add_symbol(
+            created["id"],
+            symboltoken="100000",
+            tradingsymbol="BTC",
+            exchange="ETORO",
+            symbol="Bitcoin",
+            internal_asset_class_name="Crypto",
+            instrument_display_name="Bitcoin",
+            logo35x35="https://example.test/btc-35.png",
+            logo50x50="https://example.test/btc-50.png",
+            logo150x150="https://example.test/btc-150.png",
+            raw_metadata={"internalInstrumentId": 100000},
+        )
+
+        symbol = updated["symbols"][0]
+        assert symbol["internal_asset_class_name"] == "Crypto"
+        assert symbol["instrument_display_name"] == "Bitcoin"
+        assert symbol["logo35x35"] == "https://example.test/btc-35.png"
+        assert symbol["logo50x50"] == "https://example.test/btc-50.png"
+        assert symbol["logo150x150"] == "https://example.test/btc-150.png"
+        assert symbol["raw_metadata_json"] == '{"internalInstrumentId":100000}'
+        assert symbol["metadata_updated_at"]
+
+        refreshed = store.add_symbol(
+            created["id"],
+            symboltoken="100000",
+            tradingsymbol="BTC",
+            exchange="ETORO",
+            logo150x150="https://example.test/btc-new.png",
+        )
+        assert len(refreshed["symbols"]) == 1
+        assert refreshed["symbols"][0]["logo35x35"] == "https://example.test/btc-35.png"
+        assert refreshed["symbols"][0]["logo150x150"] == "https://example.test/btc-new.png"
+
+
 def test_watchlist_panels():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "panels.db")

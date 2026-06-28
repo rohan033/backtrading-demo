@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import uuid
@@ -24,8 +25,12 @@ class WatchlistStore:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
-        self._ensure_watchlist_columns(conn)
-        self._ensure_panel_schema(conn)
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='watchlists'"
+        ).fetchone():
+            self._ensure_watchlist_columns(conn)
+            self._ensure_symbol_metadata_columns(conn)
+            self._ensure_panel_schema(conn)
         return conn
 
     def _init_database(self) -> None:
@@ -49,6 +54,13 @@ class WatchlistStore:
                 tradingsymbol TEXT NOT NULL,
                 exchange TEXT NOT NULL DEFAULT 'NSE',
                 symbol TEXT,
+                internal_asset_class_name TEXT,
+                instrument_display_name TEXT,
+                logo35x35 TEXT,
+                logo50x50 TEXT,
+                logo150x150 TEXT,
+                raw_metadata_json TEXT,
+                metadata_updated_at TEXT,
                 position INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (watchlist_id) REFERENCES watchlists(id) ON DELETE CASCADE,
@@ -67,6 +79,9 @@ class WatchlistStore:
             );
             """
         )
+        self._ensure_watchlist_columns(conn)
+        self._ensure_symbol_metadata_columns(conn)
+        self._ensure_panel_schema(conn)
         conn.commit()
         conn.close()
 
@@ -126,6 +141,34 @@ class WatchlistStore:
             conn.execute(
                 "ALTER TABLE watchlists ADD COLUMN account_env TEXT NOT NULL DEFAULT 'live'"
             )
+        conn.commit()
+
+    def _ensure_symbol_metadata_columns(self, conn: sqlite3.Connection) -> None:
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='watchlist_symbols'"
+        ).fetchone()
+        if not table:
+            return
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(watchlist_symbols)")}
+        additions = {
+            "internal_asset_class_name": "TEXT",
+            "instrument_display_name": "TEXT",
+            "logo35x35": "TEXT",
+            "logo50x50": "TEXT",
+            "logo150x150": "TEXT",
+            "raw_metadata_json": "TEXT",
+            "metadata_updated_at": "TEXT",
+        }
+        for name, type_name in additions.items():
+            if name not in columns:
+                try:
+                    conn.execute(f"ALTER TABLE watchlist_symbols ADD COLUMN {name} {type_name}")
+                except sqlite3.OperationalError as exc:
+                    # Startup can race under concurrent FastAPI requests. If another
+                    # connection added the column after our PRAGMA snapshot, this
+                    # migration is already satisfied.
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
         conn.commit()
 
     @staticmethod
@@ -299,6 +342,13 @@ class WatchlistStore:
             "tradingsymbol": data["tradingsymbol"],
             "exchange": data["exchange"],
             "symbol": data.get("symbol") or data["tradingsymbol"],
+            "internal_asset_class_name": data.get("internal_asset_class_name"),
+            "instrument_display_name": data.get("instrument_display_name"),
+            "logo35x35": data.get("logo35x35"),
+            "logo50x50": data.get("logo50x50"),
+            "logo150x150": data.get("logo150x150"),
+            "raw_metadata_json": data.get("raw_metadata_json"),
+            "metadata_updated_at": data.get("metadata_updated_at"),
         }
 
     def create_watchlist(
@@ -394,21 +444,43 @@ class WatchlistStore:
         tradingsymbol: str,
         exchange: str = "NSE",
         symbol: str | None = None,
+        internal_asset_class_name: str | None = None,
+        instrument_display_name: str | None = None,
+        logo35x35: str | None = None,
+        logo50x50: str | None = None,
+        logo150x150: str | None = None,
+        raw_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if not self.get_watchlist(watchlist_id):
             return None
         symbol_id = str(uuid.uuid4())
         now = _now_utc()
         conn = self._connect()
+        self._ensure_symbol_metadata_columns(conn)
         position = conn.execute(
             "SELECT COUNT(*) AS c FROM watchlist_symbols WHERE watchlist_id = ?",
             (watchlist_id,),
         ).fetchone()["c"]
+        has_metadata = any((
+            internal_asset_class_name,
+            instrument_display_name,
+            logo35x35,
+            logo50x50,
+            logo150x150,
+            raw_metadata,
+        ))
+        raw_metadata_json = json.dumps(raw_metadata, separators=(",", ":")) if raw_metadata else None
+        metadata_updated_at = now if has_metadata else None
         conn.execute(
             """
             INSERT OR IGNORE INTO watchlist_symbols
-                (id, watchlist_id, symboltoken, tradingsymbol, exchange, symbol, position, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    id, watchlist_id, symboltoken, tradingsymbol, exchange, symbol,
+                    internal_asset_class_name, instrument_display_name,
+                    logo35x35, logo50x50, logo150x150, raw_metadata_json,
+                    metadata_updated_at, position, created_at
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 symbol_id,
@@ -417,10 +489,43 @@ class WatchlistStore:
                 tradingsymbol.strip().upper(),
                 (exchange or "NSE").upper(),
                 (symbol or tradingsymbol).strip().upper(),
+                internal_asset_class_name,
+                instrument_display_name,
+                logo35x35,
+                logo50x50,
+                logo150x150,
+                raw_metadata_json,
+                metadata_updated_at,
                 position,
                 now,
             ),
         )
+        if has_metadata:
+            conn.execute(
+                """
+                UPDATE watchlist_symbols
+                SET
+                    internal_asset_class_name = COALESCE(?, internal_asset_class_name),
+                    instrument_display_name = COALESCE(?, instrument_display_name),
+                    logo35x35 = COALESCE(?, logo35x35),
+                    logo50x50 = COALESCE(?, logo50x50),
+                    logo150x150 = COALESCE(?, logo150x150),
+                    raw_metadata_json = COALESCE(?, raw_metadata_json),
+                    metadata_updated_at = ?
+                WHERE watchlist_id = ? AND symboltoken = ?
+                """,
+                (
+                    internal_asset_class_name,
+                    instrument_display_name,
+                    logo35x35,
+                    logo50x50,
+                    logo150x150,
+                    raw_metadata_json,
+                    metadata_updated_at,
+                    watchlist_id,
+                    str(symboltoken),
+                ),
+            )
         conn.execute(
             "UPDATE watchlists SET updated_at = ? WHERE id = ?",
             (_now_utc(), watchlist_id),

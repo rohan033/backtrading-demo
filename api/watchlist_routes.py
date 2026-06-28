@@ -31,6 +31,67 @@ class AddSymbolRequest(BaseModel):
     tradingsymbol: str
     exchange: str = "NSE"
     symbol: str | None = None
+    internal_asset_class_name: str | None = None
+    instrument_display_name: str | None = None
+    logo35x35: str | None = None
+    logo50x50: str | None = None
+    logo150x150: str | None = None
+    raw_metadata: dict | None = None
+
+
+def _metadata_from_etoro_record(record: dict | None) -> dict:
+    if not isinstance(record, dict):
+        return {}
+    return {
+        "internal_asset_class_name": record.get("internalAssetClassName") or record.get("internal_asset_class_name"),
+        "instrument_display_name": (
+            record.get("internalInstrumentDisplayName")
+            or record.get("instrumentDisplayName")
+            or record.get("instrument_display_name")
+            or record.get("displayName")
+        ),
+        "logo35x35": record.get("logo35x35"),
+        "logo50x50": record.get("logo50x50"),
+        "logo150x150": record.get("logo150x150"),
+    }
+
+
+async def _fill_missing_etoro_metadata(req: AddSymbolRequest, account_env: str) -> dict:
+    metadata = {
+        "internal_asset_class_name": req.internal_asset_class_name,
+        "instrument_display_name": req.instrument_display_name,
+        "logo35x35": req.logo35x35,
+        "logo50x50": req.logo50x50,
+        "logo150x150": req.logo150x150,
+    }
+    raw = req.raw_metadata if isinstance(req.raw_metadata, dict) else None
+    for key, value in _metadata_from_etoro_record(raw).items():
+        metadata[key] = metadata.get(key) or value
+    if metadata.get("logo35x35") or metadata.get("logo50x50") or metadata.get("logo150x150"):
+        return metadata
+
+    try:
+        instrument_id = int(req.symboltoken)
+    except (TypeError, ValueError):
+        return metadata
+
+    try:
+        from brokers.etoro.trading_client import EtoroTradingClient
+
+        env = "demo" if (account_env or "demo").lower() == "demo" else "live"
+        client = EtoroTradingClient(account_env=env)
+        client.generate_session()
+        records = await client.aget_instrument_display_data([instrument_id])
+    except Exception:
+        return metadata
+
+    if records:
+        display_metadata = _metadata_from_etoro_record(records[0])
+        for key, value in display_metadata.items():
+            metadata[key] = metadata.get(key) or value
+        if raw is None:
+            req.raw_metadata = records[0]
+    return metadata
 
 
 @router.get("", operation_id="list_watchlists", summary="List all watchlists")
@@ -84,14 +145,26 @@ def delete_watchlist(watchlist_id: str):
 
 
 @router.post("/{watchlist_id}/symbols", operation_id="add_watchlist_symbol", summary="Add symbol to watchlist")
-def add_watchlist_symbol(watchlist_id: str, req: AddSymbolRequest):
+async def add_watchlist_symbol(watchlist_id: str, req: AddSymbolRequest):
     store = get_watchlist_store()
+    watchlist = store.get_watchlist(watchlist_id)
+    if not watchlist:
+        raise HTTPException(status_code=404, detail="Watchlist not found")
+    metadata = {}
+    if (watchlist.get("broker") or "").lower() == "etoro":
+        metadata = await _fill_missing_etoro_metadata(req, watchlist.get("account_env") or "demo")
     row = store.add_symbol(
         watchlist_id,
         symboltoken=req.symboltoken,
         tradingsymbol=req.tradingsymbol,
         exchange=req.exchange,
         symbol=req.symbol,
+        internal_asset_class_name=metadata.get("internal_asset_class_name") or req.internal_asset_class_name,
+        instrument_display_name=metadata.get("instrument_display_name") or req.instrument_display_name,
+        logo35x35=metadata.get("logo35x35") or req.logo35x35,
+        logo50x50=metadata.get("logo50x50") or req.logo50x50,
+        logo150x150=metadata.get("logo150x150") or req.logo150x150,
+        raw_metadata=req.raw_metadata,
     )
     if not row:
         raise HTTPException(status_code=404, detail="Watchlist not found")

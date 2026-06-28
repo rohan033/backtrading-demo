@@ -54,6 +54,15 @@ def etoro_instrument_to_search_row(instrument: dict) -> dict:
         "symboltoken": str(instrument_id) if instrument_id is not None else "",
         "exchange": exchange,
         "name": instrument.get("displayName") or instrument.get("instrumentDisplayName") or symbol,
+        "internalAssetClassName": instrument.get("internalAssetClassName"),
+        "instrumentDisplayName": (
+            instrument.get("internalInstrumentDisplayName")
+            or instrument.get("instrumentDisplayName")
+            or instrument.get("displayName")
+        ),
+        "logo35x35": instrument.get("logo35x35"),
+        "logo50x50": instrument.get("logo50x50"),
+        "logo150x150": instrument.get("logo150x150"),
         "raw": instrument,
     }
 
