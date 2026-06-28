@@ -2430,7 +2430,7 @@ export function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, o
   )
 }
 
-export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onCancel }) {
+export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onCancel, variant }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [selectedStock, setSelectedStock] = useState(null)
@@ -2746,7 +2746,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
   const actionBusy = submitting || startingLive
 
   return (
-    <div className="p-5 max-w-6xl">
+    <div className={`${variant === 'minimal' ? 'create-execution-panel ' : ''}p-5 max-w-6xl`}>
       <CountdownConfirmOverlay
         open={showStartConfirm}
         seconds={10}

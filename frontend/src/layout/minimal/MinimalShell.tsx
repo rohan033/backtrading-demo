@@ -11,6 +11,7 @@ import { formatWindowChangePct } from '../../lib/watchlistChangeColumns'
 import { formatBrokerMoney } from '../../lib/currency'
 import { watchlistTickKey, type Watchlist } from '../../lib/watchlists'
 import WatchAndTrade from './WatchAndTrade'
+import Strategies from './Strategies'
 import MarketClockBar from './MarketClockBar'
 import { useUrlState } from './useUrlState'
 
@@ -141,6 +142,8 @@ function MainPanel({ tab, setTab }: { tab: MainTab; setTab: (t: MainTab) => void
       <div className="ms-body" style={{ padding: 0, overflow: 'hidden' }}>
         {tab === 'watch-trade' ? (
           <WatchAndTrade />
+        ) : tab === 'strategies' ? (
+          <Strategies />
         ) : (
           <div style={{ height: '100%', background: '#EBEBEB' }} />
         )}
