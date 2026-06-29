@@ -578,9 +578,59 @@
 
 .hm-chart-range-hint {
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 4px 10px 6px;
   font-size: 9px;
   color: #888;
+}
+
+.hm-chart-range-hint-clear {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px solid #D8D8D8;
+  border-radius: 999px;
+  background: #fff;
+  color: #555;
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.hm-chart-range-hint-clear:hover {
+  background: #F3F3F3;
+  color: #202020;
+}
+
+.hm-chart-range-clear {
+  position: absolute;
+  top: 6px;
+  z-index: 4;
+  transform: translateX(-100%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid #C8C8C8;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.95);
+  color: #555;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.hm-chart-range-clear:hover {
+  background: #fff;
+  color: #202020;
+  border-color: #999;
+}
+
+.hm-chart-range-menu-item--muted {
+  color: #666;
 }
 
 .hm-chat-context-chip {

@@ -36,6 +36,7 @@ import {
 } from '../../lib/researchChatTags'
 import {
   buildChartRangeAgentPrompt,
+  buildChartRangeChatDraft,
   formatChartRangeLabel,
   type HomeChartChatContext,
 } from '../../lib/homeChartChatContext'
@@ -117,12 +118,14 @@ function HomeChart({
   chartRange,
   onChartRangeChange,
   onAddRangeToChat,
+  onClearChartRange,
 }: {
   selection: HomeSelection
   ltp: number | null
   chartRange: ChartTimeRange | null
   onChartRangeChange: (range: ChartTimeRange | null) => void
   onAddRangeToChat: (range: ChartTimeRange) => void
+  onClearChartRange: () => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -266,7 +269,18 @@ function HomeChart({
               onAddToChat={onAddRangeToChat}
             />
           </div>
-          <div className="hm-chart-range-hint">Shift+drag to select a range · right-click selection to add to AI chat</div>
+          <div className="hm-chart-range-hint">
+            <span>Shift+drag to select · right-click for options · Esc to clear</span>
+            {chartRange ? (
+              <button
+                type="button"
+                className="hm-chart-range-hint-clear"
+                onClick={onClearChartRange}
+              >
+                Clear selection
+              </button>
+            ) : null}
+          </div>
           {!lineData.length && !loading ? (
             <span className="hm-chart-label">waiting for live price</span>
           ) : null}
@@ -471,7 +485,7 @@ function HomeAiDrawer({
               value={chatDraft}
               placeholder={
                 chartChatContext
-                  ? '@chartanalysis What happened in this window?'
+                  ? 'Add your question about this chart window…'
                   : selection
                     ? `@insidertrading Analyse ${selection.tradingsymbol}…`
                     : 'Shift+drag on chart, then right-click to add range…'
@@ -721,6 +735,10 @@ export default function Home() {
     if (ok) setChatDraft('')
   }
 
+  const clearChartSelection = useCallback(() => {
+    setChartRange(null)
+  }, [])
+
   const clearChartChatContext = useCallback(() => {
     setChartChatContext(null)
     setChartRange(null)
@@ -728,29 +746,35 @@ export default function Home() {
 
   const addStockRangeToChat = useCallback((range: ChartTimeRange) => {
     if (!selection) return
-    setChartRange(range)
-    setChartChatContext({
+    const context: HomeChartChatContext = {
       ...range,
       kind: 'stock',
+      broker: selection.broker,
+      accountEnv: selection.accountEnv,
       symbol: selection.tradingsymbol,
       displayName: selection.displayName,
-    })
+    }
+    setChartRange(range)
+    setChartChatContext(context)
     setAiDrawerCollapsed(false)
     localStorage.setItem(AI_DRAWER_COLLAPSED_KEY, 'false')
-    setChatDraft(prev => insertResearchTagMention(prev, '@chartanalysis'))
+    setChatDraft(buildChartRangeChatDraft(context))
   }, [selection])
 
   const addIndicesRangeToChat = useCallback((range: ChartTimeRange) => {
-    setChartRange(range)
-    setChartChatContext({
+    const context: HomeChartChatContext = {
       ...range,
       kind: 'indices',
+      broker,
+      accountEnv,
       indices: ['SPX500', 'NSDQ100', 'DJ30'],
-    })
+    }
+    setChartRange(range)
+    setChartChatContext(context)
     setAiDrawerCollapsed(false)
     localStorage.setItem(AI_DRAWER_COLLAPSED_KEY, 'false')
-    setChatDraft(prev => insertResearchTagMention(prev, '@chartanalysis'))
-  }, [])
+    setChatDraft(buildChartRangeChatDraft(context))
+  }, [accountEnv, broker])
 
   useEffect(() => {
     hydrateMessages([])
@@ -913,6 +937,7 @@ export default function Home() {
                     chartRange={chartRange}
                     onChartRangeChange={setChartRange}
                     onAddRangeToChat={addStockRangeToChat}
+                    onClearChartRange={clearChartSelection}
                   />
                 </>
               ) : (
@@ -922,6 +947,7 @@ export default function Home() {
                   chartRange={chartRange}
                   onChartRangeChange={setChartRange}
                   onAddRangeToChat={addIndicesRangeToChat}
+                  onClearChartRange={clearChartSelection}
                 />
               )}
             </section>

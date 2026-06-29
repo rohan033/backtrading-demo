@@ -81,12 +81,14 @@ export default function HomeIndicesChart({
   chartRange,
   onChartRangeChange,
   onAddRangeToChat,
+  onClearChartRange,
 }: {
   broker: WatchlistBroker
   accountEnv: string
   chartRange: ChartTimeRange | null
   onChartRangeChange: (range: ChartTimeRange | null) => void
   onAddRangeToChat: (range: ChartTimeRange) => void
+  onClearChartRange: () => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -419,7 +421,18 @@ export default function HomeIndicesChart({
           <span className="hm-chart-label">No index history available</span>
         ) : null}
       </div>
-      <div className="hm-chart-range-hint">Shift+drag to select a range · right-click selection to add to AI chat</div>
+      <div className="hm-chart-range-hint">
+        <span>Shift+drag to select · right-click for options · Esc to clear</span>
+        {chartRange ? (
+          <button
+            type="button"
+            className="hm-chart-range-hint-clear"
+            onClick={onClearChartRange}
+          >
+            Clear selection
+          </button>
+        ) : null}
+      </div>
       {legend.length ? (
         <div className="hm-indices-legend-wrap">
           <button

@@ -101,6 +101,20 @@ export default function HomeChartRangeSelector({
   }, [chartRef, committedRange, updateBand])
 
   useEffect(() => {
+    if (activeRange == null) {
+      setLocalRange(null)
+      setMenu(null)
+    }
+  }, [activeRange])
+
+  const clearSelection = useCallback(() => {
+    setDrag(null)
+    setLocalRange(null)
+    setMenu(null)
+    onRangeChange?.(null)
+  }, [onRangeChange])
+
+  useEffect(() => {
     if (!enabled) {
       setDrag(null)
       setLocalRange(null)
@@ -110,18 +124,11 @@ export default function HomeChartRangeSelector({
   }, [enabled, onRangeChange])
 
   useEffect(() => {
-    const closeMenu = () => setMenu(null)
-    window.addEventListener('click', closeMenu)
-    window.addEventListener('scroll', closeMenu, true)
-    return () => {
-      window.removeEventListener('click', closeMenu)
-      window.removeEventListener('scroll', closeMenu, true)
-    }
-  }, [])
-
-  useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Shift') setShiftHeld(true)
+      if (event.key === 'Escape' && committedRange) {
+        clearSelection()
+      }
     }
     const handleKeyUp = (event: KeyboardEvent) => {
       if (event.key === 'Shift') setShiftHeld(false)
@@ -131,6 +138,16 @@ export default function HomeChartRangeSelector({
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('keyup', handleKeyUp)
+    }
+  }, [clearSelection, committedRange])
+
+  useEffect(() => {
+    const closeMenu = () => setMenu(null)
+    window.addEventListener('click', closeMenu)
+    window.addEventListener('scroll', closeMenu, true)
+    return () => {
+      window.removeEventListener('click', closeMenu)
+      window.removeEventListener('scroll', closeMenu, true)
     }
   }, [])
 
@@ -233,6 +250,21 @@ export default function HomeChartRangeSelector({
           }}
         />
       ) : null}
+      {visibleBand && committedRange && !drag ? (
+        <button
+          type="button"
+          className="hm-chart-range-clear"
+          style={{ left: `${visibleBand.left + visibleBand.width - 8}px` }}
+          onClick={event => {
+            event.stopPropagation()
+            clearSelection()
+          }}
+          aria-label="Clear chart selection"
+          title="Clear selection"
+        >
+          ×
+        </button>
+      ) : null}
       {menu && committedRange ? (
         <div
           className="hm-chart-range-menu"
@@ -248,6 +280,13 @@ export default function HomeChartRangeSelector({
             }}
           >
             Add to AI chat
+          </button>
+          <button
+            type="button"
+            className="hm-chart-range-menu-item hm-chart-range-menu-item--muted"
+            onClick={() => clearSelection()}
+          >
+            Clear selection
           </button>
         </div>
       ) : null}
