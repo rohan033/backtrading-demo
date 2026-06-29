@@ -1,24 +1,128 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import {
+  createChart,
+  type IChartApi,
+  type ISeriesApi,
+  type LineData,
+} from 'lightweight-charts'
 import './Strategies.css'
 import LiveLogPanel from '../../components/LiveLogPanel'
-import { TradingActivityFeed } from '../../components/TradingActivityFeed'
 import type { StrategyTableRow } from '../../components/StrategiesTable'
 import {
   CreateExecutionPanel,
   ExecutionProvider,
-  StrategyChartPanel,
-  computeExecutionLevels,
-  formatOrderQuantity,
+  buildChartSeries,
+  getPlaneStream,
+  resolveExecutionStream,
   startControlledExecution,
   unscheduleControlledExecution,
   useExecution,
 } from '../../ExecutionWorkspace'
+import { useWatchlistStream } from '../../context/WatchlistStreamContext'
 import { executionsToStrategyRows } from '../../lib/strategyRows'
 import { resolveExecutionSourceId, resolveExecutionSourceMetaId } from '../../lib/executionSources'
 import { formatDbTimestamp, parseDbTimestamp } from '../../lib/datetime'
-import { formatBrokerCompactMoney, formatBrokerPrice } from '../../lib/currency'
 import { formatScheduledStart, scheduleSummary } from '../../lib/tradingSchedule'
+import { findWatchlistFeedMatch, buildWatchlistLinePoints, resolveWatchlistSymbolRef } from '../../lib/watchlistFeedReuse'
+import {
+  fetchWatchlistSymbolCandles,
+  mergePriceSamples,
+  ohlcCandlesToPriceSamples,
+  WATCHLIST_CHART_INITIAL_COUNT,
+  type WatchlistSanitizedCandle,
+} from '../../lib/watchlistCandles'
+import type { WatchlistChartSymbol } from '../../lib/watchlistUniqueSymbols'
+import { mergeActivityEvents, type ActivityItem } from '../../lib/tradingActivity'
+import { computeLivePnl, formatPnl } from '../../lib/positionPnl'
+import {
+  closeExecutionPosition,
+  loadExecutionPositions,
+  type ExecutionPositionRow,
+} from '../../lib/executionPositions'
+import { watchlistTickKey, type Watchlist } from '../../lib/watchlists'
 import { useUrlState } from './useUrlState'
+
+const CONTROL_API = '/api/control'
+const DEFAULT_STRATEGY_CHART_HEIGHT = 340
+const MIN_STRATEGY_CHART_HEIGHT = 120
+const MAX_STRATEGY_CHART_HEIGHT = 560
+
+function formatShortCreated(raw: string): string {
+  const date = parseDbTimestamp(raw)
+  if (!date) return ''
+  return date.toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function compactActivityText(item: ActivityItem): string {
+  const title = item.title.trim()
+  const detail = item.detail?.trim()
+  if (!detail || detail === 'Strategy event') return title
+
+  const parts = detail.split(' · ').map(part => part.trim()).filter(Boolean)
+  const orderIdx = parts.findIndex(part => /^order\s+\d+/i.test(part))
+  const orderPart = orderIdx >= 0 ? parts[orderIdx] : null
+  const tailParts = orderIdx >= 0 ? parts.slice(orderIdx + 1) : parts.filter(part => !/^order\s+\d+/i.test(part))
+  const tail = tailParts.length ? ` · ${tailParts.join(' · ')}` : ''
+
+  if (orderPart && /order/i.test(title)) {
+    const base = title.replace(/\s·\s*[A-Z0-9.-]+$/i, '').trim()
+    const orderNum = orderPart.replace(/^order\s+/i, '')
+    return `${base} · #${orderNum}${tail}`
+  }
+
+  if (detail.includes(title) || title.includes(detail)) return detail
+  return `${title} · ${detail}`
+}
+
+function resolveExecutionChartSymbol(
+  watchlists: Watchlist[],
+  execution: Record<string, unknown>,
+): WatchlistChartSymbol | null {
+  const ref = resolveWatchlistSymbolRef(watchlists, {
+    broker: execution.broker as string,
+    account_env: execution.account_env as string,
+    token: execution.token as string,
+    symbol: execution.symbol as string,
+  })
+  if (!ref) return null
+
+  for (const watchlist of watchlists) {
+    const wlBroker = (watchlist.broker || 'angel').toLowerCase() === 'etoro' ? 'etoro' : 'angel'
+    const wlEnv = watchlist.account_env || (wlBroker === 'etoro' ? 'demo' : 'live')
+    if (wlBroker !== ref.broker || wlEnv !== ref.accountEnv) continue
+
+    for (const symbol of watchlist.symbols) {
+      if (symbol.symboltoken !== ref.symboltoken) continue
+      return {
+        tickKey: watchlistTickKey(ref.broker, ref.accountEnv, ref.symboltoken),
+        watchlistId: watchlist.id,
+        broker: ref.broker,
+        accountEnv: ref.accountEnv,
+        symboltoken: ref.symboltoken,
+        tradingsymbol: symbol.tradingsymbol || symbol.symbol || String(execution.symbol || ''),
+        exchange: symbol.exchange || '',
+      }
+    }
+  }
+  return null
+}
+
+function fitChartZoomedOut(chart: IChartApi) {
+  const timeScale = chart.timeScale()
+  timeScale.fitContent()
+  const range = timeScale.getVisibleLogicalRange()
+  if (!range) return
+  const span = Math.max(range.to - range.from, 24)
+  timeScale.setVisibleLogicalRange({
+    from: range.from - span * 0.45,
+    to: range.to + span * 0.12,
+  })
+}
 
 type StrategyFilter = 'all' | 'running' | 'scheduled' | 'stopped'
 
@@ -26,6 +130,81 @@ type LogTarget = {
   id: string
   label: string
   logFile: string | null
+}
+
+type SymbolVisual = {
+  ticker: string
+  logo35x35?: string | null
+  logo50x50?: string | null
+  logo150x150?: string | null
+}
+
+function symbolLookupKeys(symbol: string) {
+  const raw = symbol.trim().toUpperCase()
+  if (!raw) return []
+  const keys = new Set<string>([raw])
+  keys.add(raw.replace(/\.US$/i, ''))
+  return [...keys]
+}
+
+function buildSymbolVisualMap(watchlists: Watchlist[]) {
+  const map = new Map<string, SymbolVisual>()
+  for (const watchlist of watchlists) {
+    for (const symbol of watchlist.symbols) {
+      const ticker = symbol.tradingsymbol || symbol.symbol || ''
+      const visual: SymbolVisual = {
+        ticker: ticker || symbol.symbol,
+        logo35x35: symbol.logo35x35,
+        logo50x50: symbol.logo50x50,
+        logo150x150: symbol.logo150x150,
+      }
+      for (const key of symbolLookupKeys(ticker || symbol.symbol)) {
+        if (!map.has(key)) map.set(key, visual)
+      }
+    }
+  }
+  return map
+}
+
+function lookupSymbolVisual(map: Map<string, SymbolVisual>, symbol: string): SymbolVisual | null {
+  for (const key of symbolLookupKeys(symbol)) {
+    const hit = map.get(key)
+    if (hit) return hit
+  }
+  return null
+}
+
+function SymbolLogo({
+  symbol,
+  visual,
+  size = 'small',
+}: {
+  symbol: string
+  visual?: SymbolVisual | null
+  size?: 'small' | 'large'
+}) {
+  const [failed, setFailed] = useState(false)
+  const ticker = visual?.ticker || symbol
+  const src = size === 'large'
+    ? (visual?.logo150x150 || visual?.logo50x50 || visual?.logo35x35)
+    : (visual?.logo35x35 || visual?.logo50x50 || visual?.logo150x150)
+
+  if (src && !failed) {
+    return (
+      <img
+        src={src}
+        alt={ticker}
+        className={size === 'large' ? 'st-symbol-logo st-symbol-logo--large' : 'st-symbol-logo'}
+        onError={() => setFailed(true)}
+      />
+    )
+  }
+
+  return (
+    <span className={size === 'large' ? 'st-symbol-letter st-symbol-letter--large' : 'st-symbol-letter'}>
+      {(ticker || '?').charAt(0)}
+    </span>
+  )
 }
 
 const MIN_PAGE_SIZE = 8
@@ -232,11 +411,13 @@ function formatRowWhen(row: StrategyTableRow) {
 
 function StrategyTableRow({
   row,
+  visual,
   selected,
   onSelect,
   onLogs,
 }: {
   row: StrategyTableRow & { isLive?: boolean; isScheduled?: boolean }
+  visual: SymbolVisual | null
   selected: boolean
   onSelect: (id: string) => void
   onLogs: (target: LogTarget) => void
@@ -251,7 +432,12 @@ function StrategyTableRow({
       onClick={() => onSelect(row.id)}
     >
       <td className="st-td st-td--sym">
-        <span className="st-ticker">{row.symbol}</span>
+        <div className="st-sym-cell">
+          <span className="st-sym-icon">
+            <SymbolLogo symbol={row.symbol} visual={visual} />
+          </span>
+          <span className="st-ticker">{row.symbol}</span>
+        </div>
       </td>
       <td className="st-td st-td--name" title={row.name}>
         {row.name}
@@ -315,11 +501,13 @@ function StrategiesPagination({
 
 function StrategiesTable({
   rows,
+  symbolVisuals,
   selectedId,
   onSelect,
   onLogs,
 }: {
   rows: Array<StrategyTableRow & { isLive?: boolean; isScheduled?: boolean }>
+  symbolVisuals: Map<string, SymbolVisual>
   selectedId: string | null
   onSelect: (id: string) => void
   onLogs: (target: LogTarget) => void
@@ -351,6 +539,7 @@ function StrategiesTable({
               <StrategyTableRow
                 key={row.id}
                 row={row}
+                visual={lookupSymbolVisual(symbolVisuals, row.symbol)}
                 selected={selectedId === row.id}
                 onSelect={onSelect}
                 onLogs={onLogs}
@@ -363,11 +552,448 @@ function StrategiesTable({
   )
 }
 
+function StrategyDetailEmpty() {
+  return (
+    <div className="st-detail-wrap">
+      <div className="st-detail st-detail--empty">
+        <span>Select a strategy</span>
+      </div>
+    </div>
+  )
+}
+
+function StrategyMiniChart({
+  execution,
+  planeStreams,
+  selectedTick,
+  height,
+}: {
+  execution: Record<string, unknown>
+  planeStreams: ReturnType<typeof useExecution>['planeStreams']
+  selectedTick: ReturnType<typeof useExecution>['selectedTick']
+  height: number
+}) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<IChartApi | null>(null)
+  const lineRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const userInteractedRef = useRef(false)
+  const lastAutoFitKeyRef = useRef<string | null>(null)
+  const [candles, setCandles] = useState<WatchlistSanitizedCandle[]>([])
+  const [loadedCandleKey, setLoadedCandleKey] = useState<string | null>(null)
+  const { watchlists, ticks, connected, historyRef } = useWatchlistStream()
+
+  const chartSymbol = useMemo(
+    () => resolveExecutionChartSymbol(watchlists, execution),
+    [watchlists, execution],
+  )
+
+  const stream = getPlaneStream(planeStreams, execution?.data_plane_id as string | undefined)
+  const resolvedStream = useMemo(
+    () => resolveExecutionStream(stream, execution),
+    [stream, execution],
+  )
+  const watchlistFeed = useMemo(
+    () => (connected
+      ? findWatchlistFeedMatch(watchlists, ticks, historyRef, {
+          broker: execution.broker as string,
+          account_env: execution.account_env as string,
+          token: execution.token as string,
+          symbol: execution.symbol as string,
+        })
+      : null),
+    [execution, connected, watchlists, ticks, historyRef],
+  )
+  const ltp = selectedTick?.ltp ?? resolvedStream.tick?.ltp ?? watchlistFeed?.tick?.ltp ?? null
+  const lineData = useMemo(() => {
+    const toLine = (points: Array<{ time: number; value: number }>): LineData[] => (
+      points.map(point => ({ time: point.time as LineData['time'], value: point.value }))
+    )
+
+    if (candles.length > 0) {
+      const mergedSamples = mergePriceSamples(
+        ohlcCandlesToPriceSamples(candles),
+        watchlistFeed?.samples ?? [],
+      )
+      const fromCandles = buildWatchlistLinePoints(mergedSamples, ltp)
+      if (fromCandles.length > 0) return toLine(fromCandles)
+    }
+
+    if (resolvedStream.tickHistory.length > 0) {
+      const series = buildChartSeries(resolvedStream.tickHistory, execution, ltp) as Array<{ time: number; value: number }>
+      if (series.length > 1 && series.every(point => point.value === series[0].value)) {
+        return toLine([series[series.length - 1]])
+      }
+      return toLine(series)
+    }
+
+    const watchlistPoints = buildWatchlistLinePoints(watchlistFeed?.samples ?? [], ltp)
+    if (watchlistPoints.length > 0) return toLine(watchlistPoints)
+
+    return toLine(buildChartSeries([], execution, ltp) as Array<{ time: number; value: number }>)
+  }, [candles, resolvedStream.tickHistory, execution, ltp, watchlistFeed?.samples])
+
+  const chartKey = chartSymbol?.tickKey
+    || String(execution.executor_id || execution.data_plane_id || execution.symbol || 'chart')
+
+  useEffect(() => {
+    if (!chartSymbol || loadedCandleKey === chartSymbol.tickKey) return
+    let cancelled = false
+    fetchWatchlistSymbolCandles(chartSymbol, WATCHLIST_CHART_INITIAL_COUNT)
+      .then(next => {
+        if (cancelled) return
+        setCandles(next)
+        setLoadedCandleKey(chartSymbol.tickKey)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setCandles([])
+          setLoadedCandleKey(chartSymbol.tickKey)
+        }
+      })
+    return () => { cancelled = true }
+  }, [chartSymbol, loadedCandleKey])
+
+  useEffect(() => {
+    setCandles([])
+    setLoadedCandleKey(null)
+  }, [chartKey])
+
+  useEffect(() => {
+    const el = hostRef.current
+    if (!el) return
+    userInteractedRef.current = false
+    lastAutoFitKeyRef.current = null
+    const chart = createChart(el, {
+      width: Math.max(1, el.clientWidth),
+      height: Math.max(80, height),
+      attributionLogo: false,
+      layout: { background: { color: '#FFFFFF' }, textColor: '#9A9A9A' },
+      grid: {
+        vertLines: { color: '#F1F1F1' },
+        horzLines: { color: '#F1F1F1' },
+      },
+      rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.12 } },
+      timeScale: {
+        borderVisible: false,
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 8,
+        barSpacing: 3,
+        minBarSpacing: 0.5,
+      },
+      crosshair: { mode: 0 },
+    })
+    chartRef.current = chart
+    lineRef.current = null
+    const resize = () => chart.applyOptions({
+      width: Math.max(1, el.clientWidth),
+      height: Math.max(80, height),
+    })
+    const observer = new ResizeObserver(resize)
+    observer.observe(el)
+    const markUserInteracted = () => { userInteractedRef.current = true }
+    el.addEventListener('wheel', markUserInteracted, { passive: true })
+    el.addEventListener('pointerdown', markUserInteracted)
+    return () => {
+      el.removeEventListener('wheel', markUserInteracted)
+      el.removeEventListener('pointerdown', markUserInteracted)
+      observer.disconnect()
+      chart.remove()
+      chartRef.current = null
+      lineRef.current = null
+    }
+  }, [height, chartKey])
+
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+    if (!lineRef.current) {
+      lineRef.current = chart.addLineSeries({
+        color: '#2F80ED',
+        lineWidth: 2,
+        priceLineVisible: false,
+        lastValueVisible: true,
+      })
+    }
+    lineRef.current.setData(lineData)
+    const autoFitKey = `${chartKey}:line:${lineData.length}`
+    if (lineData.length && !userInteractedRef.current && lastAutoFitKeyRef.current !== autoFitKey) {
+      fitChartZoomedOut(chart)
+      lastAutoFitKeyRef.current = autoFitKey
+    }
+  }, [lineData, chartKey])
+
+  return (
+    <div className="st-mini-chart">
+      <div ref={hostRef} className="st-mini-chart-host" />
+      {!lineData.length ? <span className="st-chart-label">waiting for live price</span> : null}
+    </div>
+  )
+}
+
+type DetailBottomTab = 'activity' | 'positions'
+
+function StrategyCompactPositions({
+  executorId,
+  livePrice,
+  liveApi,
+  broker,
+  accountEnv,
+  symbol,
+  token,
+  realtimeEvents,
+  onChanged,
+  onOpenCountChange,
+}: {
+  executorId: string
+  livePrice: number | null
+  liveApi?: string | null
+  broker?: string | null
+  accountEnv?: string | null
+  symbol?: string | null
+  token?: string | number | null
+  realtimeEvents: Record<string, unknown>[]
+  onChanged?: () => void
+  onOpenCountChange?: (count: number) => void
+}) {
+  const [positions, setPositions] = useState<ExecutionPositionRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [busyPositionId, setBusyPositionId] = useState<string | number | null>(null)
+
+  const loadPositions = useCallback(async () => {
+    if (!executorId) {
+      setPositions([])
+      onOpenCountChange?.(0)
+      return
+    }
+    setLoading(true)
+    setError('')
+    try {
+      const rows = await loadExecutionPositions({
+        executorId,
+        liveApi,
+        broker,
+        accountEnv,
+        symbol,
+        token,
+      })
+      setPositions(rows)
+      onOpenCountChange?.(rows.length)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load positions')
+      setPositions([])
+      onOpenCountChange?.(0)
+    } finally {
+      setLoading(false)
+    }
+  }, [executorId, liveApi, broker, accountEnv, symbol, token, onOpenCountChange])
+
+  useEffect(() => {
+    void loadPositions()
+    const id = window.setInterval(() => { void loadPositions() }, 10_000)
+    return () => window.clearInterval(id)
+  }, [loadPositions, realtimeEvents.length])
+
+  const closePosition = async (row: ExecutionPositionRow) => {
+    setBusyPositionId(row.position_id)
+    setError('')
+    try {
+      await closeExecutionPosition(executorId, row)
+      onChanged?.()
+      await loadPositions()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to close position')
+    } finally {
+      setBusyPositionId(null)
+    }
+  }
+
+  if (loading && !positions.length) {
+    return <div className="st-detail-tab-empty">Loading positions…</div>
+  }
+
+  if (error && !positions.length) {
+    return (
+      <div className="st-detail-tab-empty">
+        <span>{error}</span>
+        <button type="button" className="st-detail-tab-retry" onClick={() => void loadPositions()}>
+          Retry
+        </button>
+      </div>
+    )
+  }
+
+  if (!positions.length) {
+    return <div className="st-detail-tab-empty">No open positions</div>
+  }
+
+  return (
+    <div className="st-detail-tab-scroll">
+      {error ? <div className="st-pos-error">{error}</div> : null}
+      {positions.map(row => {
+        const position = row.position || {}
+        const positionId = row.position_id
+        const units = row.remaining_units ?? position.remainingUnits ?? null
+        const live = computeLivePnl(row, livePrice)
+        const pnlLabel = live ? formatPnl(live.pnl) : null
+        const unitsLabel = units != null ? Number(units).toFixed(3) : '—'
+        const prefix = row.source === 'live' ? 'Order' : 'Position'
+        const statusSuffix = row.statusLabel ? ` · ${row.statusLabel}` : ''
+
+        return (
+          <div key={String(positionId)} className="st-pos-row">
+            <span className="st-pos-main">
+              {prefix} #{row.order_id ?? positionId} · {unitsLabel} units
+              {pnlLabel ? ` · ${pnlLabel}` : ''}
+              {statusSuffix}
+            </span>
+            {row.closable ? (
+              <button
+                type="button"
+                className="st-pos-close"
+                disabled={busyPositionId === positionId}
+                onClick={() => void closePosition(row)}
+              >
+                {busyPositionId === positionId ? 'Closing…' : 'Close'}
+              </button>
+            ) : (
+              <span className="st-pos-note">Awaiting broker fill</span>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function StrategyDetailBottomPanel({
+  executorId,
+  realtimeEvents,
+  livePrice,
+  liveApi,
+  broker,
+  accountEnv,
+  symbol,
+  token,
+  onPositionsChanged,
+}: {
+  executorId: string
+  realtimeEvents: Record<string, unknown>[]
+  livePrice: number | null
+  liveApi?: string | null
+  broker?: string | null
+  accountEnv?: string | null
+  symbol?: string | null
+  token?: string | number | null
+  onPositionsChanged?: () => void
+}) {
+  const [tab, setTab] = useState<DetailBottomTab>('activity')
+  const [openCount, setOpenCount] = useState(0)
+
+  useEffect(() => {
+    if (!executorId) {
+      setOpenCount(0)
+      return
+    }
+    loadExecutionPositions({ executorId, liveApi, broker, accountEnv, symbol, token })
+      .then(rows => setOpenCount(rows.length))
+      .catch(() => setOpenCount(0))
+  }, [executorId, liveApi, broker, accountEnv, symbol, token, realtimeEvents.length])
+
+  return (
+    <div className="st-detail-tabs">
+      <div className="st-detail-tab-bar">
+        <button
+          type="button"
+          className={`st-detail-tab${tab === 'activity' ? ' st-detail-tab--active' : ''}`}
+          onClick={() => setTab('activity')}
+        >
+          Activity
+        </button>
+        <button
+          type="button"
+          className={`st-detail-tab${tab === 'positions' ? ' st-detail-tab--active' : ''}`}
+          onClick={() => setTab('positions')}
+        >
+          Positions{openCount > 0 ? ` (${openCount})` : ''}
+        </button>
+      </div>
+      <div className="st-detail-tab-panel">
+        {tab === 'activity' ? (
+          <StrategyCompactActivity
+            executorId={executorId}
+            realtimeEvents={realtimeEvents}
+          />
+        ) : (
+          <StrategyCompactPositions
+            executorId={executorId}
+            livePrice={livePrice}
+            liveApi={liveApi}
+            broker={broker}
+            accountEnv={accountEnv}
+            symbol={symbol}
+            token={token}
+            realtimeEvents={realtimeEvents}
+            onChanged={onPositionsChanged}
+            onOpenCountChange={setOpenCount}
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function StrategyCompactActivity({
+  executorId,
+  realtimeEvents,
+}: {
+  executorId: string
+  realtimeEvents: Record<string, unknown>[]
+}) {
+  const [persistedEvents, setPersistedEvents] = useState<Record<string, unknown>[]>([])
+
+  useEffect(() => {
+    const params = new URLSearchParams({ limit: '40', executor_id: executorId })
+    fetch(`${CONTROL_API}/events?${params}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.status) setPersistedEvents(data.data || [])
+      })
+      .catch(() => setPersistedEvents([]))
+  }, [executorId, realtimeEvents.length])
+
+  const events = useMemo(
+    () => mergeActivityEvents(realtimeEvents, persistedEvents, { executorId, limit: 40 }),
+    [realtimeEvents, persistedEvents, executorId],
+  )
+
+  return (
+    <div className="st-detail-tab-scroll">
+      {events.length ? events.map((item, index) => (
+        <div
+          key={`${item.title}-${index}`}
+          className={`st-act-row st-act-row--${item.type}`}
+          title={compactActivityText(item)}
+        >
+          <span className="st-act-dot" aria-hidden />
+          <span className="st-act-text">{compactActivityText(item)}</span>
+          <span className="st-act-time">{item.time}</span>
+        </div>
+      )) : (
+        <div className="st-detail-tab-empty">No recent activity</div>
+      )}
+    </div>
+  )
+}
+
 function StrategyDetailPanel({
   executionId,
+  symbolVisuals,
   onClose,
 }: {
   executionId: string
+  symbolVisuals: Map<string, SymbolVisual>
   onClose: () => void
 }) {
   const [stopping, setStopping] = useState(false)
@@ -375,7 +1001,29 @@ function StrategyDetailPanel({
   const [unscheduling, setUnscheduling] = useState(false)
   const [actionError, setActionError] = useState('')
   const [logOpen, setLogOpen] = useState(false)
-  const [filledQty, setFilledQty] = useState<number | null>(null)
+  const [chartHeight, setChartHeight] = useState(DEFAULT_STRATEGY_CHART_HEIGHT)
+  const chartResizingRef = useRef(false)
+
+  const handleChartResizeStart = (e: ReactMouseEvent) => {
+    e.preventDefault()
+    chartResizingRef.current = true
+    const startY = e.clientY
+    const startH = chartHeight
+    const onMove = (ev: MouseEvent) => {
+      if (!chartResizingRef.current) return
+      setChartHeight(Math.max(
+        MIN_STRATEGY_CHART_HEIGHT,
+        Math.min(MAX_STRATEGY_CHART_HEIGHT, startH + (ev.clientY - startY)),
+      ))
+    }
+    const onUp = () => {
+      chartResizingRef.current = false
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
 
   const {
     panelExecutions,
@@ -456,42 +1104,6 @@ function StrategyDetailPanel({
     })
   }, [executionEvents, executionId])
 
-  const levels = useMemo(
-    () => computeExecutionLevels(overviewExecution || {}),
-    [overviewExecution],
-  )
-
-  const broker = overviewExecution?.broker
-  const qtyDecimals = overviewExecution?.allow_partial_stocks ? 2 : 0
-  const displayQty = filledQty ?? levels.orderQuantity
-  const qtyLabel = filledQty != null || overviewExecution?.is_in_position ? 'Qty bought' : 'Order qty'
-
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const res = await fetch(`/api/control/executions/${encodeURIComponent(executionId)}/positions`)
-        const data = await res.json()
-        if (cancelled || !data.status) return
-        const totalUnits = (data.data || []).reduce((sum: number, row: Record<string, unknown>) => {
-          const position = (row.position || {}) as Record<string, unknown>
-          const units = Number(
-            row.remaining_units
-            ?? position.remainingUnits
-            ?? position.units
-            ?? position.Units
-            ?? 0,
-          )
-          return Number.isFinite(units) && units > 0 ? sum + units : sum
-        }, 0)
-        setFilledQty(totalUnits > 0 ? totalUnits : null)
-      } catch {
-        if (!cancelled) setFilledQty(null)
-      }
-    })()
-    return () => { cancelled = true }
-  }, [executionId, overviewExecution?.is_in_position, strategyActivityEvents.length])
-
   const stopStrategy = async () => {
     setActionError('')
     setStopping(true)
@@ -548,12 +1160,10 @@ function StrategyDetailPanel({
 
   if (!overviewExecution && !queuedItem) {
     return (
-      <div className="st-detail-shell">
-        <div className="st-detail-wrap">
-          <div className="st-detail st-detail--empty">
-            <span>Strategy not found</span>
-            <button type="button" className="st-btn" onClick={onClose}>Close</button>
-          </div>
+      <div className="st-detail-wrap">
+        <div className="st-detail st-detail--empty">
+          <span>Strategy not found</span>
+          <button type="button" className="st-btn" onClick={onClose}>Close</button>
         </div>
       </div>
     )
@@ -573,11 +1183,16 @@ function StrategyDetailPanel({
     || null
   const logFile = overviewExecution?.log_file || queuedItem?.engine?.metadata?.log_file || null
   const logEngineId = overviewExecution?.data_plane_id || queuedItem?.engine?.id || executionId
-  const env = String(overviewExecution?.account_env || 'live').toLowerCase()
   const badgeKind = statusBadgeKind(engineStatus, isLive)
+  const symbolVisual = overviewExecution?.symbol
+    ? lookupSymbolVisual(symbolVisuals, String(overviewExecution.symbol))
+    : null
+  const scheduleHint = isScheduled && (scheduledStartAt || tradingDay)
+    ? `${formatScheduledStart(scheduledStartAt)} · ${scheduleSummary(tradingDay, scheduleLabel)}`
+    : null
 
   return (
-    <div className="st-detail-shell">
+    <>
       {logOpen ? (
         <>
           <button
@@ -600,134 +1215,107 @@ function StrategyDetailPanel({
 
       <div className="st-detail-wrap">
         <div className="st-detail">
-          <div className="st-detail-header">
-            <div className="st-detail-title">{strategyTitle(overviewExecution)}</div>
-            <div className="st-detail-sub">{executionId}</div>
-            {overviewExecution?.created_at ? (
-              <div className="st-detail-sub">
-                Created {formatDbTimestamp(overviewExecution.created_at)}
-              </div>
-            ) : null}
-            {isScheduled && (scheduledStartAt || tradingDay) ? (
-              <div className="st-detail-schedule">
-                <strong>Scheduled deployment</strong>
-                {formatScheduledStart(scheduledStartAt)} · {scheduleSummary(tradingDay, scheduleLabel)}
-              </div>
-            ) : null}
-            <div className="st-detail-badges">
-              <StatusBadge kind={env === 'demo' ? 'demo' : 'live'}>{envLabel(overviewExecution?.account_env)}</StatusBadge>
+          <div className="st-detail-head">
+            <div className="st-detail-head-main">
+              <span className="st-sym-icon">
+                <SymbolLogo
+                  symbol={String(overviewExecution?.symbol || '—')}
+                  visual={symbolVisual}
+                />
+              </span>
+              <span
+                className="st-detail-head-title"
+                title={`${strategyTitle(overviewExecution)} · ${executionId}`}
+              >
+                {strategyTitle(overviewExecution)}
+              </span>
               <StatusBadge kind={badgeKind}>{statusBadgeText(engineStatus, isLive)}</StatusBadge>
               {overviewExecution?.is_in_position ? (
                 <StatusBadge kind="running">In position</StatusBadge>
               ) : null}
+              {overviewExecution?.created_at ? (
+                <span className="st-detail-head-meta">
+                  {formatShortCreated(String(overviewExecution.created_at))}
+                </span>
+              ) : null}
+              {scheduleHint ? (
+                <span className="st-detail-head-meta" title={scheduleHint}>Scheduled</span>
+              ) : null}
             </div>
-            <div className="st-detail-actions">
-              <button type="button" className="st-btn" onClick={onClose}>Close</button>
+            <div className="st-detail-head-actions">
+              <button type="button" className="st-btn st-btn--compact" onClick={onClose}>Close</button>
               {canDeploy ? (
                 <button
                   type="button"
-                  className="st-btn st-btn--primary"
+                  className="st-btn st-btn--compact st-btn--primary"
                   disabled={deploying || stopping || unscheduling}
                   onClick={() => void deployStrategy()}
                 >
-                  {deploying ? 'Deploying…' : isScheduled ? 'Deploy now' : 'Deploy live'}
+                  {deploying ? 'Deploy…' : isScheduled ? 'Deploy now' : 'Deploy'}
                 </button>
               ) : null}
               {isScheduled ? (
                 <button
                   type="button"
-                  className="st-btn"
+                  className="st-btn st-btn--compact"
                   disabled={unscheduling || deploying || stopping}
                   onClick={() => void unscheduleStrategy()}
                 >
-                  {unscheduling ? 'Unscheduling…' : 'Unschedule'}
+                  {unscheduling ? 'Unsched…' : 'Unschedule'}
                 </button>
               ) : null}
               {canStop ? (
                 <button
                   type="button"
-                  className="st-btn st-btn--danger"
+                  className="st-btn st-btn--compact st-btn--danger"
                   disabled={stopping || deploying || unscheduling}
                   onClick={() => void stopStrategy()}
                 >
                   {stopping ? 'Stopping…' : 'Stop'}
                 </button>
               ) : null}
-              <button type="button" className="st-btn st-btn--accent" onClick={() => setLogOpen(true)}>
+              <button type="button" className="st-btn st-btn--compact st-btn--accent" onClick={() => setLogOpen(true)}>
                 Logs
               </button>
               <button
                 type="button"
-                className="st-btn"
+                className="st-btn st-btn--compact"
                 disabled={deploying || stopping}
                 onClick={() => void handleDuplicate()}
               >
                 Duplicate
               </button>
             </div>
-            {actionError ? <div className="st-detail-error">{actionError}</div> : null}
           </div>
+          {actionError ? <div className="st-detail-error">{actionError}</div> : null}
 
-          <div className="st-detail-scroll">
-            <div className="st-metrics">
-              <div className="st-metric">
-                <div className="st-metric-label">Entry trigger</div>
-                <div className="st-metric-value">
-                  {levels.buyTrigger != null ? formatBrokerPrice(broker, levels.buyTrigger) : '—'}
-                </div>
-              </div>
-              <div className="st-metric">
-                <div className="st-metric-label">Take profit</div>
-                <div className="st-metric-value st-metric-value--green">
-                  {levels.takeProfit != null ? formatBrokerPrice(broker, levels.takeProfit) : '—'}
-                </div>
-              </div>
-              <div className="st-metric">
-                <div className="st-metric-label">Stop loss</div>
-                <div className="st-metric-value st-metric-value--red">
-                  {levels.stopLoss != null ? formatBrokerPrice(broker, levels.stopLoss) : '—'}
-                </div>
-              </div>
-              <div className="st-metric">
-                <div className="st-metric-label">Capital</div>
-                <div className="st-metric-value">
-                  {overviewExecution?.max_available_capital != null
-                    ? formatBrokerCompactMoney(broker, overviewExecution.max_available_capital)
-                    : '—'}
-                </div>
-              </div>
-              <div className="st-metric">
-                <div className="st-metric-label">{qtyLabel}</div>
-                <div className="st-metric-value">
-                  {displayQty != null
-                    ? (filledQty != null
-                      ? displayQty.toFixed(qtyDecimals)
-                      : formatOrderQuantity(overviewExecution, displayQty))
-                    : '—'}
-                </div>
-              </div>
-            </div>
-
-            <div className="st-detail-grid">
-              <div className="st-card">
-                <StrategyChartPanel
-                  execution={overviewExecution}
-                  planeStreams={planeStreams}
-                  selectedTick={selectedTick}
-                />
-              </div>
-              <div className="st-card">
-                <TradingActivityFeed
-                  executorId={executionId}
-                  realtimeEvents={strategyActivityEvents}
-                  className="st-activity-feed"
-                />
-              </div>
-            </div>
+          <div className="st-detail-chart-box" style={{ height: chartHeight }}>
+            <StrategyMiniChart
+              execution={overviewExecution || {}}
+              planeStreams={planeStreams}
+              selectedTick={selectedTick}
+              height={chartHeight}
+            />
+            <div
+              className="st-chart-resize-handle"
+              onMouseDown={handleChartResizeStart}
+              title="Drag to resize chart"
+            />
           </div>
+          <StrategyDetailBottomPanel
+            executorId={executionId}
+            realtimeEvents={strategyActivityEvents}
+            livePrice={selectedTick?.ltp ?? null}
+            liveApi={overviewExecution?.api_base_url || queuedItem?.engine?.api_base_url || null}
+            broker={overviewExecution?.broker || queuedItem?.engine?.broker || null}
+            accountEnv={overviewExecution?.account_env || queuedItem?.engine?.account_env || null}
+            symbol={overviewExecution?.symbol || queuedItem?.engine?.symbol || null}
+            token={overviewExecution?.token || queuedItem?.engine?.token || null}
+            onPositionsChanged={() => { void refreshExecutions() }}
+          />
         </div>
       </div>
-    </div>
+    </>
   )
 }
 
@@ -781,6 +1369,8 @@ function StrategiesWorkspace() {
   const { state, navigate } = useUrlState()
   const [logTarget, setLogTarget] = useState<LogTarget | null>(null)
   const listBlockRef = useRef<HTMLDivElement>(null)
+  const { watchlists } = useWatchlistStream()
+  const symbolVisuals = useMemo(() => buildSymbolVisualMap(watchlists), [watchlists])
   const {
     panelExecutions,
     controlledExecutionsLoading,
@@ -1010,6 +1600,7 @@ function StrategiesWorkspace() {
             <div className="st-list-block" ref={listBlockRef}>
               <StrategiesTable
                 rows={pagedRows}
+                symbolVisuals={symbolVisuals}
                 selectedId={selectedId}
                 onSelect={selectStrategy}
                 onLogs={setLogTarget}
@@ -1040,12 +1631,17 @@ function StrategiesWorkspace() {
           )}
         </div>
 
-        {selectedId ? (
-          <StrategyDetailPanel
-            executionId={selectedId}
-            onClose={closeDetail}
-          />
-        ) : null}
+        <div className="st-detail-shell">
+          {selectedId ? (
+            <StrategyDetailPanel
+              executionId={selectedId}
+              symbolVisuals={symbolVisuals}
+              onClose={closeDetail}
+            />
+          ) : (
+            <StrategyDetailEmpty />
+          )}
+        </div>
       </div>
     </div>
   )

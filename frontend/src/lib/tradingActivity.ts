@@ -47,10 +47,10 @@ export function mapEventToActivity(event: Record<string, unknown>): ActivityItem
   if (symbol) titleParts.push(`· ${symbol}`)
 
   const detailParts = [
+    details.reason ? String(details.reason) : '',
     details.quantity && details.price ? `${details.quantity} units @ ${details.price}` : '',
     event.order_id ? `order ${event.order_id}` : '',
     details.message ? String(details.message) : '',
-    details.reason ? String(details.reason) : '',
   ].filter(Boolean)
 
   return {

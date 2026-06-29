@@ -2757,16 +2757,24 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
         onComplete={startLiveTrading}
       />
 
-      <div className="flex items-center justify-between mb-5">
+      <div className={variant === 'minimal' ? 'ms-create-head' : 'flex items-center justify-between mb-5'}>
         <div>
-          <h2 className="text-sm font-bold">{duplicateDraft ? 'Duplicate Execution' : 'Create Execution'}</h2>
-          <p className="text-[10px] text-text-secondary mt-1">
+          <h2 className={variant === 'minimal' ? 'ms-create-title' : 'text-sm font-bold'}>
+            {duplicateDraft ? 'Duplicate strategy' : 'Create strategy'}
+          </h2>
+          <p className={variant === 'minimal' ? 'ms-create-subtitle' : 'text-[10px] text-text-secondary mt-1'}>
             {duplicateDraft
               ? 'Edit the copied config, then save as a new draft or scheduled execution.'
               : 'Search a stock, confirm live close price and levels, then save the strategy.'}
           </p>
         </div>
-        <button onClick={onCancel} className="text-xs text-text-secondary hover:text-text-primary">Cancel</button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className={variant === 'minimal' ? 'st-btn' : 'text-xs text-text-secondary hover:text-text-primary'}
+        >
+          Cancel
+        </button>
       </div>
 
       <div className="mb-5">
@@ -3003,6 +3011,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
         </div>
 
         <MarketPreviewPanel
+          variant={variant}
           selectedStock={selectedStock}
           ltp={ltp}
           streamStatus={marketStreamStatus}
@@ -3024,25 +3033,37 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
         />
       </div>
 
-      {error && <div className="mt-4 text-xs text-red">{error}</div>}
-      <div className="mt-5 flex flex-wrap items-center gap-3">
+      {error && (
+        <div className={variant === 'minimal' ? 'ms-create-error' : 'mt-4 text-xs text-red'}>{error}</div>
+      )}
+      <div className={variant === 'minimal' ? 'ms-create-actions' : 'mt-5 flex flex-wrap items-center gap-3'}>
         <button
+          type="button"
           onClick={submit}
           disabled={actionBusy || !selectedStock || showStartConfirm}
-          className="px-5 py-2 bg-green text-white rounded text-xs font-bold disabled:opacity-50"
+          className={
+            variant === 'minimal'
+              ? 'st-btn st-btn--primary'
+              : 'px-5 py-2 bg-green text-white rounded text-xs font-bold disabled:opacity-50'
+          }
         >
-          {submitting ? 'Saving...' : duplicateDraft ? 'Save Duplicate' : 'Save Strategy'}
+          {submitting ? 'Saving...' : duplicateDraft ? 'Save duplicate' : 'Save strategy'}
         </button>
         <button
+          type="button"
           onClick={() => {
             if (!validateForm()) return
             setError('')
             setShowStartConfirm(true)
           }}
           disabled={actionBusy || !selectedStock || showStartConfirm}
-          className="px-5 py-2 bg-accent text-white rounded text-xs font-bold disabled:opacity-50"
+          className={
+            variant === 'minimal'
+              ? 'st-btn'
+              : 'px-5 py-2 bg-accent text-white rounded text-xs font-bold disabled:opacity-50'
+          }
         >
-          {startingLive ? 'Starting live trading...' : 'Start Live Trading'}
+          {startingLive ? 'Starting live trading...' : 'Start live trading'}
         </button>
       </div>
     </div>
@@ -3109,6 +3130,7 @@ function ExecutionLevels({ execution }) {
 }
 
 function MarketPreviewPanel({
+  variant,
   selectedStock,
   ltp,
   streamStatus,
@@ -3122,12 +3144,16 @@ function MarketPreviewPanel({
   resolvedLongPercent = null,
   profitTargetAmount = '',
 }) {
+  const isMinimal = variant === 'minimal'
+
   if (!selectedStock) {
     return (
-      <div className="bg-card border border-border rounded-lg p-6 min-h-[420px] flex items-center justify-center text-center">
+      <div className={isMinimal ? 'ms-preview-panel ms-preview-panel--empty' : 'bg-card border border-border rounded-lg p-6 min-h-[420px] flex items-center justify-center text-center'}>
         <div>
-          <div className="text-sm font-bold text-text-primary mb-2">Live Market Preview</div>
-          <p className="text-xs text-text-secondary max-w-xs">
+          <div className={isMinimal ? 'ms-preview-empty-title' : 'text-sm font-bold text-text-primary mb-2'}>
+            Live market preview
+          </div>
+          <p className={isMinimal ? 'ms-preview-empty-copy' : 'text-xs text-text-secondary max-w-xs'}>
             Search and select a stock to stream the current price over websocket and preview buy trigger, take profit, and stop loss levels.
           </p>
         </div>
@@ -3142,64 +3168,89 @@ function MarketPreviewPanel({
     ? ((livePrice - closeNum) / closeNum) * 100
     : null
 
+  const streamBadgeClass = isMinimal
+    ? `ms-preview-stream ms-preview-stream--${streamStatus.tone || 'idle'}`
+    : `text-[10px] px-2 py-1 rounded ${
+      streamStatus.tone === 'ok'
+        ? 'bg-green/15 text-green'
+        : streamStatus.tone === 'error'
+          ? 'bg-red/15 text-red'
+          : streamStatus.tone === 'warn'
+            ? 'bg-yellow-400/15 text-yellow-400'
+            : 'bg-secondary text-text-secondary'
+    }`
+
   return (
-    <div className="bg-card border border-border rounded-lg p-5 min-h-[420px] flex flex-col">
-      <div className="flex items-start justify-between gap-3 mb-4">
+    <div className={isMinimal ? 'ms-preview-panel' : 'bg-card border border-border rounded-lg p-5 min-h-[420px] flex flex-col'}>
+      <div className={isMinimal ? 'ms-preview-head' : 'flex items-start justify-between gap-3 mb-4'}>
         <div>
-          <div className="text-[10px] uppercase tracking-[2px] text-text-secondary">Live Price</div>
-          <div className="text-2xl font-bold text-text-primary mt-1">{selectedStock.tradingsymbol}</div>
-          <div className="text-[10px] text-text-secondary mt-1">
+          <div className={isMinimal ? 'ms-preview-kicker' : 'text-[10px] uppercase tracking-[2px] text-text-secondary'}>
+            Live price
+          </div>
+          <div className={isMinimal ? 'ms-preview-symbol' : 'text-2xl font-bold text-text-primary mt-1'}>
+            {selectedStock.tradingsymbol}
+          </div>
+          <div className={isMinimal ? 'ms-preview-meta' : 'text-[10px] text-text-secondary mt-1'}>
             {selectedStock.exchange} · {instrumentLabel(form.broker)} {selectedStock.symboltoken}
           </div>
         </div>
-        <div className={`text-[10px] px-2 py-1 rounded ${
-          streamStatus.tone === 'ok'
-            ? 'bg-green/15 text-green'
-            : streamStatus.tone === 'error'
-              ? 'bg-red/15 text-red'
-              : streamStatus.tone === 'warn'
-                ? 'bg-yellow-400/15 text-yellow-400'
-                : 'bg-secondary text-text-secondary'
-        }`}>
+        <div className={streamBadgeClass}>
           {streamStatus.label}
         </div>
       </div>
 
-      <div className="rounded-lg bg-secondary/60 border border-border px-4 py-5 mb-4">
-        <div className="text-[10px] uppercase tracking-[2px] text-text-secondary mb-2">Current Price</div>
-        <div className="text-5xl font-bold tracking-tight text-accent">{displayLtp}</div>
+      <div className={isMinimal ? 'ms-preview-quote' : 'rounded-lg bg-secondary/60 border border-border px-4 py-5 mb-4'}>
+        <div className={isMinimal ? 'ms-preview-kicker' : 'text-[10px] uppercase tracking-[2px] text-text-secondary mb-2'}>
+          Current price
+        </div>
+        <div className={isMinimal ? 'ms-preview-ltp' : 'text-5xl font-bold tracking-tight text-accent'}>{displayLtp}</div>
         {priceDelta != null && (
-          <div className={`text-xs mt-2 ${priceDelta >= 0 ? 'text-green' : 'text-red'}`}>
+          <div
+            className={
+              isMinimal
+                ? `ms-preview-delta ${priceDelta >= 0 ? 'ms-preview-delta--up' : 'ms-preview-delta--down'}`
+                : `text-xs mt-2 ${priceDelta >= 0 ? 'text-green' : 'text-red'}`
+            }
+          >
             {priceDelta >= 0 ? '+' : ''}{priceDelta.toFixed(3)}% vs close
           </div>
         )}
       </div>
 
-      <div className="mb-4">
-        <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Close Price</label>
-        <div className="flex gap-2">
+      <div className={isMinimal ? 'ms-preview-close' : 'mb-4'}>
+        <label className={isMinimal ? 'ms-preview-kicker' : 'text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1'}>
+          Close price
+        </label>
+        <div className={isMinimal ? 'ms-preview-close-row' : 'flex gap-2'}>
           <input
             type="number"
             step="0.01"
             value={closePrice}
             onChange={e => onClosePriceChange(e.target.value)}
-            className="flex-1 px-3 py-2.5 bg-card border border-border rounded text-sm font-semibold font-mono text-text-primary outline-none focus:border-accent [color-scheme:dark]"
+            className={
+              isMinimal
+                ? 'ms-preview-close-input'
+                : 'flex-1 px-3 py-2.5 bg-card border border-border rounded text-sm font-semibold font-mono text-text-primary outline-none focus:border-accent [color-scheme:dark]'
+            }
           />
           <button
             type="button"
             onClick={onUseLivePrice}
             disabled={ltp == null}
-            className="px-3 py-2 bg-accent/15 text-accent rounded text-[10px] font-bold disabled:opacity-40"
+            className={isMinimal ? 'st-btn' : 'px-3 py-2 bg-accent/15 text-accent rounded text-[10px] font-bold disabled:opacity-40'}
           >
-            Use Live
+            Use live
           </button>
         </div>
-        <p className="text-[10px] text-text-secondary mt-1">Defaults to the live websocket price. Edit to override.</p>
+        <p className={isMinimal ? 'ms-preview-close-hint' : 'text-[10px] text-text-secondary mt-1'}>
+          Defaults to the live websocket price. Edit to override.
+        </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-2 mt-auto">
-        <PreviewLevelRow label="Buy Trigger" value={formatBrokerPrice(form.broker, levels.buyTrigger)} hint={`+${form.initial_threshold}% from close`} tone="accent" />
+      <div className={isMinimal ? 'ms-level-stack' : 'grid grid-cols-1 gap-2 mt-auto'}>
+        <PreviewLevelRow variant={variant} label="Buy Trigger" value={formatBrokerPrice(form.broker, levels.buyTrigger)} hint={`+${form.initial_threshold}% from close`} tone="accent" />
         <PreviewLevelRow
+          variant={variant}
           label="Take Profit"
           value={formatBrokerPrice(form.broker, levels.takeProfit)}
           hint={
@@ -3214,6 +3265,7 @@ function MarketPreviewPanel({
           tone="green"
         />
         <PreviewLevelRow
+          variant={variant}
           label="Stop Loss"
           value={formatBrokerPrice(form.broker, levels.stopLoss)}
           hint={
@@ -3224,6 +3276,7 @@ function MarketPreviewPanel({
           tone="red"
         />
         <PreviewLevelRow
+          variant={variant}
           label="Order Qty"
           value={levels.orderQuantity != null ? levels.orderQuantity.toFixed(form.allow_partial_stocks ? 2 : 0) : '--'}
           hint={form.allow_partial_stocks ? 'Partial units · 2 dp' : 'Whole shares only'}
@@ -3231,12 +3284,25 @@ function MarketPreviewPanel({
         />
       </div>
 
-      {marketError && <div className="mt-3 text-[10px] text-red">{marketError}</div>}
+      {marketError && <div className={isMinimal ? 'ms-preview-error' : 'mt-3 text-[10px] text-red'}>{marketError}</div>}
     </div>
   )
 }
 
-function PreviewLevelRow({ label, value, hint, tone }) {
+function PreviewLevelRow({ variant, label, value, hint, tone }) {
+  if (variant === 'minimal') {
+    const toneKey = tone === 'green' ? 'green' : tone === 'red' ? 'red' : 'accent'
+    return (
+      <div className={`ms-level-row ms-level-row--${toneKey}`}>
+        <div className="ms-level-copy">
+          <div className="ms-level-label">{label}</div>
+          <div className="ms-level-hint">{hint}</div>
+        </div>
+        <div className="ms-level-value">{value ?? '—'}</div>
+      </div>
+    )
+  }
+
   const toneClass = tone === 'green' ? 'text-green' : tone === 'red' ? 'text-red' : 'text-accent'
   return (
     <div className="flex items-center justify-between px-3 py-2 rounded border border-border/60 bg-background/40">

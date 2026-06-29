@@ -41,7 +41,7 @@ function ActivityRow({ item }: { item: ActivityItem }) {
 
 export function TradingActivityFeed({
   title = 'Activity',
-  viewAllHref = '/trade/activity',
+  viewAllHref,
   executorId,
   symbolKey,
   realtimeEvents = [],
