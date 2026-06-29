@@ -13,14 +13,18 @@ import { watchlistTickKey, type Watchlist } from '../../lib/watchlists'
 import WatchAndTrade from './WatchAndTrade'
 import Strategies from './Strategies'
 import Home from './Home'
+import Earnings from './Earnings'
+import EarningsMonitorBar from './EarningsMonitorBar'
 import MarketClockBar from './MarketClockBar'
 import { useUrlState } from './useUrlState'
+import { useWatchlistEarnings } from '../../hooks/useWatchlistEarnings'
+import type { WatchlistEarningsRef } from '../../lib/marketResearch'
 
 /* ─── types ─────────────────────────────────────────────── */
-type MainTab = 'home' | 'watch-trade' | 'orders' | 'strategies'
+type MainTab = 'home' | 'watch-trade' | 'orders' | 'strategies' | 'earnings'
 type NewsTab = 'watchlist' | 'new' | 'news' | 'market'
 
-const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'strategies']
+const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'strategies', 'earnings']
 const NEWS_TABS: NewsTab[] = ['watchlist', 'news', 'market', 'new']
 const LEFT_COLLAPSED_KEY = 'minimal-shell-left-collapsed'
 const RIGHT_WIDTH_KEY = 'minimal-shell-right-width'
@@ -120,7 +124,15 @@ function SearchBar({
 }
 
 /* ─── panels ────────────────────────────────────────────── */
-function MainPanel({ tab, setTab }: { tab: MainTab; setTab: (t: MainTab) => void }) {
+function MainPanel({
+  tab,
+  setTab,
+  earnings,
+}: {
+  tab: MainTab
+  setTab: (t: MainTab) => void
+  earnings: ReturnType<typeof useWatchlistEarnings>
+}) {
   return (
     <main className="ms-main">
       <div className="ms-header ms-header--main">
@@ -137,6 +149,9 @@ function MainPanel({ tab, setTab }: { tab: MainTab; setTab: (t: MainTab) => void
           <Pill active={tab === 'strategies'} onClick={() => setTab('strategies')}>
             {'\u00a0Strategies\u00a0'}
           </Pill>
+          <Pill active={tab === 'earnings'} onClick={() => setTab('earnings')}>
+            {'\u00a0Earnings\u00a0'}
+          </Pill>
         </div>
         <MarketClockBar />
       </div>
@@ -147,6 +162,13 @@ function MainPanel({ tab, setTab }: { tab: MainTab; setTab: (t: MainTab) => void
           <WatchAndTrade />
         ) : tab === 'strategies' ? (
           <Strategies />
+        ) : tab === 'earnings' ? (
+          <Earnings
+            events={earnings.events}
+            loading={earnings.loading}
+            error={earnings.error}
+            onRefresh={earnings.refresh}
+          />
         ) : (
           <div style={{ height: '100%', background: '#EBEBEB' }} />
         )}
@@ -463,6 +485,19 @@ export default function MinimalShell() {
   }, [])
 
   const setMainTab = (t: MainTab) => navigate({ tab: t })
+  const earnings = useWatchlistEarnings({
+    onOpenEarnings: () => setMainTab('earnings'),
+  })
+  const handleOpenMonitorSymbol = (ref: WatchlistEarningsRef) => {
+    if (!ref.watchlistId || !ref.symboltoken) return
+    const watchlist = watchlists.find(item => item.id === ref.watchlistId)
+    navigate({
+      tab: 'watch-trade',
+      watchlist_id: ref.watchlistId,
+      symboltoken: ref.symboltoken,
+      panel_id: watchlist?.panel_id || undefined,
+    })
+  }
   const handleSelectWatchlistSymbol = (watchlist: Watchlist, symboltoken: string) => {
     navigate({
       tab: 'watch-trade',
@@ -505,7 +540,15 @@ export default function MinimalShell() {
 
   return (
     <div className="ms-root">
-      <MainPanel tab={mainTab} setTab={setMainTab} />
+      <div className="ms-main-column">
+        <EarningsMonitorBar
+          alerts={earnings.monitors}
+          onDismiss={earnings.dismissMonitor}
+          onOpenSymbol={handleOpenMonitorSymbol}
+          onOpenEarnings={() => setMainTab('earnings')}
+        />
+        <MainPanel tab={mainTab} setTab={setMainTab} earnings={earnings} />
+      </div>
       <SideDrawer
         collapsed={rightCollapsed}
         onToggle={toggleRightCollapsed}

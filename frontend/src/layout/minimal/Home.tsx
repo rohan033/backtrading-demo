@@ -29,10 +29,11 @@ import { useUrlState } from './useUrlState'
 import {
   HomeEarningsPanel,
   HomeFilingsPanel,
+  HomeInsiderPanel,
   HomeSentimentPanel,
 } from './HomeResearchPanels'
 
-type InfoTab = 'news' | 'filings' | 'earnings' | 'sentiment'
+type InfoTab = 'news' | 'filings' | 'earnings' | 'insider' | 'sentiment'
 
 type HomeSelection = {
   broker: WatchlistBroker
@@ -704,6 +705,7 @@ export default function Home() {
                 ['news', 'News'],
                 ['filings', 'Filings'],
                 ['earnings', 'Earnings'],
+                ['insider', 'Insider'],
                 ['sentiment', 'Sentiment'],
               ] as const).map(([id, label]) => (
                 <button
@@ -722,7 +724,7 @@ export default function Home() {
               {!selection ? (
                 <InfoPlaceholder
                   title="No stock selected"
-                  body="Pick a symbol from search to load company news, SEC filings, earnings calendar, and insider sentiment."
+                  body="Pick a symbol from search to load company news, SEC filings, earnings calendar, insider trades, and filing sentiment."
                 />
               ) : infoTab === 'news' ? (
                 <CompanyNewsPanel symbol={newsSymbol} variant="minimal" showHeader={false} />
@@ -730,6 +732,8 @@ export default function Home() {
                 <HomeFilingsPanel symbol={newsSymbol} />
               ) : infoTab === 'earnings' ? (
                 <HomeEarningsPanel symbol={newsSymbol} />
+              ) : infoTab === 'insider' ? (
+                <HomeInsiderPanel symbol={newsSymbol} />
               ) : (
                 <HomeSentimentPanel symbol={newsSymbol} />
               )}

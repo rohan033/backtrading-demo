@@ -9,6 +9,7 @@ from control_plane.news_service import (
     get_news_service,
 )
 from control_plane.news_store import get_news_store
+from control_plane.insider_poller import get_insider_poller
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 
@@ -98,6 +99,56 @@ async def get_filing_sentiment(
     access_number: str = Query(..., min_length=1, alias="accessNumber"),
 ):
     return await get_news_service().filing_sentiment(access_number)
+
+
+@router.get(
+    "/watchlist-earnings",
+    operation_id="get_watchlist_earnings",
+    summary="Upcoming and recent earnings for all watchlist tickers (Finnhub)",
+)
+async def get_watchlist_earnings(
+    past_days: int = Query(14, ge=1, le=365, alias="pastDays"),
+    future_days: int = Query(90, ge=1, le=365, alias="futureDays"),
+    refresh: bool = Query(False),
+):
+    return await get_news_service().watchlist_earnings(
+        past_days=past_days,
+        future_days=future_days,
+        refresh=refresh,
+    )
+
+
+@router.get(
+    "/insider-transactions",
+    operation_id="get_insider_transactions",
+    summary="Insider transactions for a symbol (Finnhub Form 3/4/5)",
+)
+async def get_insider_transactions(
+    symbol: str = Query(..., min_length=1, max_length=32),
+    days: int = Query(90, ge=1, le=365),
+):
+    return await get_news_service().insider_transactions(symbol, days=days)
+
+
+@router.get(
+    "/watchlist-insider-transactions",
+    operation_id="get_watchlist_insider_transactions",
+    summary="Cached insider transactions for watchlist tickers",
+)
+async def get_watchlist_insider_transactions(
+    symbol: str | None = Query(None, max_length=32),
+    days: int = Query(90, ge=1, le=365),
+    limit: int = Query(500, ge=1, le=1000),
+    refresh: bool = Query(False),
+):
+    if refresh:
+        await get_insider_poller().poll_once()
+    return get_news_service().watchlist_insider_transactions(
+        symbol=symbol,
+        days=days,
+        limit=limit,
+        refresh=refresh,
+    )
 
 
 @router.get(

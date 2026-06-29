@@ -13,6 +13,9 @@ from urllib.request import Request, urlopen
 from fastapi import HTTPException
 
 from control_plane.news_store import NewsCacheEntry, NewsStore, get_news_store
+from control_plane.earnings_monitor import build_earnings_monitors
+from control_plane.insider_store import get_insider_store
+from control_plane.watchlist_store import get_watchlist_store
 
 FINNHUB_BASE = "https://finnhub.io/api/v1"
 FINNHUB_MARKET_STATUS_PATH = "/stock/market-status"
@@ -126,6 +129,14 @@ def market_status_cache_ttl_seconds() -> int:
     return max(15, int(os.getenv("MARKET_STATUS_CACHE_TTL_SECONDS", "60")))
 
 
+def watchlist_earnings_cache_ttl_seconds() -> int:
+    return max(60, int(os.getenv("WATCHLIST_EARNINGS_CACHE_TTL_SECONDS", "900")))
+
+
+def watchlist_insider_cache_ttl_seconds() -> int:
+    return max(30, int(os.getenv("WATCHLIST_INSIDER_CACHE_TTL_SECONDS", "120")))
+
+
 def _sort_news(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(items, key=lambda row: int(row.get("datetime") or 0), reverse=True)
 
@@ -161,6 +172,8 @@ class NewsService:
         self.store = store or get_news_store()
         self._locks: dict[str, asyncio.Lock] = {}
         self._market_status_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._watchlist_earnings_cache: tuple[float, dict[str, Any]] | None = None
+        self._watchlist_insider_cache: tuple[float, dict[str, Any]] | None = None
 
     async def market_status(self, exchange: str = "US", *, refresh: bool = False) -> dict[str, Any]:
         exchange_key = exchange.strip().upper() or "US"
@@ -430,6 +443,216 @@ class NewsService:
                 "count": len(sorted_rows),
             },
         }
+
+    async def watchlist_earnings(
+        self,
+        *,
+        past_days: int = 14,
+        future_days: int = 90,
+        request_delay_seconds: float = 0.8,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        cache_key = f"{past_days}:{future_days}"
+        ttl = watchlist_earnings_cache_ttl_seconds()
+        cached = self._watchlist_earnings_cache
+        if (
+            cached
+            and not refresh
+            and (time.time() - cached[0]) < ttl
+            and cached[1].get("meta", {}).get("cacheKey") == cache_key
+        ):
+            payload = dict(cached[1])
+            meta = dict(payload.get("meta") or {})
+            meta["cached"] = True
+            meta["ageSeconds"] = round(time.time() - cached[0], 1)
+            payload["meta"] = meta
+            return payload
+
+        ticker_refs: dict[str, list[dict[str, Any]]] = {}
+        for watchlist in get_watchlist_store().list_watchlists():
+            for symbol in watchlist.get("symbols") or []:
+                raw = symbol.get("tradingsymbol") or symbol.get("symbol") or ""
+                ticker = finnhub_ticker(str(raw))
+                if not ticker:
+                    continue
+                ticker_refs.setdefault(ticker, []).append(
+                    {
+                        "tradingsymbol": symbol.get("tradingsymbol") or symbol.get("symbol"),
+                        "symboltoken": symbol.get("symboltoken"),
+                        "watchlistId": watchlist.get("id"),
+                        "broker": watchlist.get("broker"),
+                        "accountEnv": watchlist.get("account_env"),
+                    }
+                )
+
+        tickers = sorted(ticker_refs.keys())
+        all_events: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        semaphore = asyncio.Semaphore(max(1, int(os.getenv("WATCHLIST_EARNINGS_CONCURRENCY", "4"))))
+
+        async def fetch_ticker(ticker: str) -> None:
+            async with semaphore:
+                try:
+                    result = await self.earnings_calendar(
+                        ticker,
+                        past_days=past_days,
+                        future_days=future_days,
+                    )
+                except HTTPException as exc:
+                    errors.append(
+                        {
+                            "symbol": ticker,
+                            "status": exc.status_code,
+                            "detail": exc.detail,
+                        }
+                    )
+                    return
+                except Exception as exc:
+                    errors.append({"symbol": ticker, "detail": str(exc)})
+                    return
+
+                for row in result.get("data") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    all_events.append(
+                        {
+                            **row,
+                            "finnhubSymbol": ticker,
+                            "watchlistRefs": ticker_refs[ticker],
+                        }
+                    )
+
+        await asyncio.gather(*(fetch_ticker(ticker) for ticker in tickers))
+
+        all_events.sort(key=lambda row: str(row.get("date") or ""))
+        monitors = build_earnings_monitors(all_events)
+        payload = {
+            "status": True,
+            "data": all_events,
+            "monitor": monitors,
+            "meta": {
+                "cacheKey": cache_key,
+                "tickerCount": len(tickers),
+                "eventCount": len(all_events),
+                "pastDays": past_days,
+                "futureDays": future_days,
+                "errors": errors,
+                "cached": False,
+                "ageSeconds": 0,
+            },
+        }
+        self._watchlist_earnings_cache = (time.time(), payload)
+        return payload
+
+    async def insider_transactions(
+        self,
+        symbol: str,
+        *,
+        days: int = 90,
+    ) -> dict[str, Any]:
+        ticker = finnhub_ticker(symbol)
+        to_date = date.today()
+        from_date = to_date - timedelta(days=max(1, min(days, 365)))
+        payload = await _finnhub_get_object(
+            "/stock/insider-transactions",
+            {
+                "symbol": ticker,
+                "from": from_date.isoformat(),
+                "to": to_date.isoformat(),
+            },
+        )
+        rows = payload.get("data") if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            rows = []
+        sorted_rows = sorted(
+            rows,
+            key=lambda row: str(row.get("transactionDate") or row.get("filingDate") or ""),
+            reverse=True,
+        )[:100]
+        return {
+            "status": True,
+            "data": sorted_rows,
+            "meta": {
+                "symbol": ticker,
+                "from": from_date.isoformat(),
+                "to": to_date.isoformat(),
+                "count": len(sorted_rows),
+            },
+        }
+
+    def _watchlist_ticker_refs(self) -> dict[str, list[dict[str, Any]]]:
+        ticker_refs: dict[str, list[dict[str, Any]]] = {}
+        for watchlist in get_watchlist_store().list_watchlists():
+            for symbol in watchlist.get("symbols") or []:
+                raw = symbol.get("tradingsymbol") or symbol.get("symbol") or ""
+                ticker = finnhub_ticker(str(raw))
+                if not ticker:
+                    continue
+                ticker_refs.setdefault(ticker, []).append(
+                    {
+                        "tradingsymbol": symbol.get("tradingsymbol") or symbol.get("symbol"),
+                        "symboltoken": symbol.get("symboltoken"),
+                        "watchlistId": watchlist.get("id"),
+                        "broker": watchlist.get("broker"),
+                        "accountEnv": watchlist.get("account_env"),
+                    }
+                )
+        return ticker_refs
+
+    def watchlist_insider_transactions(
+        self,
+        *,
+        symbol: str | None = None,
+        days: int = 90,
+        limit: int = 500,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        cache_key = f"{symbol or '*'}:{days}:{limit}"
+        ttl = watchlist_insider_cache_ttl_seconds()
+        cached = self._watchlist_insider_cache
+        if (
+            cached
+            and not refresh
+            and (time.time() - cached[0]) < ttl
+            and cached[1].get("meta", {}).get("cacheKey") == cache_key
+        ):
+            payload = dict(cached[1])
+            meta = dict(payload.get("meta") or {})
+            meta["cached"] = True
+            meta["ageSeconds"] = round(time.time() - cached[0], 1)
+            payload["meta"] = meta
+            return payload
+
+        ticker_refs = self._watchlist_ticker_refs()
+        ticker_filter = finnhub_ticker(symbol) if symbol else None
+        rows = get_insider_store().list_transactions(
+            symbol=ticker_filter,
+            days=days,
+            limit=limit,
+        )
+        enriched: list[dict[str, Any]] = []
+        for row in rows:
+            ticker = str(row.get("symbol") or "").upper()
+            refs = ticker_refs.get(ticker) or []
+            if ticker_refs and not refs:
+                continue
+            enriched.append({**row, "finnhubSymbol": ticker, "watchlistRefs": refs})
+
+        payload = {
+            "status": True,
+            "data": enriched,
+            "meta": {
+                "cacheKey": cache_key,
+                "tickerCount": len(ticker_refs),
+                "transactionCount": len(enriched),
+                "days": days,
+                "lastPolledAt": get_insider_store().last_polled_at(),
+                "cached": False,
+                "ageSeconds": 0,
+            },
+        }
+        self._watchlist_insider_cache = (time.time(), payload)
+        return payload
 
     @staticmethod
     def _market_response(

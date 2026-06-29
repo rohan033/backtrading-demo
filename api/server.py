@@ -51,6 +51,7 @@ from control_plane.execution_sources import (
 )
 from control_plane.execution_source_links import ensure_research_source_on_engine
 from control_plane.news_poller import get_news_poller
+from control_plane.insider_poller import get_insider_poller
 from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
 from brokers.angel.adapters.portfolio import angel_portfolio_rows_from_holdings
 from brokers.etoro.adapters.portfolio import (
@@ -130,6 +131,9 @@ execution_scheduler: ExecutionScheduler | None = None
 _live_events_db: Optional[DbEventWriter] = None
 _news_poller = get_news_poller(
     broadcast=get_news_feed_hub().broadcast_notifications,
+)
+_insider_poller = get_insider_poller(
+    broadcast=get_news_feed_hub().broadcast_insider_transactions,
 )
 
 
@@ -327,9 +331,11 @@ async def control_plane_lifespan(_app: FastAPI):
     await cursor_agent_service.startup()
     await start_telegram_inbound_services()
     await _news_poller.start()
+    await _insider_poller.start()
     try:
         yield
     finally:
+        await _insider_poller.stop()
         await _news_poller.stop()
         await stop_telegram_inbound_services()
         await cursor_agent_service.shutdown()

@@ -40,6 +40,14 @@
   box-sizing: border-box;
 }
 
+.ms-main-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
 /* ── drawers ── */
 .ms-drawer {
   position: relative;

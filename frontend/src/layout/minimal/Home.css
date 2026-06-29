@@ -465,6 +465,8 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  display: flex;
+  flex-direction: column;
 }
 
 .hm-info-body .ms-news-panel {
@@ -614,6 +616,43 @@
 .hm-earnings-sub {
   margin-top: 1px;
   color: #888;
+}
+
+.hm-earnings-val--pending {
+  color: #4A6FA5;
+}
+
+.hm-earnings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 8px;
+}
+
+.hm-earnings-section__title {
+  margin: 0;
+  padding: 10px 12px 6px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #666;
+}
+
+.hm-earnings-status {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #F0F0F0;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.hm-earnings-status--upcoming {
+  background: #E8F1FF;
+  color: #2A5F9E;
 }
 
 .hm-sentiment-stack {

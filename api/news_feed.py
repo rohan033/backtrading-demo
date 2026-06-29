@@ -36,6 +36,22 @@ class NewsFeedHub:
         for ws in dead:
             self.disconnect(ws)
 
+    async def broadcast_insider_transactions(self, transactions: list[dict[str, Any]]) -> None:
+        if not transactions or not self._active_connections:
+            return
+        payload = {
+            "type": "insider",
+            "transactions": transactions,
+        }
+        dead: list[WebSocket] = []
+        for ws in list(self._active_connections):
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
     async def handle(self, ws: WebSocket) -> None:
         await self.connect(ws)
         try:

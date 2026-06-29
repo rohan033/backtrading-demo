@@ -1,15 +1,25 @@
 import { useEffect, useMemo, useState } from 'react'
+import './ResearchTable.css'
 import {
+  coerceInsiderChange,
   fetchEarningsCalendar,
   fetchFilingSentiment,
+  fetchInsiderTransactions,
   fetchSecFilings,
   finnhubSymbol,
   formatCompactMoney,
   formatEarningsHour,
   formatFilingDate,
-  formatPct,
+  formatInsiderSideLabel,
+  formatPolarityScore,
+  formatSentimentShare,
+  formatShareCount,
+  formatTransactionCode,
+  isUpcomingEarnings,
+  resolveInsiderSide,
   type EarningsEvent,
   type FilingSentiment,
+  type InsiderTransaction,
   type SecFiling,
 } from '../../lib/marketResearch'
 
@@ -19,6 +29,14 @@ function PanelMessage({ children }: { children: React.ReactNode }) {
 
 function PanelError({ message }: { message: string }) {
   return <p className="hm-panel-message hm-panel-message--error">{message}</p>
+}
+
+function ResearchTableShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="hm-r-table-scroll">
+      <div className="hm-r-table-card">{children}</div>
+    </div>
+  )
 }
 
 export function HomeFilingsPanel({ symbol }: { symbol: string }) {
@@ -57,25 +75,100 @@ export function HomeFilingsPanel({ symbol }: { symbol: string }) {
   }
 
   return (
-    <ul className="hm-data-list">
-      {items.map(item => (
-        <li key={item.accessNumber} className="hm-data-row">
-          <div className="hm-data-row__head">
-            <span className="hm-data-row__badge">{item.form || 'SEC'}</span>
-            <span className="hm-data-row__date">{formatFilingDate(item.filedDate || item.acceptedDate)}</span>
-          </div>
-          <div className="hm-data-row__meta">{item.accessNumber}</div>
-          <div className="hm-data-row__links">
-            {item.reportUrl ? (
-              <a href={item.reportUrl} target="_blank" rel="noopener noreferrer">Report</a>
-            ) : null}
-            {item.filingUrl ? (
-              <a href={item.filingUrl} target="_blank" rel="noopener noreferrer">Filing index</a>
-            ) : null}
-          </div>
-        </li>
-      ))}
-    </ul>
+    <ResearchTableShell>
+      <table className="hm-r-table">
+        <colgroup>
+          <col className="hm-r-col-form" />
+          <col className="hm-r-col-date" />
+          <col className="hm-r-col-access" />
+          <col className="hm-r-col-links" />
+        </colgroup>
+        <thead>
+          <tr className="hm-r-thead-row">
+            <th className="hm-r-th">Form</th>
+            <th className="hm-r-th">Filed</th>
+            <th className="hm-r-th">Access #</th>
+            <th className="hm-r-th">Links</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map(item => (
+            <tr key={item.accessNumber} className="hm-r-table-row">
+              <td className="hm-r-td">
+                <span className="hm-r-badge">{item.form || 'SEC'}</span>
+              </td>
+              <td className="hm-r-td">{formatFilingDate(item.filedDate || item.acceptedDate)}</td>
+              <td className="hm-r-td hm-r-td--mono">{item.accessNumber}</td>
+              <td className="hm-r-td">
+                {item.reportUrl ? (
+                  <a className="hm-r-link" href={item.reportUrl} target="_blank" rel="noopener noreferrer">
+                    Report
+                  </a>
+                ) : null}
+                {item.filingUrl ? (
+                  <a className="hm-r-link" href={item.filingUrl} target="_blank" rel="noopener noreferrer">
+                    Filing index
+                  </a>
+                ) : null}
+                {!item.reportUrl && !item.filingUrl ? '—' : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </ResearchTableShell>
+  )
+}
+
+function earningsEpsCell(event: EarningsEvent) {
+  const upcoming = isUpcomingEarnings(event)
+  const epsActual = event.epsActual
+  const epsEstimate = event.epsEstimate
+  const beat = !upcoming && epsActual != null && epsEstimate != null && epsActual >= epsEstimate
+
+  if (upcoming) {
+    return (
+      <>
+        <div className="hm-r-val hm-r-val--pending">
+          {epsEstimate != null ? epsEstimate.toFixed(2) : '—'}
+        </div>
+        <div className="hm-r-sub">consensus est</div>
+      </>
+    )
+  }
+
+  return (
+    <>
+      <div className={`hm-r-val${beat ? ' hm-r-val--up' : ''}`}>
+        {epsActual != null ? epsActual.toFixed(2) : '—'}
+      </div>
+      <div className="hm-r-sub">
+        est {epsEstimate != null ? epsEstimate.toFixed(2) : '—'}
+      </div>
+    </>
+  )
+}
+
+function earningsRevenueCell(event: EarningsEvent) {
+  const upcoming = isUpcomingEarnings(event)
+  if (upcoming) {
+    return (
+      <>
+        <div className="hm-r-val hm-r-val--pending">
+          {formatCompactMoney(event.revenueEstimate)}
+        </div>
+        <div className="hm-r-sub">consensus est</div>
+      </>
+    )
+  }
+
+  return (
+    <>
+      <div className="hm-r-val">{formatCompactMoney(event.revenueActual)}</div>
+      <div className="hm-r-sub">
+        est {formatCompactMoney(event.revenueEstimate)}
+      </div>
+    </>
   )
 }
 
@@ -104,6 +197,18 @@ export function HomeEarningsPanel({ symbol }: { symbol: string }) {
     return () => { cancelled = true }
   }, [symbol])
 
+  const { upcoming, reported } = useMemo(() => {
+    const next: EarningsEvent[] = []
+    const past: EarningsEvent[] = []
+    for (const item of items) {
+      if (isUpcomingEarnings(item)) next.push(item)
+      else past.push(item)
+    }
+    next.sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    past.sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    return { upcoming: next, reported: past }
+  }, [items])
+
   if (loading) return <PanelMessage>Loading earnings calendar…</PanelMessage>
   if (error) return <PanelError message={error} />
   if (!items.length) {
@@ -114,66 +219,177 @@ export function HomeEarningsPanel({ symbol }: { symbol: string }) {
     )
   }
 
+  const renderTable = (rows: EarningsEvent[]) => (
+    <table className="hm-r-table">
+      <colgroup>
+        <col style={{ width: '22%' }} />
+        <col className="hm-r-col-eps" />
+        <col className="hm-r-col-rev" />
+        <col className="hm-r-col-when" />
+      </colgroup>
+      <thead>
+        <tr className="hm-r-thead-row">
+          <th className="hm-r-th">Date</th>
+          <th className="hm-r-th">EPS</th>
+          <th className="hm-r-th">Rev</th>
+          <th className="hm-r-th">When</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map(item => {
+          const key = `${item.date}-${item.quarter}-${item.year}-${item.hour}`
+          return (
+            <tr key={key} className="hm-r-table-row">
+              <td className="hm-r-td">
+                <div className="hm-r-val">{item.date || '—'}</div>
+                <div className="hm-r-sub">
+                  {item.quarter ? `Q${item.quarter}` : '—'}
+                  {item.year ? ` ${item.year}` : ''}
+                </div>
+              </td>
+              <td className="hm-r-td">{earningsEpsCell(item)}</td>
+              <td className="hm-r-td">{earningsRevenueCell(item)}</td>
+              <td className="hm-r-td">{formatEarningsHour(item.hour)}</td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+
   return (
-    <div className="hm-earnings-table-wrap">
-      <table className="hm-earnings-table">
+    <div className="hm-r-section">
+      {upcoming.length ? (
+        <section className="hm-r-section">
+          <h3 className="hm-r-section__title">Upcoming</h3>
+          <ResearchTableShell>{renderTable(upcoming)}</ResearchTableShell>
+        </section>
+      ) : null}
+      {reported.length ? (
+        <section className="hm-r-section">
+          <h3 className="hm-r-section__title">Reported</h3>
+          <ResearchTableShell>{renderTable(reported)}</ResearchTableShell>
+        </section>
+      ) : null}
+      {!reported.length && upcoming.length ? (
+        <p className="hm-panel-footnote">
+          Finnhub free tier may only expose upcoming dates and consensus estimates for this symbol.
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+export function HomeInsiderPanel({ symbol }: { symbol: string }) {
+  const [items, setItems] = useState<InsiderTransaction[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    fetchInsiderTransactions(symbol, { days: 365 })
+      .then(rows => {
+        if (cancelled) return
+        setItems(rows)
+      })
+      .catch(err => {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : 'Failed to load insider transactions')
+        setItems([])
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [symbol])
+
+  if (loading) return <PanelMessage>Loading insider transactions…</PanelMessage>
+  if (error) return <PanelError message={error} />
+  if (!items.length) {
+    return (
+      <PanelMessage>
+        No insider transactions found for {finnhubSymbol(symbol)} in the last year.
+      </PanelMessage>
+    )
+  }
+
+  return (
+    <ResearchTableShell>
+      <table className="hm-r-table">
+        <colgroup>
+          <col style={{ width: '24%' }} />
+          <col style={{ width: '10%' }} />
+          <col style={{ width: '12%' }} />
+          <col style={{ width: '12%' }} />
+          <col style={{ width: '14%' }} />
+          <col style={{ width: '14%' }} />
+          <col style={{ width: '14%' }} />
+        </colgroup>
         <thead>
-          <tr>
-            <th>Date</th>
-            <th>EPS</th>
-            <th>Rev</th>
-            <th>When</th>
+          <tr className="hm-r-thead-row">
+            <th className="hm-r-th">Insider</th>
+            <th className="hm-r-th">Side</th>
+            <th className="hm-r-th">Change</th>
+            <th className="hm-r-th">Holdings</th>
+            <th className="hm-r-th">Txn date</th>
+            <th className="hm-r-th">Filed</th>
+            <th className="hm-r-th">Code / price</th>
           </tr>
         </thead>
         <tbody>
           {items.map(item => {
-            const key = `${item.date}-${item.quarter}-${item.year}-${item.hour}`
-            const epsActual = item.epsActual
-            const epsEstimate = item.epsEstimate
-            const beat = epsActual != null && epsEstimate != null && epsActual >= epsEstimate
+            const key = `${item.name}-${item.transactionDate}-${item.filingDate}-${item.change}-${item.transactionCode}`
+            const side = resolveInsiderSide(item)
+            const change = coerceInsiderChange(item.change)
             return (
-              <tr key={key}>
-                <td>
-                  <div className="hm-earnings-date">{item.date || '—'}</div>
-                  <div className="hm-earnings-q">
-                    {item.quarter ? `Q${item.quarter}` : '—'}
-                    {item.year ? ` ${item.year}` : ''}
-                  </div>
+              <tr key={key} className="hm-r-table-row">
+                <td className="hm-r-td">
+                  <div className="hm-r-val">{item.name || '—'}</div>
                 </td>
-                <td>
-                  <div className={`hm-earnings-val${beat ? ' hm-earnings-val--up' : ''}`}>
-                    {epsActual != null ? epsActual.toFixed(2) : '—'}
-                  </div>
-                  <div className="hm-earnings-sub">
-                    est {epsEstimate != null ? epsEstimate.toFixed(2) : '—'}
-                  </div>
+                <td className="hm-r-td">
+                  <span className={`hm-r-side hm-r-side--${side}`}>
+                    {formatInsiderSideLabel(item)}
+                  </span>
                 </td>
-                <td>
-                  <div className="hm-earnings-val">{formatCompactMoney(item.revenueActual)}</div>
-                  <div className="hm-earnings-sub">
-                    est {formatCompactMoney(item.revenueEstimate)}
-                  </div>
+                <td className="hm-r-td">
+                  <span className={`hm-r-val${side === 'buy' ? ' hm-r-val--up' : side === 'sell' ? ' hm-r-val--down' : ''}`}>
+                    {change != null && change > 0 ? '+' : ''}
+                    {formatShareCount(change)}
+                  </span>
                 </td>
-                <td>{formatEarningsHour(item.hour)}</td>
+                <td className="hm-r-td">{formatShareCount(item.share)}</td>
+                <td className="hm-r-td">{formatFilingDate(item.transactionDate)}</td>
+                <td className="hm-r-td">{formatFilingDate(item.filingDate)}</td>
+                <td className="hm-r-td">
+                  <div className="hm-r-sub">{formatTransactionCode(item.transactionCode)}</div>
+                  <div className="hm-r-val">{formatCompactMoney(item.transactionPrice)}</div>
+                </td>
               </tr>
             )
           })}
         </tbody>
       </table>
-    </div>
+    </ResearchTableShell>
   )
 }
 
-const SENTIMENT_FIELDS: Array<{ key: keyof FilingSentiment | string; label: string; tone?: 'pos' | 'neg' | 'neutral' }> = [
-  { key: 'positive', label: 'Positive', tone: 'pos' },
-  { key: 'negative', label: 'Negative', tone: 'neg' },
-  { key: 'polarity', label: 'Polarity', tone: 'neutral' },
-  { key: 'uncertainty', label: 'Uncertainty', tone: 'neutral' },
-  { key: 'litigious', label: 'Litigious', tone: 'neg' },
-  { key: 'constraining', label: 'Constraining', tone: 'neutral' },
-  { key: 'modal-weak', label: 'Modal weak', tone: 'neutral' },
-  { key: 'modal-moderate', label: 'Modal moderate', tone: 'neutral' },
-  { key: 'modal-strong', label: 'Modal strong', tone: 'neutral' },
+const SENTIMENT_FIELDS: Array<{
+  key: keyof FilingSentiment | string
+  label: string
+  tone?: 'pos' | 'neg' | 'neutral'
+  format?: 'share' | 'polarity'
+}> = [
+  { key: 'positive', label: 'Positive', tone: 'pos', format: 'share' },
+  { key: 'negative', label: 'Negative', tone: 'neg', format: 'share' },
+  { key: 'polarity', label: 'Polarity', tone: 'neutral', format: 'polarity' },
+  { key: 'uncertainty', label: 'Uncertainty', tone: 'neutral', format: 'share' },
+  { key: 'litigious', label: 'Litigious', tone: 'neg', format: 'share' },
+  { key: 'constraining', label: 'Constraining', tone: 'neutral', format: 'share' },
+  { key: 'modal-weak', label: 'Modal weak', tone: 'neutral', format: 'share' },
+  { key: 'modal-moderate', label: 'Modal moderate', tone: 'neutral', format: 'share' },
+  { key: 'modal-strong', label: 'Modal strong', tone: 'neutral', format: 'share' },
 ]
 
 function sentimentValue(row: FilingSentiment, key: string): number | null {
@@ -184,16 +400,25 @@ function sentimentValue(row: FilingSentiment, key: string): number | null {
   return typeof nested === 'number' ? nested : null
 }
 
+function formatSentimentMetric(value: number | null, format: 'share' | 'polarity' = 'share'): string {
+  if (format === 'polarity') return formatPolarityScore(value, 3)
+  return formatSentimentShare(value, 2)
+}
+
+type SentimentLoadState =
+  | { kind: 'ok'; rows: Array<{ filing: SecFiling; sentiment: FilingSentiment }> }
+  | { kind: 'no-targets'; message: string }
+  | { kind: 'premium'; targets: SecFiling[] }
+  | { kind: 'error'; message: string }
+
 export function HomeSentimentPanel({ symbol }: { symbol: string }) {
-  const [rows, setRows] = useState<Array<{ filing: SecFiling; sentiment: FilingSentiment }>>([])
+  const [state, setState] = useState<SentimentLoadState | null>(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
 
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    setError('')
-    setRows([])
+    setState(null)
 
     ;(async () => {
       try {
@@ -201,25 +426,51 @@ export function HomeSentimentPanel({ symbol }: { symbol: string }) {
         const targets = filings
           .filter(item => ['10-K', '10-Q'].includes(String(item.form || '').toUpperCase()))
           .slice(0, 3)
+
         if (!targets.length) {
-          if (!cancelled) setRows([])
+          if (!cancelled) {
+            setState({
+              kind: 'no-targets',
+              message: `No 10-K / 10-Q filings found for ${finnhubSymbol(symbol)} in the last two years.`,
+            })
+          }
           return
         }
 
         const loaded: Array<{ filing: SecFiling; sentiment: FilingSentiment }> = []
+        let premiumBlocked = false
+
         for (const filing of targets) {
           if (!filing.accessNumber) continue
           try {
             const sentiment = await fetchFilingSentiment(filing.accessNumber)
             loaded.push({ filing, sentiment })
-          } catch {
-            // Premium endpoint may fail per filing; keep others.
+          } catch (err) {
+            const message = err instanceof Error ? err.message : ''
+            if (/premium|access to this resource|403|502/i.test(message)) {
+              premiumBlocked = true
+            }
           }
         }
-        if (!cancelled) setRows(loaded)
+
+        if (!cancelled) {
+          if (loaded.length) {
+            setState({ kind: 'ok', rows: loaded })
+          } else if (premiumBlocked) {
+            setState({ kind: 'premium', targets })
+          } else {
+            setState({
+              kind: 'error',
+              message: 'Could not load filing sentiment for the latest 10-K / 10-Q reports.',
+            })
+          }
+        }
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load filing sentiment')
+          setState({
+            kind: 'error',
+            message: err instanceof Error ? err.message : 'Failed to load filing sentiment',
+          })
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -229,24 +480,53 @@ export function HomeSentimentPanel({ symbol }: { symbol: string }) {
     return () => { cancelled = true }
   }, [symbol])
 
-  const headline = useMemo(
-    () => (rows.length ? `Latest ${rows[0].filing.form} sentiment` : ''),
-    [rows],
-  )
-
   if (loading) return <PanelMessage>Loading filing sentiment…</PanelMessage>
-  if (error) return <PanelError message={error} />
-  if (!rows.length) {
+  if (!state) return <PanelMessage>Loading filing sentiment…</PanelMessage>
+
+  if (state.kind === 'error') return <PanelError message={state.message} />
+  if (state.kind === 'no-targets') return <PanelMessage>{state.message}</PanelMessage>
+
+  if (state.kind === 'premium') {
     return (
-      <PanelMessage>
-        No 10-K / 10-Q filing sentiment available for {finnhubSymbol(symbol)}. This Finnhub endpoint requires premium access.
-      </PanelMessage>
+      <div className="hm-sentiment-stack">
+        <PanelMessage>
+          SEC filing sentiment is a Finnhub premium endpoint. Latest 10-K / 10-Q filings for{' '}
+          {finnhubSymbol(symbol)} are listed below; scores are unavailable on the current API key.
+        </PanelMessage>
+        <ResearchTableShell>
+          <table className="hm-r-table">
+            <colgroup>
+              <col className="hm-r-col-form" />
+              <col className="hm-r-col-date" />
+              <col className="hm-r-col-access" />
+            </colgroup>
+            <thead>
+              <tr className="hm-r-thead-row">
+                <th className="hm-r-th">Form</th>
+                <th className="hm-r-th">Filed</th>
+                <th className="hm-r-th">Access #</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.targets.map(filing => (
+                <tr key={filing.accessNumber} className="hm-r-table-row">
+                  <td className="hm-r-td">
+                    <span className="hm-r-badge">{filing.form || 'SEC'}</span>
+                  </td>
+                  <td className="hm-r-td">{formatFilingDate(filing.filedDate || filing.acceptedDate)}</td>
+                  <td className="hm-r-td hm-r-td--mono">{filing.accessNumber}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </ResearchTableShell>
+      </div>
     )
   }
 
   return (
     <div className="hm-sentiment-stack">
-      {rows.map(({ filing, sentiment }) => (
+      {state.rows.map(({ filing, sentiment }) => (
         <section key={filing.accessNumber} className="hm-sentiment-card">
           <div className="hm-sentiment-card__head">
             <strong>{filing.form || 'Filing'}</strong>
@@ -259,7 +539,7 @@ export function HomeSentimentPanel({ symbol }: { symbol: string }) {
                 <div key={`${filing.accessNumber}-${field.key}`} className="hm-sentiment-metric">
                   <span className="hm-sentiment-metric__label">{field.label}</span>
                   <span className={`hm-sentiment-metric__value hm-sentiment-metric__value--${field.tone || 'neutral'}`}>
-                    {formatPct(value, 2)}
+                    {formatSentimentMetric(value, field.format || 'share')}
                   </span>
                 </div>
               )
@@ -267,7 +547,9 @@ export function HomeSentimentPanel({ symbol }: { symbol: string }) {
           </div>
         </section>
       ))}
-      {headline ? <p className="hm-panel-footnote">{headline} uses Loughran-McDonald word lists.</p> : null}
+      <p className="hm-panel-footnote">
+        Word-share percentages from Loughran-McDonald lists; polarity is a signed score, not a percent.
+      </p>
     </div>
   )
 }
