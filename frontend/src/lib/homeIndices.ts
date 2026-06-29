@@ -75,27 +75,51 @@ export async function resolveHomeIndices(
   return symbols
 }
 
-/** Percent change from the first bar so indices share one comparable scale. */
-export function indexPercentLine(candles: WatchlistSanitizedCandle[]): LineData[] {
-  const sorted = [...candles].sort((a, b) => a.time - b.time)
-  const base = sorted.find(candle => Number.isFinite(candle.close) && candle.close > 0)?.close
-  if (!base) return []
-
-  return sorted
+export function indexPriceLine(candles: WatchlistSanitizedCandle[]): LineData[] {
+  return [...candles]
     .filter(candle => Number.isFinite(candle.close) && candle.close > 0)
+    .sort((a, b) => a.time - b.time)
     .map(candle => ({
       time: candle.time as LineData['time'],
-      value: ((candle.close / base) - 1) * 100,
+      value: candle.close,
     }))
 }
 
-export function formatIndexChangePct(value: number | null | undefined): string {
+export function formatIndexPrice(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return '—'
-  const sign = value > 0 ? '+' : ''
-  return `${sign}${value.toFixed(2)}%`
+  return value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
 }
 
-export function latestIndexChange(line: LineData[]): number | null {
-  const last = line[line.length - 1]
-  return last && Number.isFinite(last.value) ? last.value : null
+export function latestIndexPrice(candles: WatchlistSanitizedCandle[]): number | null {
+  const last = candles[candles.length - 1]
+  return last && Number.isFinite(last.close) && last.close > 0 ? last.close : null
+}
+
+export function indexPriceAtTime(
+  candles: WatchlistSanitizedCandle[],
+  time: number,
+): number | null {
+  if (!candles.length) return null
+  const bucket = Math.floor(time / 60) * 60
+  const exact = candles.find(candle => candle.time === bucket)
+  if (exact) return exact.close
+
+  let nearest: WatchlistSanitizedCandle | null = null
+  for (const candle of candles) {
+    if (candle.time > bucket) break
+    nearest = candle
+  }
+  return nearest?.close ?? null
+}
+
+export function formatIndexHoverTime(time: number): string {
+  return new Date(time * 1000).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }

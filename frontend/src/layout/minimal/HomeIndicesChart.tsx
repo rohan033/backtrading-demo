@@ -4,21 +4,38 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineData,
+  type Time,
 } from 'lightweight-charts'
 
+import { useHomeIndicesLiveFeed } from '../../hooks/useHomeIndicesLiveFeed'
 import { loadHomeChartHistory } from '../../lib/homeChartHistory'
 import {
-  formatIndexChangePct,
-  indexPercentLine,
-  latestIndexChange,
+  formatIndexHoverTime,
+  formatIndexPrice,
+  indexPriceAtTime,
+  indexPriceLine,
+  latestIndexPrice,
   resolveHomeIndices,
   type HomeIndexSymbol,
 } from '../../lib/homeIndices'
 import {
   applyHomeChartViewport,
+  mergeLiveTickIntoWatchlistCandles,
   type WatchlistSanitizedCandle,
 } from '../../lib/watchlistCandles'
 import type { WatchlistBroker } from '../../lib/watchlistBrokers'
+
+type HoverTipRow = {
+  id: string
+  label: string
+  color: string
+  price: number
+}
+
+type HoverTip = {
+  time: number
+  rows: HoverTipRow[]
+}
 
 function sortedUniqueCandles(candles: WatchlistSanitizedCandle[]): WatchlistSanitizedCandle[] {
   const byTime = new Map<number, WatchlistSanitizedCandle>()
@@ -69,14 +86,59 @@ export default function HomeIndicesChart({
   const seriesRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
   const userInteractedRef = useRef(false)
   const lastAutoFitKeyRef = useRef<string | null>(null)
+  const indicesRef = useRef<HomeIndexSymbol[]>([])
+  const seriesCandlesRef = useRef<Record<string, WatchlistSanitizedCandle[]>>({})
+  const hiddenIdsRef = useRef<Set<string>>(new Set())
 
   const [indices, setIndices] = useState<HomeIndexSymbol[]>([])
-  const [seriesLines, setSeriesLines] = useState<Record<string, LineData[]>>({})
+  const [seriesCandles, setSeriesCandles] = useState<Record<string, WatchlistSanitizedCandle[]>>({})
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(() => new Set())
+  const [legendVisible, setLegendVisible] = useState(true)
+  const [hoverTip, setHoverTip] = useState<HoverTip | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   const chartKey = `${broker}:${accountEnv}`
+
+  const { ltps, streamStatus } = useHomeIndicesLiveFeed(
+    indices,
+    broker,
+    accountEnv,
+    indices.length > 0,
+  )
+
+  const liveSeriesCandles = useMemo(() => {
+    const next: Record<string, WatchlistSanitizedCandle[]> = {}
+    for (const index of indices) {
+      const base = seriesCandles[index.id] ?? []
+      next[index.id] = sortedUniqueCandles(
+        mergeLiveTickIntoWatchlistCandles(base, ltps[index.id]),
+      )
+    }
+    return next
+  }, [indices, ltps, seriesCandles])
+
+  indicesRef.current = indices
+  seriesCandlesRef.current = liveSeriesCandles
+  hiddenIdsRef.current = hiddenIds
+
+  const streamBadgeClass = `hm-stream-badge hm-stream-badge--${
+    streamStatus.tone === 'ok'
+      ? 'ok'
+      : streamStatus.tone === 'error'
+        ? 'error'
+        : streamStatus.tone === 'warn'
+          ? 'warn'
+          : 'idle'
+  }`
+
+  const seriesLines = useMemo(() => {
+    const lines: Record<string, LineData[]> = {}
+    for (const [id, candles] of Object.entries(liveSeriesCandles)) {
+      lines[id] = indexPriceLine(candles)
+    }
+    return lines
+  }, [liveSeriesCandles])
 
   const toggleIndexVisibility = (id: string) => {
     setHiddenIds(prev => {
@@ -92,8 +154,9 @@ export default function HomeIndicesChart({
     setLoading(true)
     setError('')
     setIndices([])
-    setSeriesLines({})
+    setSeriesCandles({})
     setHiddenIds(new Set())
+    setHoverTip(null)
 
     void resolveHomeIndices(broker, accountEnv)
       .then(resolved => {
@@ -116,21 +179,21 @@ export default function HomeIndicesChart({
           }, {
             onRefresh: fresh => {
               if (cancelled || !fresh.length) return
-              setSeriesLines(prev => ({
+              setSeriesCandles(prev => ({
                 ...prev,
-                [index.id]: indexPercentLine(sortedUniqueCandles(fresh)),
+                [index.id]: sortedUniqueCandles(fresh),
               }))
             },
           }).then(candles => ({
             id: index.id,
-            line: indexPercentLine(sortedUniqueCandles(candles)),
+            candles: sortedUniqueCandles(candles),
           }))),
         )
           .then(rows => {
             if (cancelled) return
-            const nextLines: Record<string, LineData[]> = {}
-            for (const row of rows) nextLines[row.id] = row.line
-            setSeriesLines(nextLines)
+            const nextCandles: Record<string, WatchlistSanitizedCandle[]> = {}
+            for (const row of rows) nextCandles[row.id] = row.candles
+            setSeriesCandles(nextCandles)
           })
           .finally(() => {
             if (!cancelled) setLoading(false)
@@ -149,9 +212,9 @@ export default function HomeIndicesChart({
   const legend = useMemo(
     () => indices.map(index => ({
       ...index,
-      change: latestIndexChange(seriesLines[index.id] ?? []),
+      price: latestIndexPrice(liveSeriesCandles[index.id] ?? []),
     })),
-    [indices, seriesLines],
+    [indices, liveSeriesCandles],
   )
 
   const maxLineCount = useMemo(
@@ -177,13 +240,48 @@ export default function HomeIndicesChart({
         horzLines: { color: '#F1F1F1' },
       },
       rightPriceScale: {
+        visible: false,
         borderVisible: false,
-        scaleMargins: { top: 0.08, bottom: 0.12 },
       },
       timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
-      crosshair: { mode: 0 },
+      crosshair: { mode: 1 },
     })
     chartRef.current = chart
+
+    const crosshairHandler = (param: {
+      time?: Time
+      point?: { x: number; y: number }
+    }) => {
+      if (!param.time || !param.point) {
+        setHoverTip(null)
+        return
+      }
+
+      const time = typeof param.time === 'number'
+        ? param.time
+        : Number(param.time)
+      if (!Number.isFinite(time)) {
+        setHoverTip(null)
+        return
+      }
+
+      const rows: HoverTipRow[] = []
+      for (const index of indicesRef.current) {
+        if (hiddenIdsRef.current.has(index.id)) continue
+        const price = indexPriceAtTime(seriesCandlesRef.current[index.id] ?? [], time)
+        if (price == null) continue
+        rows.push({
+          id: index.id,
+          label: index.label,
+          color: index.color,
+          price,
+        })
+      }
+
+      setHoverTip(rows.length ? { time, rows } : null)
+    }
+
+    chart.subscribeCrosshairMove(crosshairHandler)
 
     const resize = () => {
       chart.applyOptions({
@@ -198,6 +296,7 @@ export default function HomeIndicesChart({
     el.addEventListener('pointerdown', markUserInteracted)
 
     return () => {
+      chart.unsubscribeCrosshairMove(crosshairHandler)
       el.removeEventListener('wheel', markUserInteracted)
       el.removeEventListener('pointerdown', markUserInteracted)
       observer.disconnect()
@@ -220,6 +319,17 @@ export default function HomeIndicesChart({
           priceLineVisible: false,
           lastValueVisible: true,
           title: index.label,
+          priceScaleId: index.id,
+          priceFormat: {
+            type: 'price',
+            precision: 2,
+            minMove: 0.01,
+          },
+        })
+        chart.priceScale(index.id).applyOptions({
+          visible: false,
+          borderVisible: false,
+          scaleMargins: { top: 0.08, bottom: 0.12 },
         })
         seriesRef.current.set(index.id, series)
       }
@@ -241,9 +351,53 @@ export default function HomeIndicesChart({
   }, [chartKey, hiddenIds, indices, seriesLines])
 
   return (
-    <div className="hm-chart-body hm-chart-body--indices">
+    <>
+      <div className="hm-chart-head hm-chart-head--indices">
+        <div className="hm-chart-head__main">
+          <div className="hm-chart-copy">
+            <div className="hm-chart-title">US indices</div>
+            <div className="hm-chart-subtitle">
+              SPX500 · NSDQ100 · DJ30 · hover chart for history
+            </div>
+          </div>
+        </div>
+        <div className="hm-indices-head__aside">
+          {indices.length ? (
+            <span className={streamBadgeClass}>{streamStatus.label}</span>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="hm-chart-body hm-chart-body--indices">
       <div className="hm-chart-host-wrap">
         <div ref={hostRef} className="hm-chart-host" />
+        {legend.length ? (
+          <div className="hm-indices-tooltip" aria-live="polite" aria-label="Index prices">
+            {(hoverTip?.rows ?? legend
+              .filter(item => !hiddenIds.has(item.id))
+              .map(item => ({
+                id: item.id,
+                label: item.label,
+                color: item.color,
+                price: item.price,
+              }))).map(row => (
+              <div key={row.id} className="hm-indices-tooltip-row">
+                <span
+                  className="hm-indices-legend-dot"
+                  style={{ backgroundColor: row.color }}
+                  aria-hidden="true"
+                />
+                <span className="hm-indices-tooltip-label">{row.label}</span>
+                <span className="hm-indices-tooltip-price">{formatIndexPrice(row.price)}</span>
+              </div>
+            ))}
+            <div
+              className={`hm-indices-tooltip-time${hoverTip ? '' : ' hm-indices-tooltip-time--placeholder'}`}
+            >
+              {hoverTip ? formatIndexHoverTime(hoverTip.time) : '00:00'}
+            </div>
+          </div>
+        ) : null}
         {error ? <span className="hm-chart-label hm-chart-label--error">{error}</span> : null}
         {!error && loading && !maxLineCount ? (
           <span className="hm-chart-label">loading indices…</span>
@@ -253,31 +407,44 @@ export default function HomeIndicesChart({
         ) : null}
       </div>
       {legend.length ? (
-        <div className="hm-indices-legend" aria-label="Index legend">
-          {legend.map(item => {
-            const visible = !hiddenIds.has(item.id)
-            return (
-              <button
-                key={item.id}
-                type="button"
-                className={`hm-indices-legend-item${visible ? '' : ' hm-indices-legend-item--hidden'}`}
-                onClick={() => toggleIndexVisibility(item.id)}
-                aria-pressed={visible}
-                title={visible ? `Hide ${item.label}` : `Show ${item.label}`}
-              >
-                <IndexVisibilityIcon visible={visible} />
-                <span
-                  className="hm-indices-legend-dot"
-                  style={{ backgroundColor: item.color }}
-                  aria-hidden="true"
-                />
-                <span className="hm-indices-legend-label">{item.label}</span>
-                <span className="hm-indices-legend-change">{formatIndexChangePct(item.change)}</span>
-              </button>
-            )
-          })}
+        <div className="hm-indices-legend-wrap">
+          <button
+            type="button"
+            className="hm-indices-legend-toggle"
+            onClick={() => setLegendVisible(visible => !visible)}
+            aria-expanded={legendVisible}
+          >
+            {legendVisible ? 'Hide legend' : 'Show legend'}
+          </button>
+          {legendVisible ? (
+            <div className="hm-indices-legend" aria-label="Index legend">
+              {legend.map(item => {
+                const visible = !hiddenIds.has(item.id)
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`hm-indices-legend-item${visible ? '' : ' hm-indices-legend-item--hidden'}`}
+                    onClick={() => toggleIndexVisibility(item.id)}
+                    aria-pressed={visible}
+                    title={visible ? `Hide ${item.label}` : `Show ${item.label}`}
+                  >
+                    <IndexVisibilityIcon visible={visible} />
+                    <span
+                      className="hm-indices-legend-dot"
+                      style={{ backgroundColor: item.color }}
+                      aria-hidden="true"
+                    />
+                    <span className="hm-indices-legend-label">{item.label}</span>
+                    <span className="hm-indices-legend-change">{formatIndexPrice(item.price)}</span>
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
         </div>
       ) : null}
-    </div>
+      </div>
+    </>
   )
 }

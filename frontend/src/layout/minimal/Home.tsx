@@ -269,6 +269,7 @@ function InfoPlaceholder({ title, body }: { title: string; body: string }) {
 
 const AI_DRAWER_WIDTH_KEY = 'home-ai-drawer-width'
 const AI_DRAWER_COLLAPSED_KEY = 'home-ai-drawer-collapsed'
+const INFO_PANEL_COLLAPSED_KEY = 'home-info-panel-collapsed'
 const AI_DRAWER_MIN = 280
 const AI_DRAWER_MAX = 520
 const AI_DRAWER_DEFAULT = 340
@@ -491,6 +492,9 @@ export default function Home() {
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
   const [infoTab, setInfoTab] = useState<InfoTab>('news')
+  const [infoPanelCollapsed, setInfoPanelCollapsed] = useState(() =>
+    loadDrawerBool(INFO_PANEL_COLLAPSED_KEY, false),
+  )
   const [chatDraft, setChatDraft] = useState('')
   const [aiDrawerCollapsed, setAiDrawerCollapsed] = useState(() =>
     loadDrawerBool(AI_DRAWER_COLLAPSED_KEY, false),
@@ -538,6 +542,18 @@ export default function Home() {
     feed_mode: 'websocket',
     enabled: Boolean(selection),
   })
+
+  const toggleInfoPanel = useCallback(() => {
+    setInfoPanelCollapsed(prev => {
+      const next = !prev
+      try {
+        localStorage.setItem(INFO_PANEL_COLLAPSED_KEY, String(next))
+      } catch {
+        // ignore storage errors
+      }
+      return next
+    })
+  }, [])
 
   const persistSelection = useCallback((next: HomeSelection | null) => {
     setSelection(next)
@@ -783,7 +799,7 @@ export default function Home() {
       </div>
 
       <div className="hm-body-row">
-        <div className="hm-main">
+        <div className={`hm-main${infoPanelCollapsed ? ' hm-main--info-collapsed' : ''}`}>
           <div className={`hm-top-row${selection ? '' : ' hm-top-row--full'}`}>
             <section className="hm-card hm-chart-card">
               {selection ? (
@@ -808,19 +824,7 @@ export default function Home() {
                   <HomeChart selection={selection} ltp={ltp} />
                 </>
               ) : (
-                <>
-                  <div className="hm-chart-head">
-                    <div className="hm-chart-head__main">
-                      <div className="hm-chart-copy">
-                        <div className="hm-chart-title">US indices</div>
-                        <div className="hm-chart-subtitle">
-                          SPX500 · NSDQ100 · DJ30 · % change from window start
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  <HomeIndicesChart broker={broker} accountEnv={accountEnv} />
-                </>
+                <HomeIndicesChart broker={broker} accountEnv={accountEnv} />
               )}
             </section>
 
@@ -835,46 +839,67 @@ export default function Home() {
             ) : null}
           </div>
 
-          <section className="hm-card hm-info-card">
-            <div className="hm-info-tabs" role="tablist" aria-label="Stock research">
-              {([
-                ['news', 'News'],
-                ['filings', 'Filings'],
-                ['earnings', 'Earnings'],
-                ['insider', 'Insider'],
-                ['sentiment', 'Sentiment'],
-              ] as const).map(([id, label]) => (
+          {infoPanelCollapsed ? (
+            <button
+              type="button"
+              className="hm-info-expand-tab"
+              onClick={toggleInfoPanel}
+              aria-label="Show research panel"
+              title="Show research panel"
+            >
+              Research ▲
+            </button>
+          ) : (
+            <section className="hm-card hm-info-card">
+              <div className="hm-info-tabs" role="tablist" aria-label="Stock research">
+                {([
+                  ['news', 'News'],
+                  ['filings', 'Filings'],
+                  ['earnings', 'Earnings'],
+                  ['insider', 'Insider'],
+                  ['sentiment', 'Sentiment'],
+                ] as const).map(([id, label]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="tab"
+                    aria-selected={infoTab === id}
+                    className={`hm-info-tab${infoTab === id ? ' hm-info-tab--active' : ''}`}
+                    onClick={() => setInfoTab(id)}
+                  >
+                    {label}
+                  </button>
+                ))}
                 <button
-                  key={id}
                   type="button"
-                  role="tab"
-                  aria-selected={infoTab === id}
-                  className={`hm-info-tab${infoTab === id ? ' hm-info-tab--active' : ''}`}
-                  onClick={() => setInfoTab(id)}
+                  className="hm-info-collapse-btn"
+                  onClick={toggleInfoPanel}
+                  aria-label="Hide research panel"
+                  title="Hide research panel"
                 >
-                  {label}
+                  ▼
                 </button>
-              ))}
-            </div>
-            <div className="hm-info-body">
-              {!selection ? (
-                <InfoPlaceholder
-                  title="No stock selected"
-                  body="Pick a symbol from search to load company news, SEC filings, earnings calendar, insider trades, and filing sentiment."
-                />
-              ) : infoTab === 'news' ? (
-                <CompanyNewsPanel symbol={newsSymbol} variant="minimal" showHeader={false} />
-              ) : infoTab === 'filings' ? (
-                <HomeFilingsPanel symbol={newsSymbol} />
-              ) : infoTab === 'earnings' ? (
-                <HomeEarningsPanel symbol={newsSymbol} />
-              ) : infoTab === 'insider' ? (
-                <HomeInsiderPanel symbol={newsSymbol} />
-              ) : (
-                <HomeSentimentPanel symbol={newsSymbol} />
-              )}
-            </div>
-          </section>
+              </div>
+              <div className="hm-info-body">
+                {!selection ? (
+                  <InfoPlaceholder
+                    title="No stock selected"
+                    body="Pick a symbol from search to load company news, SEC filings, earnings calendar, insider trades, and filing sentiment."
+                  />
+                ) : infoTab === 'news' ? (
+                  <CompanyNewsPanel symbol={newsSymbol} variant="minimal" showHeader={false} />
+                ) : infoTab === 'filings' ? (
+                  <HomeFilingsPanel symbol={newsSymbol} />
+                ) : infoTab === 'earnings' ? (
+                  <HomeEarningsPanel symbol={newsSymbol} />
+                ) : infoTab === 'insider' ? (
+                  <HomeInsiderPanel symbol={newsSymbol} />
+                ) : (
+                  <HomeSentimentPanel symbol={newsSymbol} />
+                )}
+              </div>
+            </section>
+          )}
         </div>
 
         <HomeAiDrawer
