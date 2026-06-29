@@ -74,3 +74,46 @@ def test_company_news_returns_stale_cache_on_refresh_failure(monkeypatch):
             assert stale["meta"]["stale"] is True
 
     asyncio.run(run())
+
+
+def test_sec_filings_and_earnings_calendar(monkeypatch):
+    async def run():
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NewsStore(db_path=os.path.join(tmp, "news.db"))
+            service = NewsService(store=store)
+
+            async def fake_get(path, params):
+                if path == "/stock/filings":
+                    return [{
+                        "accessNumber": "0000320193-20-000052",
+                        "symbol": params["symbol"],
+                        "form": "10-K",
+                        "filedDate": "2020-02-27 00:00:00",
+                    }]
+                raise AssertionError(f"unexpected path {path}")
+
+            async def fake_get_object(path, params):
+                assert path == "/calendar/earnings"
+                assert params["symbol"] == "AAPL"
+                return {
+                    "earningsCalendar": [{
+                        "date": "2025-01-30",
+                        "symbol": "AAPL",
+                        "epsActual": 2.4,
+                        "epsEstimate": 2.35,
+                        "hour": "amc",
+                        "quarter": 1,
+                        "year": 2025,
+                    }],
+                }
+
+            monkeypatch.setattr("control_plane.news_service._finnhub_get", fake_get)
+            monkeypatch.setattr("control_plane.news_service._finnhub_get_object", fake_get_object)
+
+            filings = await service.sec_filings("AAPL")
+            earnings = await service.earnings_calendar("AAPL")
+
+            assert filings["data"][0]["form"] == "10-K"
+            assert earnings["data"][0]["epsActual"] == 2.4
+
+    asyncio.run(run())

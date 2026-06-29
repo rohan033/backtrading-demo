@@ -12,6 +12,7 @@ import { formatBrokerMoney } from '../../lib/currency'
 import { watchlistTickKey, type Watchlist } from '../../lib/watchlists'
 import WatchAndTrade from './WatchAndTrade'
 import Strategies from './Strategies'
+import Home from './Home'
 import MarketClockBar from './MarketClockBar'
 import { useUrlState } from './useUrlState'
 
@@ -140,7 +141,9 @@ function MainPanel({ tab, setTab }: { tab: MainTab; setTab: (t: MainTab) => void
         <MarketClockBar />
       </div>
       <div className="ms-body" style={{ padding: 0, overflow: 'hidden' }}>
-        {tab === 'watch-trade' ? (
+        {tab === 'home' ? (
+          <Home />
+        ) : tab === 'watch-trade' ? (
           <WatchAndTrade />
         ) : tab === 'strategies' ? (
           <Strategies />
@@ -442,7 +445,7 @@ export default function MinimalShell() {
   const [search, setSearch] = useState('')
   const rightResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
 
-  const mainTab: MainTab = MAIN_TABS.includes(state.tab as MainTab) ? (state.tab as MainTab) : 'orders'
+  const mainTab: MainTab = MAIN_TABS.includes(state.tab as MainTab) ? (state.tab as MainTab) : 'home'
   const newsTab: NewsTab = NEWS_TABS.includes(state.news as NewsTab) ? (state.news as NewsTab) : 'watchlist'
   const activeNewsSymbol = useMemo(() => {
     if (!state.symboltoken) return null

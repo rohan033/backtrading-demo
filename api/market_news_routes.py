@@ -73,3 +73,45 @@ async def get_market_status(
     refresh: bool = Query(False),
 ):
     return await get_news_service().market_status(exchange, refresh=refresh)
+
+
+@router.get(
+    "/filings",
+    operation_id="get_sec_filings",
+    summary="SEC filings for a symbol (Finnhub)",
+)
+async def get_sec_filings(
+    symbol: str = Query(..., min_length=1, max_length=32),
+    form: str | None = Query(None, max_length=32),
+    days: int = Query(365, ge=1, le=730),
+    limit: int = Query(40, ge=1, le=100),
+):
+    return await get_news_service().sec_filings(symbol, form=form, days=days, limit=limit)
+
+
+@router.get(
+    "/filings-sentiment",
+    operation_id="get_filing_sentiment",
+    summary="SEC filing sentiment for a report access number (Finnhub premium)",
+)
+async def get_filing_sentiment(
+    access_number: str = Query(..., min_length=1, alias="accessNumber"),
+):
+    return await get_news_service().filing_sentiment(access_number)
+
+
+@router.get(
+    "/earnings-calendar",
+    operation_id="get_earnings_calendar",
+    summary="Historical and upcoming earnings for a symbol (Finnhub)",
+)
+async def get_earnings_calendar(
+    symbol: str = Query(..., min_length=1, max_length=32),
+    past_days: int = Query(90, ge=1, le=365, alias="pastDays"),
+    future_days: int = Query(120, ge=1, le=365, alias="futureDays"),
+):
+    return await get_news_service().earnings_calendar(
+        symbol,
+        past_days=past_days,
+        future_days=future_days,
+    )

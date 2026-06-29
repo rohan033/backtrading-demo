@@ -343,6 +343,94 @@ class NewsService:
             },
         }
 
+    async def sec_filings(
+        self,
+        symbol: str,
+        *,
+        form: str | None = None,
+        days: int = 365,
+        limit: int = 40,
+    ) -> dict[str, Any]:
+        ticker = finnhub_ticker(symbol)
+        to_date = date.today()
+        from_date = to_date - timedelta(days=max(1, min(days, 730)))
+        params: dict[str, str] = {
+            "symbol": ticker,
+            "from": from_date.isoformat(),
+            "to": to_date.isoformat(),
+        }
+        if form:
+            params["form"] = form.strip()
+
+        items = await _finnhub_get("/stock/filings", params)
+        sorted_items = sorted(
+            items,
+            key=lambda row: str(row.get("filedDate") or row.get("acceptedDate") or ""),
+            reverse=True,
+        )[: max(1, min(limit, 100))]
+        return {
+            "status": True,
+            "data": sorted_items,
+            "meta": {
+                "symbol": ticker,
+                "from": from_date.isoformat(),
+                "to": to_date.isoformat(),
+                "count": len(sorted_items),
+            },
+        }
+
+    async def filing_sentiment(self, access_number: str) -> dict[str, Any]:
+        access = access_number.strip()
+        if not access:
+            raise HTTPException(status_code=400, detail="accessNumber is required")
+        payload = await _finnhub_get_object(
+            "/stock/filings-sentiment",
+            {"accessNumber": access},
+        )
+        return {
+            "status": True,
+            "data": payload,
+            "meta": {"accessNumber": access},
+        }
+
+    async def earnings_calendar(
+        self,
+        symbol: str,
+        *,
+        past_days: int = 90,
+        future_days: int = 120,
+    ) -> dict[str, Any]:
+        ticker = finnhub_ticker(symbol)
+        today = date.today()
+        from_date = today - timedelta(days=max(1, min(past_days, 365)))
+        to_date = today + timedelta(days=max(1, min(future_days, 365)))
+        payload = await _finnhub_get_object(
+            "/calendar/earnings",
+            {
+                "symbol": ticker,
+                "from": from_date.isoformat(),
+                "to": to_date.isoformat(),
+            },
+        )
+        rows = payload.get("earningsCalendar") if isinstance(payload, dict) else []
+        if not isinstance(rows, list):
+            rows = []
+        sorted_rows = sorted(
+            rows,
+            key=lambda row: str(row.get("date") or ""),
+            reverse=True,
+        )
+        return {
+            "status": True,
+            "data": sorted_rows,
+            "meta": {
+                "symbol": ticker,
+                "from": from_date.isoformat(),
+                "to": to_date.isoformat(),
+                "count": len(sorted_rows),
+            },
+        }
+
     @staticmethod
     def _market_response(
         category: str,
