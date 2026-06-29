@@ -118,9 +118,160 @@ async def etoro_symbol_map_for_records(client, records: list[dict]) -> dict[int,
     return await client.aget_instrument_symbol_map(instrument_ids)
 
 
-def etoro_position_to_portfolio_row(position: dict, symbol_map: dict[int, str] | None = None) -> dict:
+def _is_numeric_symbol(text: str) -> bool:
+    return bool(text) and text.isdigit()
+
+
+def metadata_from_etoro_record(record: dict | None) -> dict:
+    if not isinstance(record, dict):
+        return {}
+    ticker = (
+        record.get("symbolFull")
+        or record.get("internalSymbolFull")
+        or record.get("symbol")
+    )
+    display_name = (
+        record.get("internalInstrumentDisplayName")
+        or record.get("instrumentDisplayName")
+        or record.get("instrument_display_name")
+        or record.get("displayName")
+        or ticker
+    )
+    return {
+        "tradingsymbol": ticker,
+        "internal_asset_class_name": record.get("internalAssetClassName") or record.get("internal_asset_class_name"),
+        "instrument_display_name": display_name,
+        "logo35x35": record.get("logo35x35"),
+        "logo50x50": record.get("logo50x50"),
+        "logo150x150": record.get("logo150x150"),
+    }
+
+
+def _merge_display_metadata(existing: dict, incoming: dict) -> dict:
+    merged = dict(existing)
+    for key, value in incoming.items():
+        if value and not merged.get(key):
+            merged[key] = value
+    return merged
+
+
+async def etoro_display_map_for_records(client, records: list[dict]) -> dict[int, dict]:
+    instrument_ids: list[int] = []
+    seen: set[int] = set()
+    for record in records:
+        instrument_id = etoro_instrument_id(record)
+        if instrument_id is not None and instrument_id not in seen:
+            seen.add(instrument_id)
+            instrument_ids.append(instrument_id)
+    if not instrument_ids:
+        return {}
+
+    display_map: dict[int, dict] = {}
+    display_records = await client.aget_instrument_display_data(instrument_ids)
+    for record in display_records:
+        instrument_id = etoro_instrument_id(record)
+        if instrument_id is None:
+            continue
+        display_map[instrument_id] = metadata_from_etoro_record(record)
+
+    instrument_records = await client.aget_instrument_records(instrument_ids)
+    for instrument_id, record in instrument_records.items():
+        display_map[instrument_id] = _merge_display_metadata(
+            display_map.get(instrument_id, {}),
+            metadata_from_etoro_record(record),
+        )
+
+    return display_map
+
+
+def portfolio_row_needs_symbol_enrichment(row: dict) -> bool:
+    ticker = str(row.get("tradingsymbol") or "").strip()
+    if not _is_numeric_symbol(ticker):
+        return False
+    name = str(row.get("instrument_display_name") or row.get("symbol") or "").strip()
+    has_logo = bool(row.get("logo35x35") or row.get("logo50x50") or row.get("logo150x150"))
+    if name and not _is_numeric_symbol(name) and has_logo:
+        return False
+    return True
+
+
+async def rehydrate_etoro_portfolio_rows(client, rows: list[dict]) -> list[dict]:
+    instrument_ids: list[int] = []
+    for row in rows:
+        if not portfolio_row_needs_symbol_enrichment(row):
+            continue
+        token = str(row.get("symboltoken") or row.get("tradingsymbol") or "").strip()
+        if _is_numeric_symbol(token):
+            instrument_ids.append(int(token))
+    if not instrument_ids:
+        return rows
+
+    unique_ids = list(dict.fromkeys(instrument_ids))
+    symbol_map = await etoro_symbol_map_for_records(
+        client,
+        [{"instrumentID": instrument_id} for instrument_id in unique_ids],
+    )
+    display_map = await etoro_display_map_for_records(
+        client,
+        [{"instrumentID": instrument_id} for instrument_id in unique_ids],
+    )
+
+    enriched: list[dict] = []
+    for row in rows:
+        token = str(row.get("symboltoken") or row.get("tradingsymbol") or "").strip()
+        if not _is_numeric_symbol(token):
+            enriched.append(row)
+            continue
+
+        instrument_id = int(token)
+        display = display_map.get(instrument_id, {})
+        mapped_symbol = symbol_map.get(instrument_id)
+        new_row = dict(row)
+
+        ticker = mapped_symbol or display.get("tradingsymbol") or display.get("instrument_display_name")
+        if ticker and not _is_numeric_symbol(str(ticker)):
+            new_row["tradingsymbol"] = str(ticker)
+
+        display_name = display.get("instrument_display_name")
+        if display_name and not _is_numeric_symbol(str(display_name)):
+            new_row["instrument_display_name"] = str(display_name)
+            new_row["symbol"] = str(display_name)
+
+        for key in (
+            "internal_asset_class_name",
+            "instrument_display_name",
+            "logo35x35",
+            "logo50x50",
+            "logo150x150",
+        ):
+            value = display.get(key)
+            if value and not new_row.get(key):
+                new_row[key] = value
+
+        enriched.append(new_row)
+    return enriched
+
+
+def etoro_position_to_portfolio_row(
+    position: dict,
+    symbol_map: dict[int, str] | None = None,
+    display_map: dict[int, dict] | None = None,
+) -> dict:
     instrument_id = etoro_instrument_id(position)
+    display = (display_map or {}).get(instrument_id, {}) if instrument_id is not None else {}
     symbol = etoro_display_symbol(position, symbol_map)
+    mapped_symbol = symbol_map.get(instrument_id) if symbol_map and instrument_id is not None else None
+    display_ticker = display.get("tradingsymbol")
+    if mapped_symbol and not _is_numeric_symbol(mapped_symbol):
+        symbol = mapped_symbol
+    elif display_ticker and not _is_numeric_symbol(str(display_ticker)):
+        symbol = str(display_ticker)
+    elif _is_numeric_symbol(symbol):
+        display_name = display.get("instrument_display_name")
+        if display_name and not _is_numeric_symbol(str(display_name)):
+            symbol = str(display_name)
+
+    display_name = display.get("instrument_display_name") or symbol
     units = position.get("units") or position.get("Units") or position.get("amount") or 0
     open_rate = position.get("openRate") or position.get("OpenRate") or position.get("open") or 0
     ltp = (
@@ -130,8 +281,9 @@ def etoro_position_to_portfolio_row(position: dict, symbol_map: dict[int, str] |
         or position.get("openRate")
         or open_rate
     )
-    return {
+    row = {
         "tradingsymbol": symbol,
+        "symbol": display_name,
         "symboltoken": str(instrument_id) if instrument_id is not None else "",
         "exchange": "ETORO",
         "quantity": str(units),
@@ -139,6 +291,17 @@ def etoro_position_to_portfolio_row(position: dict, symbol_map: dict[int, str] |
         "ltp": str(ltp),
         "broker": "etoro",
     }
+    for key in (
+        "internal_asset_class_name",
+        "instrument_display_name",
+        "logo35x35",
+        "logo50x50",
+        "logo150x150",
+    ):
+        value = display.get(key)
+        if value:
+            row[key] = value
+    return row
 
 
 def enrich_etoro_orders_snapshot(snapshot: dict, symbol_map: dict[int, str]) -> dict:

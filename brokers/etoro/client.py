@@ -281,6 +281,45 @@ class EtoroClient:
 
         return symbol_map
 
+    async def aget_instrument_records(self, instrument_ids: list[int]) -> dict[int, dict[str, Any]]:
+        """Fetch full instrument metadata keyed by instrument id."""
+        records: dict[int, dict[str, Any]] = {}
+        if not instrument_ids:
+            return records
+
+        for start in range(0, len(instrument_ids), 100):
+            batch = instrument_ids[start:start + 100]
+            response = await self.arequest(
+                "GET",
+                "/market-data/instruments",
+                params={"instrumentIds": batch},
+            )
+            instruments: list[Any] = []
+            if isinstance(response, dict):
+                instruments = (
+                    response.get("items")
+                    or response.get("instruments")
+                    or response.get("Instrument")
+                    or response.get("data")
+                    or []
+                )
+            if isinstance(instruments, dict):
+                instruments = [instruments]
+
+            for instrument in instruments:
+                if not isinstance(instrument, dict):
+                    continue
+                instrument_id = (
+                    instrument.get("instrumentId")
+                    or instrument.get("instrumentID")
+                    or instrument.get("InstrumentID")
+                )
+                if instrument_id is None:
+                    continue
+                records[int(instrument_id)] = instrument
+
+        return records
+
     async def aget_instrument_display_data(self, instrument_ids: list[int]) -> list[dict[str, Any]]:
         """Fetch display metadata (logos, asset class) for eToro instruments."""
         if not instrument_ids:

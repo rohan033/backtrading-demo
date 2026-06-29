@@ -14,6 +14,7 @@ import WatchAndTrade from './WatchAndTrade'
 import Strategies from './Strategies'
 import Home from './Home'
 import Earnings from './Earnings'
+import Portfolio from './Portfolio'
 import EarningsMonitorBar from './EarningsMonitorBar'
 import MarketClockBar from './MarketClockBar'
 import NewsNotificationsBar from './NewsNotificationsBar'
@@ -155,7 +156,7 @@ function MainPanel({
             {'\u00a0Watch\u00a0&\u00a0Trade\u00a0'}
           </Pill>
           <Pill active={tab === 'orders'} onClick={() => setTab('orders')}>
-            {'\u00a0Orders\u00a0'}
+            {'\u00a0Portfolio\u00a0'}
           </Pill>
           <Pill active={tab === 'strategies'} onClick={() => setTab('strategies')}>
             {'\u00a0Strategies\u00a0'}
@@ -189,6 +190,8 @@ function MainPanel({
             error={earnings.error}
             onRefresh={earnings.refresh}
           />
+        ) : tab === 'orders' ? (
+          <Portfolio />
         ) : (
           <div style={{ height: '100%', background: '#EBEBEB' }} />
         )}

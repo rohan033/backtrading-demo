@@ -56,12 +56,16 @@ from control_plane.trading_schedule import default_schedule, resolve_schedule, t
 from brokers.angel.adapters.portfolio import angel_portfolio_rows_from_holdings
 from brokers.etoro.adapters.portfolio import (
     enrich_etoro_orders_snapshot as _enrich_etoro_orders_snapshot,
+    etoro_display_map_for_records as _etoro_display_map_for_records,
     etoro_display_symbol as _etoro_display_symbol,
     etoro_instrument_id as _etoro_instrument_id,
     etoro_instrument_to_search_row as _etoro_instrument_to_search_row,
     etoro_position_to_portfolio_row as _etoro_position_to_portfolio_row,
     etoro_symbol_map_for_records as _etoro_symbol_map_for_records,
+    metadata_from_etoro_record as _metadata_from_etoro_record,
     mock_search_rows as _mock_search_rows,
+    portfolio_row_needs_symbol_enrichment as _portfolio_row_needs_symbol_enrichment,
+    rehydrate_etoro_portfolio_rows as _rehydrate_etoro_portfolio_rows,
 )
 from brokers.fake.adapters.portfolio import fake_portfolio_rows
 from event.db_event_consumer import DbEventWriter, resolve_live_events_db_path
@@ -1782,6 +1786,21 @@ async def control_plane_portfolio(
     cached_rows, cached_at, cache_fresh = _get_portfolio_cache_entry(broker_name, account_env)
     if cached_rows is not None and cache_fresh and not refresh:
         import time as _time
+        if (
+            broker_name == "etoro"
+            and any(_portfolio_row_needs_symbol_enrichment(row) for row in cached_rows)
+        ):
+            try:
+                client = await _etoro_trading_client(account_env)
+                cached_rows = await _rehydrate_etoro_portfolio_rows(client, cached_rows)
+                _set_portfolio_cache(broker_name, account_env, cached_rows)
+            except Exception as enrich_exc:
+                log.warning(
+                    "[CONTROL_PORTFOLIO] cache rehydrate failed broker=%s env=%s: %s",
+                    broker_name,
+                    account_env,
+                    enrich_exc,
+                )
         log.info(
             "[CONTROL_PORTFOLIO] cache hit broker=%s env=%s rows=%d age=%.1fs",
             broker_name,
@@ -1807,7 +1826,11 @@ async def control_plane_portfolio(
             client = await _etoro_trading_client(account_env)
             positions = await client.aget_positions()
             symbol_map = await _etoro_symbol_map_for_records(client, positions)
-            rows = [_etoro_position_to_portfolio_row(item, symbol_map) for item in positions]
+            display_map = await _etoro_display_map_for_records(client, positions)
+            rows = [
+                _etoro_position_to_portfolio_row(item, symbol_map, display_map)
+                for item in positions
+            ]
             _set_portfolio_cache(broker_name, account_env, rows)
             log.info("[CONTROL_PORTFOLIO] etoro returned %d positions", len(rows))
             return {"status": True, "broker": broker_name, "account_env": account_env, "data": rows}
@@ -1838,6 +1861,73 @@ async def control_plane_portfolio(
                 "message": str(e),
             }
         return {"status": False, "broker": broker_name, "account_env": account_env, "message": str(e), "data": []}
+
+
+@app.get(
+    "/api/control/instruments/display",
+    operation_id="get_instrument_display",
+    summary="Get broker instrument display metadata",
+)
+async def control_plane_instrument_display(
+    broker: str = "etoro",
+    account_env: str = "demo",
+    instrument_ids: str = "",
+):
+    broker_name = (broker or "etoro").lower()
+    if broker_name != "etoro":
+        return {"status": False, "message": f"Instrument display lookup is not supported for {broker_name}", "data": {}}
+
+    parsed_ids: list[int] = []
+    seen: set[int] = set()
+    for part in instrument_ids.split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            instrument_id = int(text)
+        except ValueError:
+            continue
+        if instrument_id in seen:
+            continue
+        seen.add(instrument_id)
+        parsed_ids.append(instrument_id)
+
+    if not parsed_ids:
+        return {"status": True, "broker": broker_name, "account_env": account_env, "data": {}}
+
+    try:
+        client = await _etoro_trading_client(account_env)
+        symbol_map = await client.aget_instrument_symbol_map(parsed_ids)
+        display_map = await _etoro_display_map_for_records(client, [{"instrumentID": i} for i in parsed_ids])
+        instrument_records = await client.aget_instrument_records(parsed_ids)
+        data: dict[str, dict] = {}
+        for instrument_id in parsed_ids:
+            display = dict(display_map.get(instrument_id, {}))
+            instrument = instrument_records.get(instrument_id)
+            if instrument:
+                for key, value in _metadata_from_etoro_record(instrument).items():
+                    if value and not display.get(key):
+                        display[key] = value
+            mapped_symbol = symbol_map.get(instrument_id)
+            ticker = mapped_symbol or display.get("tradingsymbol") or display.get("instrument_display_name")
+            if not ticker or str(ticker).isdigit():
+                ticker = str(instrument_id)
+            row = {
+                "tradingsymbol": str(ticker),
+                "symbol": display.get("instrument_display_name") or str(ticker),
+                **display,
+            }
+            data[str(instrument_id)] = row
+        return {"status": True, "broker": broker_name, "account_env": account_env, "data": data}
+    except Exception as e:
+        log.error(
+            "[CONTROL_INSTRUMENT_DISPLAY] failed broker=%s env=%s: %s",
+            broker_name,
+            account_env,
+            e,
+            exc_info=True,
+        )
+        return {"status": False, "broker": broker_name, "account_env": account_env, "message": str(e), "data": {}}
 
 
 _etoro_trading_clients: dict[str, Any] = {}
@@ -1883,7 +1973,11 @@ async def control_plane_etoro_positions(
         client = await _etoro_trading_client(env)
         positions = await client.aget_positions()
         symbol_map = await _etoro_symbol_map_for_records(client, positions)
-        rows = [_etoro_position_to_portfolio_row(item, symbol_map) for item in positions]
+        display_map = await _etoro_display_map_for_records(client, positions)
+        rows = [
+            _etoro_position_to_portfolio_row(item, symbol_map, display_map)
+            for item in positions
+        ]
         _set_portfolio_cache("etoro", env, rows)
         log.info("[CONTROL_ETORO] positions env=%s count=%d", env, len(rows))
         return {
