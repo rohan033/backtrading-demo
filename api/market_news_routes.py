@@ -64,6 +64,16 @@ async def get_news_notifications(limit: int = Query(50, ge=1, le=200)):
     }
 
 
+@router.delete(
+    "/news-notifications",
+    operation_id="clear_news_notifications",
+    summary="Clear cached news notifications",
+)
+async def clear_news_notifications():
+    deleted = get_news_store().clear_notifications()
+    return {"status": True, "deleted": deleted}
+
+
 @router.get(
     "/market-status",
     operation_id="get_market_status",

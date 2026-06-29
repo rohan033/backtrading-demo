@@ -38,6 +38,14 @@ async function fetchRecentNewsNotifications(): Promise<NewsNotification[]> {
   return Array.isArray(payload.data) ? payload.data : []
 }
 
+async function clearNewsNotifications(): Promise<void> {
+  const res = await fetch('/api/market/news-notifications', { method: 'DELETE' })
+  if (!res.ok) {
+    const payload = (await res.json().catch(() => ({}))) as { detail?: string; message?: string }
+    throw new Error(payload.detail || payload.message || 'Failed to clear news updates')
+  }
+}
+
 function sortNotifications(items: NewsNotification[]) {
   return [...items].sort((a, b) => {
     const byCreated = Date.parse(b.created_at || '') - Date.parse(a.created_at || '')
@@ -101,6 +109,11 @@ export function useNewsNotifications(options: UseNewsNotificationsOptions = {}) 
       }
       return sortNotifications([...byId.values()]).slice(0, 100)
     })
+  }, [])
+
+  const clearNotifications = useCallback(async () => {
+    await clearNewsNotifications()
+    setNotifications([])
   }, [])
 
   useEffect(() => {
@@ -170,7 +183,8 @@ export function useNewsNotifications(options: UseNewsNotificationsOptions = {}) 
     () => ({
       notifications,
       groups: groupNotifications(notifications),
+      clearNotifications,
     }),
-    [notifications],
+    [notifications, clearNotifications],
   )
 }

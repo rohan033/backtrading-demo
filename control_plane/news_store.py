@@ -271,6 +271,14 @@ class NewsStore:
         conn.close()
         return [self._notification_payload(row) for row in rows]
 
+    def clear_notifications(self) -> int:
+        conn = self._connect()
+        cur = conn.execute("DELETE FROM news_notifications")
+        deleted = cur.rowcount
+        conn.commit()
+        conn.close()
+        return int(deleted or 0)
+
     @staticmethod
     def _notification_payload(row: sqlite3.Row) -> dict[str, Any]:
         payload: dict[str, Any] | None = None

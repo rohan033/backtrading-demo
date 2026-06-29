@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import './MinimalShell.css'
 import CompanyNewsPanel from '../../components/watchlist/CompanyNewsPanel'
 import MarketNewsPanel from '../../components/watchlist/MarketNewsPanel'
@@ -274,11 +274,21 @@ function WatchlistDrawerPanel({
   )
 }
 
-function NewNewsPanel({ groups }: { groups: NewsUpdateGroup[] }) {
-  const [closedTopics, setClosedTopics] = useState<Set<string>>(() => new Set())
+function NewNewsPanel({
+  groups,
+  onClear,
+  clearing,
+  clearError,
+}: {
+  groups: NewsUpdateGroup[]
+  onClear: () => void
+  clearing: boolean
+  clearError: string
+}) {
+  const [expandedTopics, setExpandedTopics] = useState<Set<string>>(() => new Set())
 
   const toggleTopic = (topic: string) => {
-    setClosedTopics(prev => {
+    setExpandedTopics(prev => {
       const next = new Set(prev)
       if (next.has(topic)) next.delete(topic)
       else next.add(topic)
@@ -298,43 +308,51 @@ function NewNewsPanel({ groups }: { groups: NewsUpdateGroup[] }) {
     <div className="ms-news-new-panel">
       <div className="ms-news-new-panel__header">
         <strong>News Updates</strong>
-        <span>{groups.length} tickers</span>
+        <div className="ms-news-new-panel__actions">
+          <span>{groups.length} tickers</span>
+          <button
+            type="button"
+            className="ms-news-new-clear"
+            disabled={clearing}
+            onClick={onClear}
+          >
+            {clearing ? 'Clearing…' : 'Clear all'}
+          </button>
+        </div>
       </div>
+      {clearError ? <div className="ms-news-new-error">{clearError}</div> : null}
       <div className="ms-news-new-list">
         {groups.map(group => {
-          const collapsed = closedTopics.has(group.topic)
+          const expanded = expandedTopics.has(group.topic)
           return (
-          <section
-            className={`ms-news-new-card ${collapsed ? 'ms-news-new-card--collapsed' : ''}`}
-            key={group.topic}
-          >
-            <button
-              type="button"
-              className="ms-news-new-card__top"
-              onClick={() => toggleTopic(group.topic)}
-              aria-expanded={!collapsed}
-            >
-              <div>
-                <h3>{group.topic}</h3>
-                <p>+{group.count} news update{group.count === 1 ? '' : 's'}</p>
-              </div>
-              <span className="ms-news-new-card__chevron" aria-hidden="true">
-                {collapsed ? '▸' : '▾'}
-              </span>
-            </button>
-            {!collapsed ? (
-            <ul className="ms-news-new-card__items">
-              {group.items.map(item => (
-                <li key={item.id}>
-                  <a href={item.url || '#'} target="_blank" rel="noopener noreferrer">
-                    <span>{item.headline}</span>
-                    {item.source ? <em>{item.source}</em> : null}
-                  </a>
-                </li>
-              ))}
-            </ul>
-            ) : null}
-          </section>
+            <Fragment key={group.topic}>
+              <button
+                type="button"
+                className={`ms-news-new-row${expanded ? ' ms-news-new-row--expanded' : ''}`}
+                onClick={() => toggleTopic(group.topic)}
+                aria-expanded={expanded}
+              >
+                <span className="ms-news-new-row__chevron" aria-hidden="true">
+                  {expanded ? '▾' : '▸'}
+                </span>
+                <span className="ms-news-new-row__topic">{group.topic}</span>
+                <span className="ms-news-new-row__count">
+                  +{group.count} update{group.count === 1 ? '' : 's'}
+                </span>
+              </button>
+              {expanded ? (
+                <ul className="ms-news-new-row__items">
+                  {group.items.map(item => (
+                    <li key={item.id}>
+                      <a href={item.url || '#'} target="_blank" rel="noopener noreferrer">
+                        <span>{item.headline}</span>
+                        {item.source ? <em>{item.source}</em> : null}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+            </Fragment>
           )
         })}
       </div>
@@ -353,6 +371,9 @@ function SideDrawer({
   width,
   onResizeStart,
   newsGroups,
+  onClearNewsUpdates,
+  clearingNewsUpdates,
+  clearNewsError,
   watchlists,
   ticks,
   windowChanges,
@@ -368,6 +389,9 @@ function SideDrawer({
   width: number
   onResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void
   newsGroups: NewsUpdateGroup[]
+  onClearNewsUpdates: () => void
+  clearingNewsUpdates: boolean
+  clearNewsError: string
   watchlists: Watchlist[]
   ticks: ReturnType<typeof useWatchlistStream>['ticks']
   windowChanges: ReturnType<typeof useWatchlistStream>['windowChanges']
@@ -431,7 +455,12 @@ function SideDrawer({
             onSelectSymbol={onSelectWatchlistSymbol}
           />
         ) : tab === 'new' ? (
-          <NewNewsPanel groups={newsGroups} />
+          <NewNewsPanel
+            groups={newsGroups}
+            onClear={onClearNewsUpdates}
+            clearing={clearingNewsUpdates}
+            clearError={clearNewsError}
+          />
         ) : tab === 'news' ? (
           activeNewsSymbol ? (
             <CompanyNewsPanel
@@ -457,9 +486,20 @@ export default function MinimalShell() {
   const { state, navigate } = useUrlState()
   const { watchlists, ticks, windowChanges } = useWatchlistStream()
   const setNewsTab = (t: NewsTab) => navigate({ news: t })
-  const { groups: newsGroups } = useNewsNotifications({
+  const { groups: newsGroups, clearNotifications } = useNewsNotifications({
     onOpenUpdates: () => setNewsTab('new'),
   })
+  const [clearingNewsUpdates, setClearingNewsUpdates] = useState(false)
+  const [clearNewsError, setClearNewsError] = useState('')
+  const handleClearNewsUpdates = () => {
+    setClearNewsError('')
+    setClearingNewsUpdates(true)
+    void clearNotifications()
+      .catch(err => {
+        setClearNewsError(err instanceof Error ? err.message : 'Failed to clear news updates')
+      })
+      .finally(() => setClearingNewsUpdates(false))
+  }
   const [rightCollapsed, setRightCollapsed] = useState(() => loadStoredBool(LEFT_COLLAPSED_KEY))
   const [rightWidth, setRightWidth] = useState(() =>
     loadStoredNumber(RIGHT_WIDTH_KEY, RIGHT_WIDTH_MIN, RIGHT_WIDTH_MIN, RIGHT_WIDTH_MAX),
@@ -560,6 +600,9 @@ export default function MinimalShell() {
         width={rightWidth}
         onResizeStart={startRightResize}
         newsGroups={newsGroups}
+        onClearNewsUpdates={handleClearNewsUpdates}
+        clearingNewsUpdates={clearingNewsUpdates}
+        clearNewsError={clearNewsError}
         watchlists={watchlists}
         ticks={ticks}
         windowChanges={windowChanges}

@@ -56,3 +56,20 @@ def test_news_notifications_are_deduped_by_scope_topic_and_item():
         assert len(first) == 1
         assert duplicate == []
         assert len(store.recent_notifications()) == 1
+
+
+def test_clear_notifications_removes_all_rows():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "news.db")
+        store = NewsStore(db_path=path)
+        store.insert_notifications(
+            scope="company",
+            topic="AAPL",
+            items=[_item(1, "First"), _item(2, "Second")],
+            existing_item_ids=set(),
+        )
+
+        assert len(store.recent_notifications()) == 2
+        deleted = store.clear_notifications()
+        assert deleted == 2
+        assert store.recent_notifications() == []

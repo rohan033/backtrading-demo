@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, Fragment, type MouseEvent as ReactMouseEvent } from 'react'
+import { Link } from 'react-router-dom'
 import {
   createChart,
   type IChartApi,
@@ -12,6 +13,7 @@ import {
   CreateExecutionPanel,
   ExecutionProvider,
   buildChartSeries,
+  computeExecutionLevels,
   getPlaneStream,
   resolveExecutionStream,
   startControlledExecution,
@@ -19,8 +21,14 @@ import {
   useExecution,
 } from '../../ExecutionWorkspace'
 import { useWatchlistStream } from '../../context/WatchlistStreamContext'
+import { formatBrokerCompactMoney, formatBrokerPrice } from '../../lib/currency'
 import { executionsToStrategyRows } from '../../lib/strategyRows'
-import { resolveExecutionSourceId, resolveExecutionSourceMetaId } from '../../lib/executionSources'
+import {
+  executionSourceHref,
+  executionSourceLabel,
+  resolveExecutionSourceId,
+  resolveExecutionSourceMetaId,
+} from '../../lib/executionSources'
 import { formatDbTimestamp, parseDbTimestamp } from '../../lib/datetime'
 import { formatScheduledStart, scheduleSummary } from '../../lib/tradingSchedule'
 import { findWatchlistFeedMatch, buildWatchlistLinePoints, resolveWatchlistSymbolRef } from '../../lib/watchlistFeedReuse'
@@ -33,7 +41,7 @@ import {
 } from '../../lib/watchlistCandles'
 import type { WatchlistChartSymbol } from '../../lib/watchlistUniqueSymbols'
 import { mergeActivityEvents, type ActivityItem } from '../../lib/tradingActivity'
-import { computeLivePnl, formatPnl } from '../../lib/positionPnl'
+import { computeLivePnl, formatPnl, type LivePnl } from '../../lib/positionPnl'
 import {
   closeExecutionPosition,
   loadExecutionPositions,
@@ -58,25 +66,137 @@ function formatShortCreated(raw: string): string {
   })
 }
 
-function compactActivityText(item: ActivityItem): string {
-  const title = item.title.trim()
-  const detail = item.detail?.trim()
-  if (!detail || detail === 'Strategy event') return title
+function formatPositionPrice(broker: string | null | undefined, value: unknown): string {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return '—'
+  return formatBrokerPrice(broker, n)
+}
 
-  const parts = detail.split(' · ').map(part => part.trim()).filter(Boolean)
-  const orderIdx = parts.findIndex(part => /^order\s+\d+/i.test(part))
-  const orderPart = orderIdx >= 0 ? parts[orderIdx] : null
-  const tailParts = orderIdx >= 0 ? parts.slice(orderIdx + 1) : parts.filter(part => !/^order\s+\d+/i.test(part))
-  const tail = tailParts.length ? ` · ${tailParts.join(' · ')}` : ''
+function formatPnlWithPct(live: LivePnl | null): string | null {
+  if (!live) return null
+  const money = formatPnl(live.pnl)
+  if (!money) return null
+  const pctSign = live.pnl_pct >= 0 ? '+' : ''
+  return `${money} (${pctSign}${live.pnl_pct.toFixed(2)}%)`
+}
 
-  if (orderPart && /order/i.test(title)) {
-    const base = title.replace(/\s·\s*[A-Z0-9.-]+$/i, '').trim()
-    const orderNum = orderPart.replace(/^order\s+/i, '')
-    return `${base} · #${orderNum}${tail}`
+function positionSourceLabel(row: ExecutionPositionRow): string {
+  switch (row.source) {
+    case 'live':
+      return 'Tracked'
+    case 'order':
+      return 'Order'
+    case 'etoro':
+      return 'eToro'
+    default:
+      return 'Position'
   }
+}
 
-  if (detail.includes(title) || title.includes(detail)) return detail
-  return `${title} · ${detail}`
+function positionEntryPrice(row: ExecutionPositionRow): number | null {
+  const pos = row.position || {}
+  const opening = (pos.openingData || {}) as Record<string, unknown>
+  const rate = Number(opening.avgPrice ?? pos.openRate ?? pos.OpenRate ?? pos.entry_price ?? 0)
+  return rate > 0 ? rate : null
+}
+
+function positionStopLoss(row: ExecutionPositionRow): number | null {
+  const pos = row.position || {}
+  const rate = Number(pos.stopLossRate ?? pos.StopLossRate ?? 0)
+  return rate > 0 ? rate : null
+}
+
+function positionTakeProfit(row: ExecutionPositionRow): number | null {
+  const pos = row.position || {}
+  const rate = Number(pos.takeProfitRate ?? pos.TakeProfitRate ?? 0)
+  return rate > 0 ? rate : null
+}
+
+function activityDetailText(item: ActivityItem): string | null {
+  const detail = item.detail?.trim()
+  if (!detail || detail === 'Strategy event') return null
+  if (detail.includes(item.title)) return detail
+  return detail
+}
+
+function StrategyConfigMetrics({
+  execution,
+}: {
+  execution: Record<string, unknown> | null | undefined
+}) {
+  const levels = useMemo(() => computeExecutionLevels(execution || {}), [execution])
+  if (!execution) return null
+
+  const broker = String(execution.broker || 'etoro')
+  const sourceId = resolveExecutionSourceId(execution, null)
+  const sourceMetaId = resolveExecutionSourceMetaId(execution, null)
+  const sourceLabel = executionSourceLabel(sourceId)
+  const sourceHref = executionSourceHref(sourceId, sourceMetaId)
+
+  const tiles = [
+    {
+      label: 'Entry trigger',
+      value: levels.buyTrigger != null ? formatBrokerPrice(broker, levels.buyTrigger) : '—',
+    },
+    {
+      label: 'Take profit',
+      value: levels.takeProfit != null ? formatBrokerPrice(broker, levels.takeProfit) : '—',
+      tone: 'up',
+    },
+    {
+      label: 'Stop loss',
+      value: levels.stopLoss != null ? formatBrokerPrice(broker, levels.stopLoss) : '—',
+      tone: 'down',
+    },
+    {
+      label: 'Capital',
+      value: execution.max_available_capital != null
+        ? formatBrokerCompactMoney(broker, Number(execution.max_available_capital))
+        : '—',
+    },
+    {
+      label: 'Entry threshold',
+      value: execution.initial_threshold != null ? `${execution.initial_threshold}%` : '—',
+    },
+    {
+      label: 'Take profit %',
+      value: execution.long_percent != null ? `${execution.long_percent}%` : '—',
+      tone: 'up',
+    },
+    {
+      label: 'Stop loss %',
+      value: execution.short_percent != null ? `${execution.short_percent}%` : '—',
+      tone: 'down',
+    },
+    {
+      label: 'Close price',
+      value: levels.closePrice != null ? formatBrokerPrice(broker, levels.closePrice) : '—',
+    },
+    {
+      label: 'Source',
+      value: sourceLabel,
+      href: sourceHref,
+    },
+  ]
+
+  return (
+    <div className="st-detail-metrics">
+      {tiles.map(tile => (
+        <div key={tile.label} className="st-detail-metric">
+          <span className="st-detail-metric__label">{tile.label}</span>
+          {tile.href ? (
+            <Link to={tile.href} className="st-detail-metric__link">
+              {tile.value}
+            </Link>
+          ) : (
+            <span className={`st-detail-metric__value${tile.tone ? ` st-detail-metric__value--${tile.tone}` : ''}`}>
+              {tile.value}
+            </span>
+          )}
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function resolveExecutionChartSymbol(
@@ -760,6 +880,8 @@ function StrategyCompactPositions({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [busyPositionId, setBusyPositionId] = useState<string | number | null>(null)
+  const [closingAll, setClosingAll] = useState(false)
+  const [expandedIds, setExpandedIds] = useState<Set<string | number>>(() => new Set())
 
   const loadPositions = useCallback(async () => {
     if (!executorId) {
@@ -809,6 +931,35 @@ function StrategyCompactPositions({
     }
   }
 
+  const closeAllPositions = async (rows: ExecutionPositionRow[]) => {
+    if (!rows.length || closingAll || busyPositionId != null) return
+    setClosingAll(true)
+    setError('')
+    try {
+      for (const row of rows) {
+        setBusyPositionId(row.position_id)
+        await closeExecutionPosition(executorId, row)
+      }
+      onChanged?.()
+      await loadPositions()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to close all positions')
+      await loadPositions()
+    } finally {
+      setBusyPositionId(null)
+      setClosingAll(false)
+    }
+  }
+
+  const toggleExpanded = (positionId: string | number) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(positionId)) next.delete(positionId)
+      else next.add(positionId)
+      return next
+    })
+  }
+
   if (loading && !positions.length) {
     return <div className="st-detail-tab-empty">Loading positions…</div>
   }
@@ -828,41 +979,167 @@ function StrategyCompactPositions({
     return <div className="st-detail-tab-empty">No open positions</div>
   }
 
+  const brokerLabel = broker || 'etoro'
+  const closablePositions = positions.filter(row => row.closable)
+  const liveRows = positions
+    .map(row => ({ row, live: computeLivePnl(row, livePrice) }))
+    .filter((item): item is { row: ExecutionPositionRow; live: LivePnl } => item.live != null)
+  const totalPnl = liveRows.length
+    ? liveRows.reduce((sum, item) => sum + item.live.pnl, 0)
+    : null
+  const closingBusy = closingAll || busyPositionId != null
+
   return (
     <div className="st-detail-tab-scroll">
       {error ? <div className="st-pos-error">{error}</div> : null}
-      {positions.map(row => {
-        const position = row.position || {}
-        const positionId = row.position_id
-        const units = row.remaining_units ?? position.remainingUnits ?? null
-        const live = computeLivePnl(row, livePrice)
-        const pnlLabel = live ? formatPnl(live.pnl) : null
-        const unitsLabel = units != null ? Number(units).toFixed(3) : '—'
-        const prefix = row.source === 'live' ? 'Order' : 'Position'
-        const statusSuffix = row.statusLabel ? ` · ${row.statusLabel}` : ''
+      {totalPnl != null ? (
+        <div className={`st-pos-total${totalPnl >= 0 ? ' st-pos-total--up' : ' st-pos-total--down'}`}>
+          <span>P&amp;L across {liveRows.length} open position{liveRows.length !== 1 ? 's' : ''}</span>
+          <strong>{formatPnl(totalPnl)}</strong>
+        </div>
+      ) : null}
+      <div className="st-pos-table-wrap">
+        <table className="st-pos-table">
+          <thead>
+            <tr className="st-pos-thead-row">
+              <th className="st-pos-th st-pos-th--toggle" aria-label="Expand" />
+              <th className="st-pos-th">ID</th>
+              <th className="st-pos-th">Source</th>
+              <th className="st-pos-th">Status</th>
+              <th className="st-pos-th st-pos-th--num">Units</th>
+              <th className="st-pos-th st-pos-th--num">Entry</th>
+              <th className="st-pos-th st-pos-th--num">P&amp;L</th>
+              <th className="st-pos-th st-pos-th--action">
+                {closablePositions.length > 1 ? (
+                  <button
+                    type="button"
+                    className="st-pos-close-all"
+                    disabled={closingBusy}
+                    onClick={() => void closeAllPositions(closablePositions)}
+                  >
+                    {closingAll ? 'Closing all…' : 'Close all'}
+                  </button>
+                ) : (
+                  'Action'
+                )}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {positions.map(row => {
+              const position = row.position || {}
+              const positionId = row.position_id
+              const units = row.remaining_units ?? position.remainingUnits ?? null
+              const live = computeLivePnl(row, livePrice)
+              const entryPrice = positionEntryPrice(row)
+              const stopLoss = positionStopLoss(row)
+              const takeProfit = positionTakeProfit(row)
+              const pnlLabel = formatPnlWithPct(live)
+              const unitsLabel = units != null ? Number(units).toFixed(3) : '—'
+              const sourceLabel = positionSourceLabel(row)
+              const statusLabel = row.statusLabel || (row.closable ? 'Open' : 'Pending fill')
+              const reason = typeof position.reason === 'string' ? position.reason : null
+              const expanded = expandedIds.has(positionId)
+              const rowBusy = busyPositionId === positionId
 
-        return (
-          <div key={String(positionId)} className="st-pos-row">
-            <span className="st-pos-main">
-              {prefix} #{row.order_id ?? positionId} · {unitsLabel} units
-              {pnlLabel ? ` · ${pnlLabel}` : ''}
-              {statusSuffix}
-            </span>
-            {row.closable ? (
-              <button
-                type="button"
-                className="st-pos-close"
-                disabled={busyPositionId === positionId}
-                onClick={() => void closePosition(row)}
-              >
-                {busyPositionId === positionId ? 'Closing…' : 'Close'}
-              </button>
-            ) : (
-              <span className="st-pos-note">Awaiting broker fill</span>
-            )}
-          </div>
-        )
-      })}
+              return (
+                <Fragment key={String(positionId)}>
+                  <tr className={`st-pos-row${expanded ? ' st-pos-row--expanded' : ''}`}>
+                    <td className="st-pos-td st-pos-td--toggle">
+                      <button
+                        type="button"
+                        className={`st-pos-toggle${expanded ? ' st-pos-toggle--open' : ''}`}
+                        aria-expanded={expanded}
+                        aria-label={expanded ? 'Hide details' : 'Show details'}
+                        onClick={() => toggleExpanded(positionId)}
+                      >
+                        ▸
+                      </button>
+                    </td>
+                    <td className="st-pos-td st-pos-td--id">#{row.order_id ?? positionId}</td>
+                    <td className="st-pos-td">
+                      <span className="st-pos-badge">{sourceLabel}</span>
+                    </td>
+                    <td className="st-pos-td">
+                      <span className={`st-pos-status${row.closable ? ' st-pos-status--open' : ''}`}>
+                        {statusLabel}
+                      </span>
+                    </td>
+                    <td className="st-pos-td st-pos-td--num">{unitsLabel}</td>
+                    <td className="st-pos-td st-pos-td--num">
+                      {formatPositionPrice(brokerLabel, entryPrice)}
+                    </td>
+                    <td className="st-pos-td st-pos-td--num">
+                      {pnlLabel ? (
+                        <span className={`st-pos-pnl${live && live.pnl >= 0 ? ' st-pos-pnl--up' : ' st-pos-pnl--down'}`}>
+                          {pnlLabel}
+                        </span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
+                    <td className="st-pos-td st-pos-td--action">
+                      {row.closable ? (
+                        <button
+                          type="button"
+                          className="st-pos-close"
+                          disabled={closingBusy}
+                          onClick={() => void closePosition(row)}
+                        >
+                          {rowBusy ? 'Closing…' : 'Close'}
+                        </button>
+                      ) : (
+                        <span className="st-pos-note">Pending</span>
+                      )}
+                    </td>
+                  </tr>
+                  {expanded ? (
+                    <tr className="st-pos-detail-row">
+                      <td colSpan={8}>
+                        <div className="st-pos-detail">
+                          <div className="st-pos-detail__item">
+                            <span className="st-pos-detail__label">Current</span>
+                            <span className="st-pos-detail__value">
+                              {live
+                                ? formatPositionPrice(brokerLabel, live.current_rate)
+                                : '—'}
+                            </span>
+                          </div>
+                          <div className="st-pos-detail__item">
+                            <span className="st-pos-detail__label">Stop loss</span>
+                            <span className="st-pos-detail__value st-pos-detail__value--down">
+                              {formatPositionPrice(brokerLabel, stopLoss)}
+                            </span>
+                          </div>
+                          <div className="st-pos-detail__item">
+                            <span className="st-pos-detail__label">Take profit</span>
+                            <span className="st-pos-detail__value st-pos-detail__value--up">
+                              {formatPositionPrice(brokerLabel, takeProfit)}
+                            </span>
+                          </div>
+                          {reason ? (
+                            <div className="st-pos-detail__item st-pos-detail__item--wide">
+                              <span className="st-pos-detail__label">Reason</span>
+                              <span className="st-pos-detail__value">{reason}</span>
+                            </div>
+                          ) : null}
+                          {!row.closable ? (
+                            <div className="st-pos-detail__item st-pos-detail__item--wide">
+                              <span className="st-pos-detail__note">
+                                Awaiting broker fill — tracked locally until the order lands
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -970,17 +1247,30 @@ function StrategyCompactActivity({
 
   return (
     <div className="st-detail-tab-scroll">
-      {events.length ? events.map((item, index) => (
-        <div
-          key={`${item.title}-${index}`}
-          className={`st-act-row st-act-row--${item.type}`}
-          title={compactActivityText(item)}
-        >
-          <span className="st-act-dot" aria-hidden />
-          <span className="st-act-text">{compactActivityText(item)}</span>
-          <span className="st-act-time">{item.time}</span>
-        </div>
-      )) : (
+      {events.length ? events.map((item, index) => {
+        const detail = activityDetailText(item)
+        const icon = item.type === 'buy'
+          ? '▲'
+          : item.type === 'sell'
+            ? '▼'
+            : item.type === 'pending'
+              ? '◷'
+              : '●'
+
+        return (
+          <div
+            key={`${item.title}-${item.time}-${index}`}
+            className={`st-act-row st-act-row--${item.type}`}
+          >
+            <span className="st-act-icon" aria-hidden>{icon}</span>
+            <div className="st-act-body">
+              <div className="st-act-title">{item.title}</div>
+              {detail ? <div className="st-act-detail">{detail}</div> : null}
+            </div>
+            <span className="st-act-time">{item.time}</span>
+          </div>
+        )
+      }) : (
         <div className="st-detail-tab-empty">No recent activity</div>
       )}
     </div>
@@ -1288,6 +1578,8 @@ function StrategyDetailPanel({
             </div>
           </div>
           {actionError ? <div className="st-detail-error">{actionError}</div> : null}
+
+          <StrategyConfigMetrics execution={overviewExecution} />
 
           <div className="st-detail-chart-box" style={{ height: chartHeight }}>
             <StrategyMiniChart

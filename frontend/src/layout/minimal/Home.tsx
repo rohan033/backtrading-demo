@@ -12,7 +12,7 @@ import { formatBrokerMoney } from '../../lib/currency'
 import { stripAiActionBlocks } from '../../lib/aiActionBlocks'
 import { splitAssistantDisplayContent } from '../../lib/aiReplySummary'
 import { finnhubSymbol } from '../../lib/marketResearch'
-import { useControlMarketStream } from '../../lib/useControlMarketStream'
+import { useMarketPreviewFeed } from '../../hooks/useMarketPreviewFeed'
 import {
   defaultAccountEnv,
   pickWatchlistSymbolMatch,
@@ -517,19 +517,15 @@ export default function Home() {
     return health.model ? `Connected · ${health.model}` : 'Connected via WebSocket'
   }, [chatError, connected, health])
 
-  const marketSubscribe = useMemo(() => {
-    if (!selection) return null
-    return {
-      broker: selection.broker,
-      token: selection.symboltoken,
-      symbol: selection.tradingsymbol,
-      exchange: selection.exchange,
-      account_env: selection.accountEnv,
-      feed_mode: 'websocket' as const,
-    }
-  }, [selection])
-
-  const { ltp, streamStatus } = useControlMarketStream(marketSubscribe, Boolean(selection))
+  const { ltp, streamStatus } = useMarketPreviewFeed({
+    broker: selection?.broker ?? broker,
+    token: selection?.symboltoken,
+    symbol: selection?.tradingsymbol,
+    exchange: selection?.exchange,
+    account_env: selection?.accountEnv ?? accountEnv,
+    feed_mode: 'websocket',
+    enabled: Boolean(selection),
+  })
 
   const persistSelection = useCallback((next: HomeSelection | null) => {
     setSelection(next)
