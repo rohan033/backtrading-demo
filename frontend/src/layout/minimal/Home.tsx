@@ -7,7 +7,10 @@ import {
 } from 'lightweight-charts'
 import './Home.css'
 import CompanyNewsPanel from '../../components/watchlist/CompanyNewsPanel'
+import { ChatMarkdown } from '../../components/ui/chat-markdown'
 import { formatBrokerMoney } from '../../lib/currency'
+import { stripAiActionBlocks } from '../../lib/aiActionBlocks'
+import { splitAssistantDisplayContent } from '../../lib/aiReplySummary'
 import { finnhubSymbol } from '../../lib/marketResearch'
 import { useControlMarketStream } from '../../lib/useControlMarketStream'
 import {
@@ -25,6 +28,12 @@ import {
   type WatchlistSanitizedCandle,
 } from '../../lib/watchlistCandles'
 import { watchlistTickKey } from '../../lib/watchlists'
+import {
+  buildResearchAgentPrompt,
+  insertResearchTagMention,
+  RESEARCH_CHAT_TAGS,
+} from '../../lib/researchChatTags'
+import { useCursorAgentChat } from '../../lib/useCursorAgentChat'
 import { useUrlState } from './useUrlState'
 import {
   HomeEarningsPanel,
@@ -45,12 +54,6 @@ type HomeSelection = {
   logo35x35?: string | null
   logo50x50?: string | null
   logo150x150?: string | null
-}
-
-type ChatMessage = {
-  id: string
-  role: 'user' | 'assistant'
-  text: string
 }
 
 function sortedUniqueCandles(candles: WatchlistSanitizedCandle[]): WatchlistSanitizedCandle[] {
@@ -284,20 +287,32 @@ function HomeAiDrawer({
   onToggle,
   onResizeStart,
   selection,
-  chatMessages,
   chatDraft,
   onChatDraftChange,
   onSendChat,
+  onInsertTag,
+  messages,
+  sending,
+  connected,
+  statusText,
+  error,
+  onStop,
 }: {
   collapsed: boolean
   width: number
   onToggle: () => void
   onResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void
   selection: HomeSelection | null
-  chatMessages: ChatMessage[]
   chatDraft: string
   onChatDraftChange: (value: string) => void
   onSendChat: () => void
+  onInsertTag: (mention: string) => void
+  messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; streaming?: boolean }>
+  sending: boolean
+  connected: boolean
+  statusText: string
+  error: string
+  onStop: () => void
 }) {
   if (collapsed) {
     return (
@@ -343,43 +358,95 @@ function HomeAiDrawer({
       </header>
       <div className="hm-ai-drawer-body">
         <div className="hm-chat-messages">
-          {!chatMessages.length ? (
+          {!messages.length ? (
             <div className="hm-chat-empty">
-              Ask about the selected stock, recent news, or strategy ideas.
+              Tag a section with @insidertrading, @earnings, @filings, @news, or @chartanalysis, then ask your question.
             </div>
           ) : (
-            chatMessages.map(message => (
-              <div
-                key={message.id}
-                className={`hm-chat-bubble hm-chat-bubble--${message.role}`}
-              >
-                {message.text}
-              </div>
-            ))
+            messages.map(message => {
+              if (message.role === 'assistant') {
+                const parts = splitAssistantDisplayContent(message.content, Boolean(message.streaming))
+                const displayContent = stripAiActionBlocks(parts.body, Boolean(message.streaming))
+                return (
+                  <div
+                    key={message.id}
+                    className="hm-chat-bubble hm-chat-bubble--assistant"
+                  >
+                    {displayContent ? (
+                      <ChatMarkdown content={displayContent} className="hm-chat-markdown" />
+                    ) : message.streaming ? (
+                      <span className="hm-chat-thinking">Thinking…</span>
+                    ) : null}
+                  </div>
+                )
+              }
+
+              return (
+                <div
+                  key={message.id}
+                  className={`hm-chat-bubble hm-chat-bubble--${message.role}`}
+                >
+                  {message.content}
+                </div>
+              )
+            })
           )}
         </div>
-        <div className="hm-chat-compose">
-          <textarea
-            className="hm-chat-input"
-            rows={2}
-            value={chatDraft}
-            placeholder={selection ? `Ask about ${selection.tradingsymbol}…` : 'Select a stock first…'}
-            onChange={event => onChatDraftChange(event.target.value)}
-            onKeyDown={event => {
-              if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault()
-                onSendChat()
+        {error ? <p className="hm-chat-error">{error}</p> : null}
+        <div className="hm-chat-footer">
+          <div className="hm-chat-tags" role="group" aria-label="Research tags">
+            {RESEARCH_CHAT_TAGS.map(tag => (
+              <button
+                key={tag.id}
+                type="button"
+                className="hm-chat-tag"
+                title={tag.description}
+                disabled={!selection || sending}
+                onClick={() => onInsertTag(tag.mention)}
+              >
+                {tag.mention}
+              </button>
+            ))}
+          </div>
+          <div className="hm-chat-compose">
+            <textarea
+              className="hm-chat-input"
+              rows={2}
+              value={chatDraft}
+              placeholder={
+                selection
+                  ? `@insidertrading Analyse ${selection.tradingsymbol}…`
+                  : 'Select a stock first…'
               }
-            }}
-          />
-          <button
-            type="button"
-            className="hm-chat-send"
-            disabled={!chatDraft.trim()}
-            onClick={onSendChat}
-          >
-            Send
-          </button>
+              disabled={!selection || sending}
+              onChange={event => onChatDraftChange(event.target.value)}
+              onKeyDown={event => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault()
+                  onSendChat()
+                }
+              }}
+            />
+            {sending ? (
+              <button
+                type="button"
+                className="hm-chat-send hm-chat-send--stop"
+                onClick={onStop}
+              >
+                Stop
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="hm-chat-send"
+                disabled={!chatDraft.trim() || !selection || !connected}
+                onClick={onSendChat}
+              >
+                Send
+              </button>
+            )}
+          </div>
+          <p className="hm-chat-status">{statusText}</p>
         </div>
       </div>
     </aside>
@@ -413,7 +480,6 @@ export default function Home() {
   const [searchError, setSearchError] = useState('')
   const [infoTab, setInfoTab] = useState<InfoTab>('news')
   const [chatDraft, setChatDraft] = useState('')
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [aiDrawerCollapsed, setAiDrawerCollapsed] = useState(() =>
     loadDrawerBool(AI_DRAWER_COLLAPSED_KEY, false),
   )
@@ -421,6 +487,35 @@ export default function Home() {
     loadDrawerWidth(AI_DRAWER_DEFAULT, AI_DRAWER_MIN, AI_DRAWER_MAX),
   )
   const aiDrawerResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
+
+  const {
+    messages: agentMessages,
+    health,
+    connected,
+    sending,
+    error: chatError,
+    sendMessage,
+    stopMessage,
+    hydrateMessages,
+    resetAgent,
+  } = useCursorAgentChat(!aiDrawerCollapsed, 'ask', null, undefined, true)
+
+  const chatMessages = useMemo(
+    () => agentMessages.filter(
+      (message): message is typeof message & { role: 'user' | 'assistant' } =>
+        message.role === 'user' || message.role === 'assistant',
+    ),
+    [agentMessages],
+  )
+
+  const chatStatusText = useMemo(() => {
+    if (chatError && !connected) return chatError
+    if (!connected) return 'Connecting to Strategy AI…'
+    if (!health?.ready) {
+      return health?.message || 'Set CURSOR_API_KEY in .cursor-api.env and restart the control plane'
+    }
+    return health.model ? `Connected · ${health.model}` : 'Connected via WebSocket'
+  }, [chatError, connected, health])
 
   const marketSubscribe = useMemo(() => {
     if (!selection) return null
@@ -460,8 +555,10 @@ export default function Home() {
   }, [accountEnv, broker, navigate])
 
   useEffect(() => {
-    setChatMessages([])
-  }, [selection?.symboltoken, selection?.broker])
+    hydrateMessages([])
+    resetAgent(null)
+    setChatDraft('')
+  }, [selection?.symboltoken, selection?.broker, hydrateMessages, resetAgent])
 
   useEffect(() => {
     if (!selection || selection.logo35x35 || selection.logo50x50 || selection.logo150x150) return
@@ -536,23 +633,17 @@ export default function Home() {
     }
   }
 
-  const sendChat = () => {
+  const sendChat = async () => {
     const text = chatDraft.trim()
-    if (!text) return
-    const userMessage: ChatMessage = {
-      id: `u-${Date.now()}`,
-      role: 'user',
-      text,
-    }
-    const assistantMessage: ChatMessage = {
-      id: `a-${Date.now()}`,
-      role: 'assistant',
-      text: selection
-        ? `Research for ${selection.tradingsymbol} is coming soon. For now, use the news and filings tabs, or open AI Research from Learn.`
-        : 'Search and select a stock first, then ask about news, filings, or strategy ideas.',
-    }
-    setChatMessages(prev => [...prev, userMessage, assistantMessage])
-    setChatDraft('')
+    if (!text || !selection || sending) return
+    const prompt = buildResearchAgentPrompt(text, selection.tradingsymbol)
+    if (!prompt.trim()) return
+    const ok = await sendMessage(prompt, text)
+    if (ok) setChatDraft('')
+  }
+
+  const insertChatTag = (mention: string) => {
+    setChatDraft(prev => insertResearchTagMention(prev, mention))
   }
 
   const toggleAiDrawer = () => {
@@ -747,10 +838,16 @@ export default function Home() {
           onToggle={toggleAiDrawer}
           onResizeStart={startAiDrawerResize}
           selection={selection}
-          chatMessages={chatMessages}
           chatDraft={chatDraft}
           onChatDraftChange={setChatDraft}
-          onSendChat={sendChat}
+          onSendChat={() => { void sendChat() }}
+          onInsertTag={insertChatTag}
+          messages={chatMessages}
+          sending={sending}
+          connected={connected}
+          statusText={chatStatusText}
+          error={chatError}
+          onStop={stopMessage}
         />
       </div>
     </div>

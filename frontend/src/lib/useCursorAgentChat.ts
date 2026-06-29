@@ -381,7 +381,7 @@ export function useCursorAgentChat(
   }, [enabled, handleEvent, clearTimers])
 
   const sendMessage = useCallback(
-    async (prompt: string) => {
+    async (prompt: string, displayText?: string) => {
       const trimmed = prompt.trim()
       if (!trimmed || sending) return false
 
@@ -402,7 +402,7 @@ export function useCursorAgentChat(
       const userMessage: ChatMessage = {
         id: nextId('user'),
         role: 'user',
-        content: trimmed,
+        content: (displayText ?? trimmed).trim(),
       }
       const assistantMessage: ChatMessage = {
         id: nextId('assistant'),
