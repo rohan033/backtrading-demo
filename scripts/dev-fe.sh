@@ -11,6 +11,6 @@ if [[ ! -d node_modules ]]; then
   npm install
 fi
 
-echo "Frontend → http://localhost:3000"
-echo "API proxy → http://localhost:8000 (start control plane separately or via ./start.sh)"
+echo "Frontend → http://127.0.0.1:3000"
+echo "API proxy → http://127.0.0.1:8000 (start control plane separately or via make dev)"
 exec npm run dev

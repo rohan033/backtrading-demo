@@ -37,7 +37,7 @@ CP_PID=$!
 
 echo "Waiting for control plane..."
 for _ in $(seq 1 30); do
-  if curl -sf http://localhost:8000/docs >/dev/null 2>&1 || curl -sf http://localhost:8000/api/control/engines >/dev/null 2>&1; then
+  if curl -sf http://127.0.0.1:8000/docs >/dev/null 2>&1 || curl -sf http://127.0.0.1:8000/api/control/engines >/dev/null 2>&1; then
     break
   fi
   sleep 0.5
@@ -48,8 +48,8 @@ echo "Starting frontend..."
 FE_PID=$!
 
 echo ""
-echo "Control plane: http://localhost:8000"
-echo "Frontend:      http://localhost:3000"
+echo "Control plane: http://127.0.0.1:8000"
+echo "Frontend:      http://127.0.0.1:3000"
 echo "Press Ctrl+C to stop both."
 echo ""
 

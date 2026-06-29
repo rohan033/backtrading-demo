@@ -4,18 +4,18 @@
 install-backend:
 	pip install -e .
 
-# Control plane (FastAPI) — http://localhost:8000
+# Control plane (FastAPI) — http://127.0.0.1:8000
 cp:
 	./scripts/dev-cp.sh
 
 cp-reload:
 	./scripts/dev-cp.sh --reload
 
-# Frontend (Vite) — http://localhost:3000
+# Frontend (Vite) — http://127.0.0.1:3000
 fe:
 	./scripts/dev-fe.sh
 
-# Both servers (no uvicorn --reload; lighter on CPU)
+# Both servers (creates .venv on first run if missing)
 dev:
 	./scripts/start-dev.sh
 

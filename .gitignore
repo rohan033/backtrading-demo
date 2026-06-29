@@ -1,5 +1,6 @@
 # Virtual environment
 .ven/
+.venv/
 .env
 .demo.env
 .live.env
