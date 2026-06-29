@@ -75,6 +75,16 @@ export type WatchlistEarningsResponse = {
   }
 }
 
+export type RecommendationTrend = {
+  symbol?: string
+  period?: string
+  strongBuy?: number
+  buy?: number
+  hold?: number
+  sell?: number
+  strongSell?: number
+}
+
 export type InsiderTransaction = {
   id?: string
   symbol?: string
@@ -116,6 +126,21 @@ type ApiObjectResponse<T> = {
   detail?: string
 }
 
+import { cachedMarketFetch } from './marketApiCache'
+
+const TTL_FILINGS_MS = 30 * 60 * 1000
+const TTL_EARNINGS_MS = 30 * 60 * 1000
+const TTL_RECOMMENDATIONS_MS = 15 * 60 * 1000
+const TTL_INSIDER_MS = 15 * 60 * 1000
+const TTL_SENTIMENT_MS = 60 * 60 * 1000
+const TTL_WATCHLIST_EARNINGS_MS = 15 * 60 * 1000
+
+function cacheKey(prefix: string, params: URLSearchParams): string {
+  const sorted = [...params.entries()].sort(([a], [b]) => a.localeCompare(b))
+  const query = new URLSearchParams(sorted).toString()
+  return query ? `${prefix}?${query}` : prefix
+}
+
 async function parseJson<T>(res: Response): Promise<T> {
   const body = (await res.json().catch(() => null)) as T & { detail?: string }
   if (!res.ok) {
@@ -129,34 +154,58 @@ async function parseJson<T>(res: Response): Promise<T> {
 
 export async function fetchSecFilings(
   symbol: string,
-  options?: { form?: string; days?: number; limit?: number },
+  options?: { form?: string; days?: number; limit?: number; force?: boolean },
 ): Promise<SecFiling[]> {
   const params = new URLSearchParams({ symbol: symbol.trim() })
   if (options?.form) params.set('form', options.form)
   if (options?.days) params.set('days', String(options.days))
   if (options?.limit) params.set('limit', String(options.limit))
-  const res = await fetch(`/api/market/filings?${params.toString()}`)
-  const payload = await parseJson<ApiListResponse<SecFiling>>(res)
-  return Array.isArray(payload.data) ? payload.data : []
+  return cachedMarketFetch(
+    cacheKey('/api/market/filings', params),
+    TTL_FILINGS_MS,
+    async () => {
+      const res = await fetch(`/api/market/filings?${params.toString()}`)
+      const payload = await parseJson<ApiListResponse<SecFiling>>(res)
+      return Array.isArray(payload.data) ? payload.data : []
+    },
+    { force: options?.force },
+  )
 }
 
-export async function fetchFilingSentiment(accessNumber: string): Promise<FilingSentiment> {
+export async function fetchFilingSentiment(
+  accessNumber: string,
+  options?: { force?: boolean },
+): Promise<FilingSentiment> {
   const params = new URLSearchParams({ accessNumber })
-  const res = await fetch(`/api/market/filings-sentiment?${params.toString()}`)
-  const payload = await parseJson<ApiObjectResponse<FilingSentiment>>(res)
-  return payload.data || {}
+  return cachedMarketFetch(
+    cacheKey('/api/market/filings-sentiment', params),
+    TTL_SENTIMENT_MS,
+    async () => {
+      const res = await fetch(`/api/market/filings-sentiment?${params.toString()}`)
+      const payload = await parseJson<ApiObjectResponse<FilingSentiment>>(res)
+      return payload.data || {}
+    },
+    { force: options?.force },
+  )
 }
 
 export async function fetchEarningsCalendar(
   symbol: string,
-  options?: { pastDays?: number; futureDays?: number },
+  options?: { pastDays?: number; futureDays?: number; force?: boolean },
 ): Promise<EarningsEvent[]> {
   const params = new URLSearchParams({ symbol: symbol.trim() })
   if (options?.pastDays) params.set('pastDays', String(options.pastDays))
   if (options?.futureDays) params.set('futureDays', String(options.futureDays))
-  const res = await fetch(`/api/market/earnings-calendar?${params.toString()}`)
-  const payload = await parseJson<ApiListResponse<EarningsEvent>>(res)
-  return Array.isArray(payload.data) ? payload.data : []
+  return cachedMarketFetch(
+    cacheKey('/api/market/earnings-calendar', params),
+    TTL_EARNINGS_MS,
+    async () => {
+      const res = await fetch(`/api/market/earnings-calendar?${params.toString()}`)
+      const payload = await parseJson<ApiListResponse<EarningsEvent>>(res)
+      return Array.isArray(payload.data) ? payload.data : []
+    },
+    { force: options?.force },
+  )
 }
 
 export async function fetchWatchlistEarnings(
@@ -167,19 +216,51 @@ export async function fetchWatchlistEarnings(
   if (options?.futureDays) params.set('futureDays', String(options.futureDays))
   if (options?.refresh) params.set('refresh', 'true')
   const query = params.toString()
-  const res = await fetch(`/api/market/watchlist-earnings${query ? `?${query}` : ''}`)
-  return parseJson<WatchlistEarningsResponse>(res)
+  return cachedMarketFetch(
+    cacheKey('/api/market/watchlist-earnings', params),
+    TTL_WATCHLIST_EARNINGS_MS,
+    async () => {
+      const res = await fetch(`/api/market/watchlist-earnings${query ? `?${query}` : ''}`)
+      return parseJson<WatchlistEarningsResponse>(res)
+    },
+    { force: options?.refresh },
+  )
+}
+
+export async function fetchRecommendationTrends(
+  symbol: string,
+  options?: { limit?: number; force?: boolean },
+): Promise<RecommendationTrend[]> {
+  const params = new URLSearchParams({ symbol: symbol.trim() })
+  if (options?.limit) params.set('limit', String(options.limit))
+  return cachedMarketFetch(
+    cacheKey('/api/market/recommendation-trends', params),
+    TTL_RECOMMENDATIONS_MS,
+    async () => {
+      const res = await fetch(`/api/market/recommendation-trends?${params.toString()}`)
+      const payload = await parseJson<ApiListResponse<RecommendationTrend>>(res)
+      return Array.isArray(payload.data) ? payload.data : []
+    },
+    { force: options?.force, staleMaxAgeMs: TTL_RECOMMENDATIONS_MS * 4 },
+  )
 }
 
 export async function fetchInsiderTransactions(
   symbol: string,
-  options?: { days?: number },
+  options?: { days?: number; force?: boolean },
 ): Promise<InsiderTransaction[]> {
   const params = new URLSearchParams({ symbol: symbol.trim() })
   if (options?.days) params.set('days', String(options.days))
-  const res = await fetch(`/api/market/insider-transactions?${params.toString()}`)
-  const payload = await parseJson<ApiListResponse<InsiderTransaction>>(res)
-  return Array.isArray(payload.data) ? payload.data : []
+  return cachedMarketFetch(
+    cacheKey('/api/market/insider-transactions', params),
+    TTL_INSIDER_MS,
+    async () => {
+      const res = await fetch(`/api/market/insider-transactions?${params.toString()}`)
+      const payload = await parseJson<ApiListResponse<InsiderTransaction>>(res)
+      return Array.isArray(payload.data) ? payload.data : []
+    },
+    { force: options?.force },
+  )
 }
 
 export async function fetchWatchlistInsiderTransactions(
@@ -317,4 +398,81 @@ export function formatShareCount(value?: number | null): string {
   if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`
   if (abs >= 1_000) return `${(value / 1_000).toFixed(1)}K`
   return value.toLocaleString(undefined, { maximumFractionDigits: 0 })
+}
+
+export function recommendationCount(value: unknown): number {
+  const n = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(n) && n > 0 ? n : 0
+}
+
+export function formatRecommendationPeriod(value?: string): string {
+  if (!value) return '—'
+  const parsed = new Date(value.includes('T') ? value : `${value}T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) return value
+  return parsed.toLocaleDateString(undefined, { month: 'short', year: 'numeric' })
+}
+
+export type RecommendationSegment = {
+  key: 'strongBuy' | 'buy' | 'hold' | 'sell' | 'strongSell'
+  label: string
+  count: number
+  className: string
+}
+
+export const RECOMMENDATION_SEGMENTS: RecommendationSegment[] = [
+  { key: 'strongBuy', label: 'Strong buy', count: 0, className: 'strong-buy' },
+  { key: 'buy', label: 'Buy', count: 0, className: 'buy' },
+  { key: 'hold', label: 'Hold', count: 0, className: 'hold' },
+  { key: 'sell', label: 'Sell', count: 0, className: 'sell' },
+  { key: 'strongSell', label: 'Strong sell', count: 0, className: 'strong-sell' },
+]
+
+const RECOMMENDATION_LEGEND_LABELS: Record<RecommendationSegment['key'], string> = {
+  strongBuy: 'Str+',
+  buy: 'Buy',
+  hold: 'Hold',
+  sell: 'Sell',
+  strongSell: 'Str−',
+}
+
+export function recommendationLegendLabel(key: RecommendationSegment['key']): string {
+  return RECOMMENDATION_LEGEND_LABELS[key]
+}
+
+const RECOMMENDATION_FIELD_ALIASES: Record<
+  RecommendationSegment['key'],
+  readonly string[]
+> = {
+  strongBuy: ['strongBuy', 'strong_buy'],
+  buy: ['buy'],
+  hold: ['hold'],
+  sell: ['sell'],
+  strongSell: ['strongSell', 'strong_sell'],
+}
+
+export function readRecommendationField(
+  row: RecommendationTrend,
+  key: RecommendationSegment['key'],
+): number {
+  const record = row as Record<string, unknown>
+  for (const alias of RECOMMENDATION_FIELD_ALIASES[key]) {
+    if (record[alias] != null && record[alias] !== '') {
+      return recommendationCount(record[alias])
+    }
+  }
+  return 0
+}
+
+export function recommendationSegments(row: RecommendationTrend): RecommendationSegment[] {
+  return RECOMMENDATION_SEGMENTS.map(segment => ({
+    ...segment,
+    count: readRecommendationField(row, segment.key),
+  }))
+}
+
+export function recommendationTotal(row: RecommendationTrend): number {
+  return RECOMMENDATION_SEGMENTS.reduce(
+    (sum, segment) => sum + readRecommendationField(row, segment.key),
+    0,
+  )
 }

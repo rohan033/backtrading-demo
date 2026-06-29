@@ -1,33 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { X } from 'lucide-react'
 
+import { useLiveLogStream, type LiveLogTarget, type ParsedLogLine } from '../hooks/useLiveLogStream'
 import {
   categoryBadge,
   categoryBadgeClass,
-  parseLogLine,
   type LogLineCategory,
-  type ParsedLogLine,
 } from '../lib/logLineStyle'
 import { formatLogMessage, hasLogJsonBody } from '../lib/logJsonFormat'
-import {
-  fuzzyMatchLog,
-  LOG_LEVEL_FILTERS,
-  matchesLogLevelFilter,
-  type LogLevelFilter,
-} from '../lib/logFilters'
-
-const MAX_RENDERED_LINES = 2500
-const BATCH_FRAME_LINES = 120
-
-type LogPanelTarget = {
-  id: string
-  label: string
-  logFile?: string | null
-  isControlled?: boolean
-}
-
-type StreamPhase = 'idle' | 'waiting' | 'loading' | 'live' | 'error'
+import type { LogLevelFilter } from '../lib/logFilters'
 
 function LogLineRow({ line }: { line: ParsedLogLine }) {
   const [prettified, setPrettified] = useState(false)
@@ -74,203 +56,28 @@ export default function LiveLogPanel({
   target,
   onClose,
 }: {
-  target: LogPanelTarget
+  target: LiveLogTarget
   onClose: () => void
 }) {
-  const [lines, setLines] = useState<ParsedLogLine[]>([])
-  const [phase, setPhase] = useState<StreamPhase>('idle')
-  const [statusText, setStatusText] = useState('Connecting…')
-  const [lineCount, setLineCount] = useState(0)
-  const [fileSize, setFileSize] = useState(0)
-  const [followTail, setFollowTail] = useState(true)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [levelFilters, setLevelFilters] = useState<Set<LogLevelFilter>>(new Set(['all']))
-
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const pendingLinesRef = useRef<string[]>([])
-  const flushFrameRef = useRef<number | null>(null)
-  const lineIndexRef = useRef(0)
-  const atBottomRef = useRef(true)
-
-  const flushPendingLines = useCallback(() => {
-    flushFrameRef.current = null
-    if (!pendingLinesRef.current.length) return
-
-    const batch = pendingLinesRef.current.splice(0, BATCH_FRAME_LINES)
-    setLines(prev => {
-      const parsed = batch.map(line => {
-        const entry = parseLogLine(line, lineIndexRef.current)
-        lineIndexRef.current += 1
-        return { ...entry, id: `${target.id}-${entry.id}` }
-      })
-      const next = [...prev, ...parsed]
-      return next.length > MAX_RENDERED_LINES ? next.slice(-MAX_RENDERED_LINES) : next
-    })
-
-    if (pendingLinesRef.current.length) {
-      flushFrameRef.current = window.requestAnimationFrame(flushPendingLines)
-    }
-  }, [target.id])
-
-  const enqueueLines = useCallback((incoming: string[]) => {
-    if (!incoming.length) return
-    pendingLinesRef.current.push(...incoming)
-    if (flushFrameRef.current == null) {
-      flushFrameRef.current = window.requestAnimationFrame(flushPendingLines)
-    }
-  }, [flushPendingLines, target.id])
-
-  useEffect(() => {
-    lineIndexRef.current = 0
-    pendingLinesRef.current = []
-    if (flushFrameRef.current != null) {
-      window.cancelAnimationFrame(flushFrameRef.current)
-      flushFrameRef.current = null
-    }
-    setLines([])
-    setLineCount(0)
-    setFileSize(0)
-    setPhase('loading')
-    setStatusText('Opening log stream…')
-
-    const controller = new AbortController()
-    const streamUrl = `/api/control/engines/${encodeURIComponent(target.id)}/logs/stream`
-
-    async function consumeStream() {
-      try {
-        const res = await fetch(streamUrl, { signal: controller.signal })
-        if (!res.ok || !res.body) {
-          const data = await res.json().catch(() => ({}))
-          throw new Error(data.detail || data.message || `Stream failed (${res.status})`)
-        }
-
-        const reader = res.body.getReader()
-        const decoder = new TextDecoder()
-        let buffer = ''
-
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-
-          buffer += decoder.decode(value, { stream: true })
-          const chunks = buffer.split('\n\n')
-          buffer = chunks.pop() || ''
-
-          for (const chunk of chunks) {
-            const dataLine = chunk
-              .split('\n')
-              .find(line => line.startsWith('data: '))
-            if (!dataLine) continue
-
-            const payload = JSON.parse(dataLine.slice(6)) as {
-              type: string
-              message?: string
-              lines?: string[]
-              size?: number
-              line_count?: number
-            }
-
-            if (payload.type === 'meta') {
-              setFileSize(Number(payload.size || 0))
-              setStatusText('Loading log from start…')
-              setPhase('loading')
-              continue
-            }
-
-            if (payload.type === 'waiting') {
-              setPhase('waiting')
-              setStatusText(payload.message || 'Waiting for log file…')
-              continue
-            }
-
-            if (payload.type === 'error') {
-              setPhase('error')
-              setStatusText(payload.message || 'Log stream error')
-              continue
-            }
-
-            if (payload.type === 'chunk' && payload.lines?.length) {
-              enqueueLines(payload.lines)
-              setLineCount(Number(payload.line_count || 0))
-              if (payload.size) setFileSize(Number(payload.size))
-              setPhase('loading')
-              setStatusText(`Loading log… ${payload.line_count?.toLocaleString() || 0} lines`)
-              continue
-            }
-
-            if (payload.type === 'caught_up') {
-              setPhase('live')
-              setLineCount(Number(payload.line_count || 0))
-              setStatusText('Live tail')
-              continue
-            }
-
-            if (payload.type === 'tail' && payload.lines?.length) {
-              enqueueLines(payload.lines)
-              setLineCount(Number(payload.line_count || 0))
-              setPhase('live')
-              setStatusText('Live tail')
-            }
-          }
-        }
-      } catch (err) {
-        if (controller.signal.aborted) return
-        setPhase('error')
-        setStatusText(err instanceof Error ? err.message : 'Log stream failed')
-      }
-    }
-
-    consumeStream()
-
-    return () => {
-      controller.abort()
-      if (flushFrameRef.current != null) {
-        window.cancelAnimationFrame(flushFrameRef.current)
-      }
-    }
-  }, [target.id, enqueueLines])
-
-  useEffect(() => {
-    const node = containerRef.current
-    if (!node || !followTail || !atBottomRef.current) return
-    node.scrollTop = node.scrollHeight
-  }, [lines, followTail])
-
-  const onScroll = () => {
-    const node = containerRef.current
-    if (!node) return
-    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight
-    atBottomRef.current = distanceFromBottom < 48
-  }
-
-  const filteredLines = useMemo(() => {
-    return lines.filter(line => {
-      if (!matchesLogLevelFilter(line.category, levelFilters)) return false
-      const searchable = `${line.timestamp || ''} ${line.message} ${line.raw}`
-      return fuzzyMatchLog(searchQuery, searchable)
-    })
-  }, [lines, levelFilters, searchQuery])
-
-  const toggleLevelFilter = (level: LogLevelFilter) => {
-    setLevelFilters(prev => {
-      const next = new Set(prev)
-      if (level === 'all') {
-        return new Set(['all'])
-      }
-      next.delete('all')
-      if (next.has(level)) {
-        next.delete(level)
-      } else {
-        next.add(level)
-      }
-      if (!next.size) {
-        next.add('all')
-      }
-      return next
-    })
-  }
-
-  const hiddenCount = lines.length - filteredLines.length
+  const {
+    lines,
+    phase,
+    statusText,
+    lineCount,
+    fileSize,
+    followTail,
+    setFollowTail,
+    searchQuery,
+    setSearchQuery,
+    levelFilters,
+    toggleLevelFilter,
+    filteredLines,
+    hiddenCount,
+    containerRef,
+    onScroll,
+    levelFilterOptions,
+    atBottomRef,
+  } = useLiveLogStream(target)
 
   return (
     <aside className="fixed inset-y-0 right-0 z-40 flex w-full max-w-xl flex-col border-l border-border bg-secondary shadow-2xl">
@@ -345,7 +152,7 @@ export default function LiveLogPanel({
             className="w-full rounded-lg border border-border bg-primary px-2.5 py-1.5 text-[11px] text-text-primary outline-none placeholder:text-text-secondary focus:border-accent/60"
           />
           <div className="flex flex-wrap gap-1">
-            {LOG_LEVEL_FILTERS.map(level => {
+            {levelFilterOptions.map(level => {
               const active = levelFilters.has(level.id)
               return (
                 <button

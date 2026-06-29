@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { readHomeChartCache } from '../lib/homeChartHistory'
 import {
   fetchWatchlistOlderCandles,
   fetchWatchlistSymbolCandles,
@@ -28,7 +29,7 @@ function resolveHistoricalCandles(
   if (!focusedTickKey || tickKey !== focusedTickKey) return undefined
   const loaded = historicalByKey[tickKey]
   if (loaded?.length) return loaded
-  return getWatchlistOhlcCache(tickKey)
+  return getWatchlistOhlcCache(tickKey) ?? readHomeChartCache(tickKey)
 }
 
 export function useWatchlistChartCandles(
@@ -61,7 +62,7 @@ export function useWatchlistChartCandles(
     if (loadingKeysRef.current.has(tickKey)) return
 
     if (!force) {
-      const cached = getWatchlistOhlcCache(tickKey)
+      const cached = readHomeChartCache(tickKey) ?? getWatchlistOhlcCache(tickKey)
       if (cached?.length) {
         setHistoricalByKey(prev => {
           if (prev[tickKey]?.length) return prev

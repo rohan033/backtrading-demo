@@ -54,6 +54,16 @@ export function resolveWatchlistSymbolRef(
   return null
 }
 
+/** Tick map key for a symbol on the shared watchlist feed (uses watchlist token, not search token). */
+export function resolveWatchlistTickKey(
+  watchlists: Watchlist[],
+  params: WatchlistFeedLookup,
+): string | null {
+  const resolved = resolveWatchlistSymbolRef(watchlists, params)
+  if (!resolved) return null
+  return watchlistTickKey(resolved.broker, resolved.accountEnv, resolved.symboltoken)
+}
+
 /** True when the symbol is on a watchlist with matching broker/env (feed may be active). */
 export function isSymbolOnWatchlistFeed(
   watchlists: Watchlist[],

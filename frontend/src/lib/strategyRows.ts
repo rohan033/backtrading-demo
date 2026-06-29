@@ -7,6 +7,7 @@ export function executionToStrategyRow(execution: ExecutionLike): StrategyTableR
 
   return {
     id: execution.executor_id,
+    engineId: execution.data_plane_id || execution.executor_id,
     name: execution.label || execution.symbol || execution.strategy_name || 'Strategy',
     symbol: execution.symbol || '—',
     status: engineStatus,

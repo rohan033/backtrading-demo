@@ -7,7 +7,9 @@ import {
   type LineData,
 } from 'lightweight-charts'
 import './Strategies.css'
-import LiveLogPanel from '../../components/LiveLogPanel'
+import MinimalLogDrawer from './MinimalLogDrawer'
+import type { LiveLogTarget } from '../../hooks/useLiveLogStream'
+import { buildLogTarget } from '../../lib/logTarget'
 import type { StrategyTableRow } from '../../components/StrategiesTable'
 import {
   CreateExecutionPanel,
@@ -32,11 +34,10 @@ import {
 import { formatDbTimestamp, parseDbTimestamp } from '../../lib/datetime'
 import { formatScheduledStart, scheduleSummary } from '../../lib/tradingSchedule'
 import { findWatchlistFeedMatch, buildWatchlistLinePoints, resolveWatchlistSymbolRef } from '../../lib/watchlistFeedReuse'
+import { loadHomeChartHistory } from '../../lib/homeChartHistory'
 import {
-  fetchWatchlistSymbolCandles,
   mergePriceSamples,
   ohlcCandlesToPriceSamples,
-  WATCHLIST_CHART_INITIAL_COUNT,
   type WatchlistSanitizedCandle,
 } from '../../lib/watchlistCandles'
 import type { WatchlistChartSymbol } from '../../lib/watchlistUniqueSymbols'
@@ -246,11 +247,7 @@ function fitChartZoomedOut(chart: IChartApi) {
 
 type StrategyFilter = 'all' | 'running' | 'scheduled' | 'stopped'
 
-type LogTarget = {
-  id: string
-  label: string
-  logFile: string | null
-}
+type LogTarget = LiveLogTarget
 
 type SymbolVisual = {
   ticker: string
@@ -575,7 +572,13 @@ function StrategyTableRow({
           className="st-log-link"
           onClick={event => {
             event.stopPropagation()
-            onLogs({ id: row.id, label: row.name, logFile: row.logFile || null })
+            const target = buildLogTarget({
+              engineId: row.engineId,
+              executionId: row.id,
+              label: row.name,
+              logFile: row.logFile,
+            })
+            if (target) onLogs(target)
           }}
         >
           Logs
@@ -758,7 +761,12 @@ function StrategyMiniChart({
   useEffect(() => {
     if (!chartSymbol || loadedCandleKey === chartSymbol.tickKey) return
     let cancelled = false
-    fetchWatchlistSymbolCandles(chartSymbol, WATCHLIST_CHART_INITIAL_COUNT)
+    void loadHomeChartHistory(chartSymbol, {
+      onRefresh: fresh => {
+        if (cancelled || !fresh.length) return
+        setCandles(fresh)
+      },
+    })
       .then(next => {
         if (cancelled) return
         setCandles(next)
@@ -1281,16 +1289,17 @@ function StrategyDetailPanel({
   executionId,
   symbolVisuals,
   onClose,
+  onOpenLogs,
 }: {
   executionId: string
   symbolVisuals: Map<string, SymbolVisual>
   onClose: () => void
+  onOpenLogs: (target: LogTarget) => void
 }) {
   const [stopping, setStopping] = useState(false)
   const [deploying, setDeploying] = useState(false)
   const [unscheduling, setUnscheduling] = useState(false)
   const [actionError, setActionError] = useState('')
-  const [logOpen, setLogOpen] = useState(false)
   const [chartHeight, setChartHeight] = useState(DEFAULT_STRATEGY_CHART_HEIGHT)
   const chartResizingRef = useRef(false)
 
@@ -1481,28 +1490,18 @@ function StrategyDetailPanel({
     ? `${formatScheduledStart(scheduledStartAt)} · ${scheduleSummary(tradingDay, scheduleLabel)}`
     : null
 
+  const openLogs = () => {
+    const target = buildLogTarget({
+      engineId: logEngineId,
+      executionId,
+      label: strategyTitle(overviewExecution),
+      logFile,
+    })
+    if (target) onOpenLogs(target)
+  }
+
   return (
     <>
-      {logOpen ? (
-        <>
-          <button
-            type="button"
-            aria-label="Close live log panel"
-            className="st-log-backdrop"
-            onClick={() => setLogOpen(false)}
-          />
-          <LiveLogPanel
-            target={{
-              id: logEngineId,
-              label: strategyTitle(overviewExecution),
-              logFile,
-              isControlled: true,
-            }}
-            onClose={() => setLogOpen(false)}
-          />
-        </>
-      ) : null}
-
       <div className="st-detail-wrap">
         <div className="st-detail">
           <div className="st-detail-head">
@@ -1564,7 +1563,7 @@ function StrategyDetailPanel({
                   {stopping ? 'Stopping…' : 'Stop'}
                 </button>
               ) : null}
-              <button type="button" className="st-btn st-btn--compact st-btn--accent" onClick={() => setLogOpen(true)}>
+              <button type="button" className="st-btn st-btn--compact st-btn--accent" onClick={openLogs}>
                 Logs
               </button>
               <button
@@ -1660,6 +1659,10 @@ function StrategyCreatePanel({
 function StrategiesWorkspace() {
   const { state, navigate } = useUrlState()
   const [logTarget, setLogTarget] = useState<LogTarget | null>(null)
+
+  const openLogs = (target: LogTarget) => {
+    setLogTarget(target)
+  }
   const listBlockRef = useRef<HTMLDivElement>(null)
   const { watchlists } = useWatchlistStream()
   const symbolVisuals = useMemo(() => buildSymbolVisualMap(watchlists), [watchlists])
@@ -1817,25 +1820,10 @@ function StrategiesWorkspace() {
 
   return (
     <div className="st-root">
-      {logTarget ? (
-        <>
-          <button
-            type="button"
-            aria-label="Close live log panel"
-            className="st-log-backdrop"
-            onClick={() => setLogTarget(null)}
-          />
-          <LiveLogPanel
-            target={{
-              id: logTarget.id,
-              label: logTarget.label,
-              logFile: logTarget.logFile,
-              isControlled: true,
-            }}
-            onClose={() => setLogTarget(null)}
-          />
-        </>
-      ) : null}
+      <MinimalLogDrawer
+        target={logTarget}
+        onClose={() => setLogTarget(null)}
+      />
 
       <div className="st-toolbar">
         <span className="st-toolbar-title">Strategies</span>
@@ -1895,7 +1883,7 @@ function StrategiesWorkspace() {
                 symbolVisuals={symbolVisuals}
                 selectedId={selectedId}
                 onSelect={selectStrategy}
-                onLogs={setLogTarget}
+                onLogs={openLogs}
               />
               <StrategiesPagination
                 page={currentPage}
@@ -1929,6 +1917,7 @@ function StrategiesWorkspace() {
               executionId={selectedId}
               symbolVisuals={symbolVisuals}
               onClose={closeDetail}
+              onOpenLogs={openLogs}
             />
           ) : (
             <StrategyDetailEmpty />

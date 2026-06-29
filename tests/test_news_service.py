@@ -117,3 +117,54 @@ def test_sec_filings_and_earnings_calendar(monkeypatch):
             assert earnings["data"][0]["epsActual"] == 2.4
 
     asyncio.run(run())
+
+
+def test_recommendation_trends_returns_sorted_rows(monkeypatch):
+    async def run():
+        with tempfile.TemporaryDirectory() as tmp:
+            store = NewsStore(db_path=os.path.join(tmp, "news.db"))
+            service = NewsService(store=store)
+
+            async def fake_get(path, params):
+                assert path == "/stock/recommendation"
+                assert params["symbol"] == "AAPL"
+                return [
+                    {
+                        "buy": 17,
+                        "hold": 13,
+                        "period": "2025-02-01",
+                        "sell": 5,
+                        "strongBuy": 13,
+                        "strongSell": 0,
+                        "symbol": "AAPL",
+                    },
+                    {
+                        "buy": 24,
+                        "hold": 7,
+                        "period": "2025-03-01",
+                        "sell": 0,
+                        "strongBuy": 13,
+                        "strongSell": 0,
+                        "symbol": "AAPL",
+                    },
+                ]
+
+            monkeypatch.setattr("control_plane.news_service._finnhub_get", fake_get)
+            payload = await service.recommendation_trends("aapl.us", limit=6)
+
+            assert payload["meta"]["symbol"] == "AAPL"
+            assert payload["data"][0]["period"] == "2025-03-01"
+            assert payload["data"][1]["period"] == "2025-02-01"
+
+            calls = {"count": 0}
+
+            async def counting_get(path, params):
+                calls["count"] += 1
+                return await fake_get(path, params)
+
+            monkeypatch.setattr("control_plane.news_service._finnhub_get", counting_get)
+            cached_payload = await service.recommendation_trends("aapl.us", limit=6)
+            assert cached_payload["meta"]["cached"] is True
+            assert calls["count"] == 0
+
+    asyncio.run(run())

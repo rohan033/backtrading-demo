@@ -8,6 +8,7 @@ import { executionSourceLabel } from '../lib/executionSources'
 
 export type StrategyTableRow = {
   id: string
+  engineId?: string | null
   name: string
   symbol: string
   status: string

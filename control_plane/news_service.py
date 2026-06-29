@@ -126,7 +126,7 @@ async def _finnhub_get_object(path: str, params: dict[str, str | int]) -> dict[s
 
 
 def market_status_cache_ttl_seconds() -> int:
-    return max(15, int(os.getenv("MARKET_STATUS_CACHE_TTL_SECONDS", "60")))
+    return max(60, int(os.getenv("MARKET_STATUS_CACHE_TTL_SECONDS", "1800")))
 
 
 def watchlist_earnings_cache_ttl_seconds() -> int:
@@ -135,6 +135,10 @@ def watchlist_earnings_cache_ttl_seconds() -> int:
 
 def watchlist_insider_cache_ttl_seconds() -> int:
     return max(30, int(os.getenv("WATCHLIST_INSIDER_CACHE_TTL_SECONDS", "120")))
+
+
+def recommendation_trends_cache_ttl_seconds() -> int:
+    return max(60, int(os.getenv("RECOMMENDATION_TRENDS_CACHE_TTL_SECONDS", "900")))
 
 
 def _sort_news(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -172,6 +176,7 @@ class NewsService:
         self.store = store or get_news_store()
         self._locks: dict[str, asyncio.Lock] = {}
         self._market_status_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._recommendation_trends_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
         self._watchlist_earnings_cache: tuple[float, dict[str, Any]] | None = None
         self._watchlist_insider_cache: tuple[float, dict[str, Any]] | None = None
 
@@ -683,6 +688,64 @@ class NewsService:
                 "ageSeconds": _cache_age(entry),
             },
         }
+
+    async def recommendation_trends(
+        self,
+        symbol: str,
+        *,
+        limit: int = 12,
+    ) -> dict[str, Any]:
+        ticker = finnhub_ticker(symbol)
+        safe_limit = max(1, min(limit, 24))
+        cache_key = f"recs:{ticker}:{safe_limit}"
+        ttl = recommendation_trends_cache_ttl_seconds()
+        cached = self._recommendation_trends_cache.get(cache_key)
+
+        if cached and (time.time() - cached[0]) < ttl:
+            sorted_items = cached[1]
+            return {
+                "status": True,
+                "data": sorted_items,
+                "meta": {
+                    "symbol": ticker,
+                    "count": len(sorted_items),
+                    "cached": True,
+                    "ageSeconds": round(time.time() - cached[0], 1),
+                },
+            }
+
+        async with self._lock_for(cache_key):
+            cached = self._recommendation_trends_cache.get(cache_key)
+            if cached and (time.time() - cached[0]) < ttl:
+                sorted_items = cached[1]
+                return {
+                    "status": True,
+                    "data": sorted_items,
+                    "meta": {
+                        "symbol": ticker,
+                        "count": len(sorted_items),
+                        "cached": True,
+                        "ageSeconds": round(time.time() - cached[0], 1),
+                    },
+                }
+
+            items = await _finnhub_get("/stock/recommendation", {"symbol": ticker})
+            sorted_items = sorted(
+                items,
+                key=lambda row: str(row.get("period") or ""),
+                reverse=True,
+            )[:safe_limit]
+            self._recommendation_trends_cache[cache_key] = (time.time(), sorted_items)
+            return {
+                "status": True,
+                "data": sorted_items,
+                "meta": {
+                    "symbol": ticker,
+                    "count": len(sorted_items),
+                    "cached": False,
+                    "ageSeconds": 0,
+                },
+            }
 
 
 _service: NewsService | None = None

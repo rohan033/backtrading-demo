@@ -24,10 +24,10 @@ import {
 import {
   applyHomeChartViewport,
   candlesToVolumeData,
-  fetchWatchlistSymbolCandles,
   mergeLiveTickIntoWatchlistCandles,
   type WatchlistSanitizedCandle,
 } from '../../lib/watchlistCandles'
+import { loadHomeChartHistory } from '../../lib/homeChartHistory'
 import { watchlistTickKey } from '../../lib/watchlists'
 import {
   buildResearchAgentPrompt,
@@ -40,6 +40,7 @@ import {
   HomeEarningsPanel,
   HomeFilingsPanel,
   HomeInsiderPanel,
+  HomeRecommendationsPanel,
   HomeSentimentPanel,
 } from './HomeResearchPanels'
 
@@ -177,7 +178,8 @@ function HomeChart({
     let cancelled = false
     setCandles([])
     setLoading(true)
-    fetchWatchlistSymbolCandles({
+
+    const symbol = {
       tickKey,
       watchlistId: 'home',
       broker: selection.broker,
@@ -185,7 +187,14 @@ function HomeChart({
       tradingsymbol: selection.tradingsymbol,
       symboltoken: selection.symboltoken,
       exchange: selection.exchange,
-    }, 180)
+    }
+
+    void loadHomeChartHistory(symbol, {
+      onRefresh: fresh => {
+        if (cancelled || !fresh.length) return
+        setCandles(sortedUniqueCandles(fresh))
+      },
+    })
       .then(next => {
         if (cancelled) return
         setCandles(sortedUniqueCandles(next))
@@ -193,6 +202,7 @@ function HomeChart({
       .finally(() => {
         if (!cancelled) setLoading(false)
       })
+
     return () => { cancelled = true }
   }, [
     tickKey,
@@ -758,34 +768,46 @@ export default function Home() {
 
       <div className="hm-body-row">
         <div className="hm-main">
-          <section className="hm-card hm-chart-card">
-            {selection ? (
-              <>
-                <div className="hm-chart-head">
-                  <div className="hm-chart-head__main">
-                    <HomeSymbolLogo selection={selection} />
-                    <div className="hm-chart-copy">
-                      <div className="hm-chart-title">
-                        {selection.displayName || selection.tradingsymbol}
-                      </div>
-                      <div className="hm-chart-subtitle">
-                        {selection.tradingsymbol} · {broker === 'etoro' ? 'eToro' : 'Angel One'}
-                      </div>
-                      <div className="hm-chart-price">
-                        {ltp != null ? formatBrokerMoney(selection.broker, ltp) : '—'}
+          <div className={`hm-top-row${selection ? '' : ' hm-top-row--full'}`}>
+            <section className="hm-card hm-chart-card">
+              {selection ? (
+                <>
+                  <div className="hm-chart-head">
+                    <div className="hm-chart-head__main">
+                      <HomeSymbolLogo selection={selection} />
+                      <div className="hm-chart-copy">
+                        <div className="hm-chart-title">
+                          {selection.displayName || selection.tradingsymbol}
+                        </div>
+                        <div className="hm-chart-price">
+                          {ltp != null ? formatBrokerMoney(selection.broker, ltp) : '—'}
+                        </div>
+                        <div className="hm-chart-subtitle">
+                          {selection.tradingsymbol} · {broker === 'etoro' ? 'eToro' : 'Angel One'}
+                        </div>
                       </div>
                     </div>
+                    <span className={streamBadgeClass}>{streamStatus.label}</span>
                   </div>
-                  <span className={streamBadgeClass}>{streamStatus.label}</span>
+                  <HomeChart selection={selection} ltp={ltp} />
+                </>
+              ) : (
+                <div className="hm-chart-empty">
+                  Search for a stock to load the chart, live price, and research panels.
                 </div>
-                <HomeChart selection={selection} ltp={ltp} />
-              </>
-            ) : (
-              <div className="hm-chart-empty">
-                Search for a stock to load the chart, live price, and research panels.
-              </div>
-            )}
-          </section>
+              )}
+            </section>
+
+            {selection ? (
+              <section className="hm-card hm-rec-card">
+                <div className="hm-rec-card-head">
+                  <div className="hm-rec-section-title">Analyst recommendation trends</div>
+                  <div className="hm-rec-section-meta">{newsSymbol} · Finnhub</div>
+                </div>
+                <HomeRecommendationsPanel symbol={newsSymbol} />
+              </section>
+            ) : null}
+          </div>
 
           <section className="hm-card hm-info-card">
             <div className="hm-info-tabs" role="tablist" aria-label="Stock research">

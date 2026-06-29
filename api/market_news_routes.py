@@ -176,3 +176,15 @@ async def get_earnings_calendar(
         past_days=past_days,
         future_days=future_days,
     )
+
+
+@router.get(
+    "/recommendation-trends",
+    operation_id="get_recommendation_trends",
+    summary="Analyst recommendation trends for a symbol (Finnhub)",
+)
+async def get_recommendation_trends(
+    symbol: str = Query(..., min_length=1, max_length=32),
+    limit: int = Query(12, ge=1, le=24),
+):
+    return await get_news_service().recommendation_trends(symbol, limit=limit)

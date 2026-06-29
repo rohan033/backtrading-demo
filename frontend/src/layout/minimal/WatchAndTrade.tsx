@@ -28,10 +28,12 @@ import {
   type WatchlistSymbolHit,
 } from '../../lib/watchlistBrokers'
 import { formatWindowChangePct, WATCHLIST_CHANGE_WINDOWS, type PriceSample } from '../../lib/watchlistChangeColumns'
+import { loadHomeChartHistory } from '../../lib/homeChartHistory'
 import {
   candlesToVolumeData,
-  fetchWatchlistSymbolCandles,
   mergeLiveTickIntoWatchlistCandles,
+  mergePriceSamples,
+  ohlcCandlesToPriceSamples,
   samplesToWatchlistCandles,
   type WatchlistSanitizedCandle,
 } from '../../lib/watchlistCandles'
@@ -197,17 +199,22 @@ function MiniDetailChart({ selected, height }: { selected: SelectedSymbol; heigh
   const userInteractedRef = useRef(false)
   const lastAutoFitKeyRef = useRef<string | null>(null)
   const [candles, setCandles] = useState<WatchlistSanitizedCandle[]>([])
-  const [loadedCandleKey, setLoadedCandleKey] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const candleData = useMemo(() => {
     return sortedUniqueCandles(
       mergeLiveTickIntoWatchlistCandles(candles, selected.symbol.ltp),
     )
   }, [candles, selected.symbol.ltp])
-  const lineData = useMemo(
-    () => linePoints(selected.samples, selected.symbol.ltp),
-    [selected.samples, selected.symbol.ltp],
-  )
+  const lineData = useMemo(() => {
+    if (candleData.length) {
+      const merged = mergePriceSamples(
+        ohlcCandlesToPriceSamples(candleData),
+        selected.samples,
+      )
+      return linePoints(merged, selected.symbol.ltp)
+    }
+    return linePoints(selected.samples, selected.symbol.ltp)
+  }, [candleData, selected.samples, selected.symbol.ltp])
   const lineVolumeData = useMemo(() => {
     const source = candleData.length
       ? candleData
@@ -255,28 +262,36 @@ function MiniDetailChart({ selected, height }: { selected: SelectedSymbol; heigh
   }, [height, selected.symbol.tickKey])
 
   useEffect(() => {
-    if (loading || loadedCandleKey === selected.symbol.tickKey) return
     let cancelled = false
+    setCandles([])
     setLoading(true)
-    fetchWatchlistSymbolCandles({
+
+    const symbol = {
+      tickKey: selected.symbol.tickKey,
+      watchlistId: selected.watchlist.id,
       broker: selected.watchlist.broker,
       accountEnv: selected.watchlist.accountEnv,
-      watchlistId: selected.watchlist.id,
       tradingsymbol: selected.symbol.ticker,
       symboltoken: selected.symbol.symboltoken,
       exchange: selected.symbol.exchange,
-      tickKey: selected.symbol.tickKey,
-    }, 180)
+    }
+
+    void loadHomeChartHistory(symbol, {
+      onRefresh: fresh => {
+        if (cancelled || !fresh.length) return
+        setCandles(sortedUniqueCandles(fresh))
+      },
+    })
       .then(next => {
         if (cancelled) return
         setCandles(sortedUniqueCandles(next))
-        setLoadedCandleKey(selected.symbol.tickKey)
       })
-      .finally(() => { if (!cancelled) setLoading(false) })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+
     return () => { cancelled = true }
   }, [
-    loading,
-    loadedCandleKey,
     selected.symbol.exchange,
     selected.symbol.symboltoken,
     selected.symbol.tickKey,
@@ -285,11 +300,6 @@ function MiniDetailChart({ selected, height }: { selected: SelectedSymbol; heigh
     selected.watchlist.broker,
     selected.watchlist.id,
   ])
-
-  useEffect(() => {
-    setCandles([])
-    setLoadedCandleKey(null)
-  }, [selected.symbol.tickKey])
 
   useEffect(() => {
     const chart = chartRef.current
@@ -311,7 +321,7 @@ function MiniDetailChart({ selected, height }: { selected: SelectedSymbol; heigh
     }
     lineRef.current.setData(lineData)
     volumeRef.current?.setData(hasVolume ? lineVolumeData : [])
-    const autoFitKey = `${selected.symbol.tickKey}:line`
+    const autoFitKey = `${selected.symbol.tickKey}:${lineData.length}`
     if (lineData.length && !userInteractedRef.current && lastAutoFitKeyRef.current !== autoFitKey) {
       chart.timeScale().fitContent()
       lastAutoFitKeyRef.current = autoFitKey
@@ -323,7 +333,7 @@ function MiniDetailChart({ selected, height }: { selected: SelectedSymbol; heigh
       <div ref={hostRef} className="wt-mini-chart-host" />
       {!lineData.length ? <span className="wt-chart-label">waiting for live price</span> : null}
       {lineData.length > 0 && !hasVolume ? <span className="wt-volume-note">volume unavailable</span> : null}
-      {loading && lineData.length === 0 ? <span className="wt-chart-label">loading chart…</span> : null}
+      {loading && !candleData.length ? <span className="wt-chart-label">loading chart…</span> : null}
     </div>
   )
 }

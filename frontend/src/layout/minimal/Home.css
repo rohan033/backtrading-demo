@@ -154,6 +154,17 @@
   min-height: 0;
 }
 
+.hm-top-row {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 1fr);
+  gap: 10px;
+  min-height: 0;
+}
+
+.hm-top-row--full {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .hm-card {
   border: 1.5px solid var(--ms-border, #303030);
   border-radius: 8px;
@@ -173,6 +184,36 @@
   flex-direction: column;
   min-height: 0;
 }
+
+.hm-rec-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.hm-rec-card-head {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-bottom: 1.5px solid var(--ms-border, #303030);
+  background: #F7F7F7;
+}
+
+.hm-rec-card .hm-rec-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+  padding: 8px 10px 10px;
+}
+
+.hm-rec-card .hm-rec-panel::-webkit-scrollbar { width: 6px; }
+.hm-rec-card .hm-rec-panel::-webkit-scrollbar-thumb { background: #C0C0C0; border-radius: 4px; }
 
 /* ── AI chat side drawer (right) ─────────────────────────── */
 .hm-ai-drawer {
@@ -314,10 +355,10 @@
 /* ── Chart header ────────────────────────────────────────── */
 .hm-chart-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 6px 10px;
   border-bottom: 1.5px solid var(--ms-border, #303030);
   background: #FAFAFA;
   flex-shrink: 0;
@@ -326,16 +367,17 @@
 .hm-chart-head__main {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
+  flex: 1;
 }
 
 .hm-symbol-logo {
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
   border: 1.5px solid var(--ms-border, #303030);
-  border-radius: 10px;
+  border-radius: 8px;
   object-fit: contain;
   background: #fff;
 }
@@ -344,39 +386,46 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   flex-shrink: 0;
   border: 1.5px solid var(--ms-border, #303030);
-  border-radius: 10px;
+  border-radius: 8px;
   background: #F3F3F3;
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 800;
   color: #404040;
 }
 
 .hm-chart-copy {
   min-width: 0;
+  flex: 1;
 }
 
 .hm-chart-title {
-  font-size: 18px;
+  overflow: hidden;
+  font-size: 14px;
   font-weight: 800;
-  line-height: 1.1;
+  line-height: 1.15;
   color: var(--ms-text, #202020);
-}
-
-.hm-chart-subtitle {
-  margin-top: 2px;
-  font-size: 10px;
-  color: #777;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hm-chart-price {
-  margin-top: 4px;
-  font-size: 22px;
+  margin-top: 1px;
+  font-size: 16px;
   font-weight: 800;
+  line-height: 1.15;
   color: #C88400;
+  font-variant-numeric: tabular-nums;
+}
+
+.hm-chart-subtitle {
+  margin-top: 1px;
+  font-size: 10px;
+  line-height: 1.2;
+  color: #777;
 }
 
 .hm-stream-badge {
@@ -427,6 +476,141 @@
   font-size: 11px;
   color: #CCC;
   font-style: italic;
+}
+
+/* ── Recommendation trends ─────────────────────────────── */
+.hm-rec-section-title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #202020;
+  line-height: 1.2;
+}
+
+.hm-rec-section-meta {
+  font-size: 9px;
+  color: #888;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hm-rec-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.hm-rec-panel .hm-panel-message {
+  margin: 0;
+}
+
+.hm-rec-latest {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hm-rec-latest-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hm-rec-latest-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: #333;
+}
+
+.hm-rec-latest-total {
+  font-size: 10px;
+  color: #777;
+}
+
+.hm-rec-bar {
+  display: flex;
+  width: 100%;
+  height: 14px;
+  overflow: hidden;
+  border: 1.5px solid var(--ms-border, #303030);
+  border-radius: 4px;
+  background: #F5F5F5;
+}
+
+.hm-rec-bar--empty {
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #999;
+  font-style: italic;
+}
+
+.hm-rec-bar-seg {
+  min-width: 2px;
+  height: 100%;
+}
+
+.hm-rec-bar-seg--strong-buy { background: #1B7F3A; }
+.hm-rec-bar-seg--buy { background: #4CAF50; }
+.hm-rec-bar-seg--hold { background: #C9A227; }
+.hm-rec-bar-seg--sell { background: #E07A5F; }
+.hm-rec-bar-seg--strong-sell { background: #B3261E; }
+
+.hm-rec-legend {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.hm-rec-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 8px;
+  color: #555;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.hm-rec-legend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.hm-rec-legend-item--strong-buy .hm-rec-legend-dot { background: #1B7F3A; }
+.hm-rec-legend-item--buy .hm-rec-legend-dot { background: #4CAF50; }
+.hm-rec-legend-item--hold .hm-rec-legend-dot { background: #C9A227; }
+.hm-rec-legend-item--sell .hm-rec-legend-dot { background: #E07A5F; }
+.hm-rec-legend-item--strong-sell .hm-rec-legend-dot { background: #B3261E; }
+
+.hm-rec-table-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1.5px solid var(--ms-border, #303030);
+  border-radius: 6px;
+}
+
+.hm-rec-table-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.hm-rec-table-scroll::-webkit-scrollbar-thumb { background: #C0C0C0; border-radius: 4px; }
+
+.hm-rec-table-scroll .hm-r-table {
+  width: 100%;
+}
+
+.hm-rec-table-scroll .hm-r-thead-row {
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 /* ── Info tabs ───────────────────────────────────────────── */
@@ -968,7 +1152,16 @@
   }
 
   .hm-main {
-    grid-template-rows: minmax(220px, 320px) minmax(240px, 360px);
+    grid-template-rows: auto minmax(240px, 360px);
+  }
+
+  .hm-top-row {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(220px, 320px) auto;
+  }
+
+  .hm-rec-card {
+    max-height: 280px;
   }
 
   .hm-ai-drawer {

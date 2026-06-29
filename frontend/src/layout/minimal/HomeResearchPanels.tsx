@@ -5,6 +5,7 @@ import {
   fetchEarningsCalendar,
   fetchFilingSentiment,
   fetchInsiderTransactions,
+  fetchRecommendationTrends,
   fetchSecFilings,
   finnhubSymbol,
   formatCompactMoney,
@@ -12,14 +13,20 @@ import {
   formatFilingDate,
   formatInsiderSideLabel,
   formatPolarityScore,
+  formatRecommendationPeriod,
   formatSentimentShare,
   formatShareCount,
   formatTransactionCode,
   isUpcomingEarnings,
+  readRecommendationField,
+  recommendationLegendLabel,
+  recommendationSegments,
+  recommendationTotal,
   resolveInsiderSide,
   type EarningsEvent,
   type FilingSentiment,
   type InsiderTransaction,
+  type RecommendationTrend,
   type SecFiling,
 } from '../../lib/marketResearch'
 
@@ -35,6 +42,136 @@ function ResearchTableShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="hm-r-table-scroll">
       <div className="hm-r-table-card">{children}</div>
+    </div>
+  )
+}
+
+function RecommendationBar({ row }: { row: RecommendationTrend }) {
+  const segments = useMemo(() => recommendationSegments(row), [row])
+  const total = recommendationTotal(row)
+
+  if (!total) {
+    return <div className="hm-rec-bar hm-rec-bar--empty">No analyst counts for this period</div>
+  }
+
+  return (
+    <div className="hm-rec-bar" aria-label="Recommendation distribution">
+      {segments.map(segment => {
+        if (!segment.count) return null
+        const width = (segment.count / total) * 100
+        return (
+          <div
+            key={segment.key}
+            className={`hm-rec-bar-seg hm-rec-bar-seg--${segment.className}`}
+            style={{ width: `${width}%` }}
+            title={`${segment.label}: ${segment.count}`}
+          />
+        )
+      })}
+    </div>
+  )
+}
+
+export function HomeRecommendationsPanel({ symbol }: { symbol: string }) {
+  const [items, setItems] = useState<RecommendationTrend[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    fetchRecommendationTrends(symbol, { limit: 8 })
+      .then(rows => {
+        if (cancelled) return
+        setItems(rows)
+      })
+      .catch(err => {
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : 'Failed to load recommendation trends')
+        setItems([])
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [symbol])
+
+  const latest = items[0]
+  const latestSegments = useMemo(
+    () => (latest ? recommendationSegments(latest) : []),
+    [latest],
+  )
+  const latestTotal = latest ? recommendationTotal(latest) : 0
+
+  if (loading) return <PanelMessage>Loading analyst recommendations…</PanelMessage>
+  if (error) return <PanelError message={error} />
+  if (!items.length) {
+    return (
+      <PanelMessage>
+        No recommendation trends found for {finnhubSymbol(symbol)}. Finnhub covers US-listed symbols.
+      </PanelMessage>
+    )
+  }
+
+  return (
+    <div className="hm-rec-panel">
+      {latest ? (
+        <div className="hm-rec-latest">
+          <div className="hm-rec-latest-head">
+            <span className="hm-rec-latest-label">Latest · {formatRecommendationPeriod(latest.period)}</span>
+            <span className="hm-rec-latest-total">{latestTotal.toLocaleString()} analysts</span>
+          </div>
+          <RecommendationBar row={latest} />
+          <div className="hm-rec-legend">
+            {latestSegments.map(segment => (
+              <span key={segment.key} className={`hm-rec-legend-item hm-rec-legend-item--${segment.className}`}>
+                <span className="hm-rec-legend-dot" aria-hidden="true" />
+                {recommendationLegendLabel(segment.key)} {segment.count}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="hm-rec-table-scroll">
+        <table className="hm-r-table">
+          <colgroup>
+            <col className="hm-r-col-rec-period" />
+            <col className="hm-r-col-rec-extreme" />
+            <col className="hm-r-col-rec-num" />
+            <col className="hm-r-col-rec-num" />
+            <col className="hm-r-col-rec-num" />
+            <col className="hm-r-col-rec-extreme" />
+          </colgroup>
+          <thead>
+            <tr className="hm-r-thead-row">
+              <th className="hm-r-th">Period</th>
+              <th className="hm-r-th hm-r-th--right">Str+</th>
+              <th className="hm-r-th hm-r-th--right">Buy</th>
+              <th className="hm-r-th hm-r-th--right">Hold</th>
+              <th className="hm-r-th hm-r-th--right">Sell</th>
+              <th className="hm-r-th hm-r-th--right">Str−</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map(item => (
+              <tr key={item.period || `${item.symbol}-row`} className="hm-r-table-row">
+                <td className="hm-r-td">{formatRecommendationPeriod(item.period)}</td>
+                <td className="hm-r-td hm-r-td--num hm-r-td--rec-extreme hm-r-td--rec-strong-buy">
+                  {readRecommendationField(item, 'strongBuy')}
+                </td>
+                <td className="hm-r-td hm-r-td--num">{readRecommendationField(item, 'buy')}</td>
+                <td className="hm-r-td hm-r-td--num">{readRecommendationField(item, 'hold')}</td>
+                <td className="hm-r-td hm-r-td--num">{readRecommendationField(item, 'sell')}</td>
+                <td className="hm-r-td hm-r-td--num hm-r-td--rec-extreme hm-r-td--rec-strong-sell">
+                  {readRecommendationField(item, 'strongSell')}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }

@@ -1,5 +1,6 @@
 export type ExecutionLike = {
   executor_id: string
+  data_plane_id?: string | null
   symbol?: string | null
   broker?: string | null
   label?: string | null

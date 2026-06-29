@@ -6,7 +6,7 @@ import {
   type MarketStatusPayload,
 } from '../lib/marketStatus'
 
-const POLL_MS = 60_000
+const POLL_MS = 30 * 60 * 1000
 
 export function useMarketStatus(exchange = 'US') {
   const [payload, setPayload] = useState<MarketStatusPayload | null>(null)
