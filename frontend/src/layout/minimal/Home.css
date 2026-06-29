@@ -470,6 +470,8 @@
   flex: 1;
   min-height: 0;
   position: relative;
+  display: flex;
+  flex-direction: column;
 }
 
 .hm-chart-body--indices {
@@ -515,6 +517,108 @@
   flex: 1;
   min-height: 0;
   position: relative;
+}
+
+.hm-chart-range-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.hm-chart-range-layer--selecting {
+  pointer-events: auto;
+  cursor: col-resize;
+}
+
+.hm-chart-range-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(120, 120, 120, 0.16);
+  border-left: 1px solid rgba(120, 120, 120, 0.35);
+  border-right: 1px solid rgba(120, 120, 120, 0.35);
+  pointer-events: auto;
+}
+
+.hm-chart-range-band--dragging {
+  background: rgba(120, 120, 120, 0.22);
+}
+
+.hm-chart-range-menu {
+  position: absolute;
+  z-index: 4;
+  min-width: 140px;
+  padding: 4px;
+  border: 1px solid var(--ms-border, #303030);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  pointer-events: auto;
+}
+
+.hm-chart-range-menu-item {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #202020;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hm-chart-range-menu-item:hover {
+  background: #F3F3F3;
+}
+
+.hm-chart-range-hint {
+  flex-shrink: 0;
+  padding: 4px 10px 6px;
+  font-size: 9px;
+  color: #888;
+}
+
+.hm-chat-context-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border: 1px solid #E0E0E0;
+  border-radius: 8px;
+  background: #F8F8F8;
+}
+
+.hm-chat-context-chip__label {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #444;
+}
+
+.hm-chat-context-chip__clear {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 999px;
+  background: #ECECEC;
+  color: #555;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.hm-chat-context-chip__clear:hover {
+  background: #E0E0E0;
+  color: #202020;
 }
 
 .hm-chart-body--indices .hm-chart-host {

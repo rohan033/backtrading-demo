@@ -27,15 +27,21 @@ import {
   mergeLiveTickIntoWatchlistCandles,
   type WatchlistSanitizedCandle,
 } from '../../lib/watchlistCandles'
-import { loadHomeChartHistory } from '../../lib/homeChartHistory'
 import { watchlistTickKey } from '../../lib/watchlists'
+import { loadHomeChartHistory } from '../../lib/homeChartHistory'
 import {
   buildResearchAgentPrompt,
   insertResearchTagMention,
   RESEARCH_CHAT_TAGS,
 } from '../../lib/researchChatTags'
+import {
+  buildChartRangeAgentPrompt,
+  formatChartRangeLabel,
+  type HomeChartChatContext,
+} from '../../lib/homeChartChatContext'
 import { useCursorAgentChat } from '../../lib/useCursorAgentChat'
 import { useUrlState } from './useUrlState'
+import HomeChartRangeSelector, { type ChartTimeRange } from '../../components/charts/HomeChartRangeSelector'
 import {
   HomeEarningsPanel,
   HomeFilingsPanel,
@@ -108,9 +114,15 @@ function linePointsFromCandles(candles: WatchlistSanitizedCandle[], liveLtp: num
 function HomeChart({
   selection,
   ltp,
+  chartRange,
+  onChartRangeChange,
+  onAddRangeToChat,
 }: {
   selection: HomeSelection
   ltp: number | null
+  chartRange: ChartTimeRange | null
+  onChartRangeChange: (range: ChartTimeRange | null) => void
+  onAddRangeToChat: (range: ChartTimeRange) => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -245,7 +257,16 @@ function HomeChart({
     <div className="hm-chart-body">
       {!selection ? null : (
         <>
-          <div ref={hostRef} className="hm-chart-host" />
+          <div className="hm-chart-host-wrap">
+            <div ref={hostRef} className="hm-chart-host" />
+            <HomeChartRangeSelector
+              chartRef={chartRef}
+              activeRange={chartRange}
+              onRangeChange={onChartRangeChange}
+              onAddToChat={onAddRangeToChat}
+            />
+          </div>
+          <div className="hm-chart-range-hint">Shift+drag to select a range · right-click selection to add to AI chat</div>
           {!lineData.length && !loading ? (
             <span className="hm-chart-label">waiting for live price</span>
           ) : null}
@@ -300,6 +321,8 @@ function HomeAiDrawer({
   onToggle,
   onResizeStart,
   selection,
+  chartChatContext,
+  onClearChartContext,
   chatDraft,
   onChatDraftChange,
   onSendChat,
@@ -316,6 +339,8 @@ function HomeAiDrawer({
   onToggle: () => void
   onResizeStart: (event: React.MouseEvent<HTMLDivElement>) => void
   selection: HomeSelection | null
+  chartChatContext: HomeChartChatContext | null
+  onClearChartContext: () => void
   chatDraft: string
   onChatDraftChange: (value: string) => void
   onSendChat: () => void
@@ -327,6 +352,7 @@ function HomeAiDrawer({
   error: string
   onStop: () => void
 }) {
+  const chatEnabled = Boolean(selection) || Boolean(chartChatContext)
   if (collapsed) {
     return (
       <button
@@ -363,9 +389,11 @@ function HomeAiDrawer({
         <div>
           <div className="hm-ai-drawer-title">AI chat</div>
           <div className="hm-ai-drawer-subtitle">
-            {selection
-              ? `Research ${selection.displayName || selection.tradingsymbol}`
-              : 'Select a stock to start'}
+            {chartChatContext
+              ? formatChartRangeLabel(chartChatContext)
+              : selection
+                ? `Research ${selection.displayName || selection.tradingsymbol}`
+                : 'Select a stock or chart range'}
           </div>
         </div>
       </header>
@@ -407,6 +435,21 @@ function HomeAiDrawer({
         </div>
         {error ? <p className="hm-chat-error">{error}</p> : null}
         <div className="hm-chat-footer">
+          {chartChatContext ? (
+            <div className="hm-chat-context-chip">
+              <span className="hm-chat-context-chip__label">
+                {formatChartRangeLabel(chartChatContext)}
+              </span>
+              <button
+                type="button"
+                className="hm-chat-context-chip__clear"
+                onClick={onClearChartContext}
+                aria-label="Clear chart range context"
+              >
+                ×
+              </button>
+            </div>
+          ) : null}
           <div className="hm-chat-tags" role="group" aria-label="Research tags">
             {RESEARCH_CHAT_TAGS.map(tag => (
               <button
@@ -414,7 +457,7 @@ function HomeAiDrawer({
                 type="button"
                 className="hm-chat-tag"
                 title={tag.description}
-                disabled={!selection || sending}
+                disabled={!chatEnabled || sending}
                 onClick={() => onInsertTag(tag.mention)}
               >
                 {tag.mention}
@@ -427,11 +470,13 @@ function HomeAiDrawer({
               rows={2}
               value={chatDraft}
               placeholder={
-                selection
-                  ? `@insidertrading Analyse ${selection.tradingsymbol}…`
-                  : 'Select a stock first…'
+                chartChatContext
+                  ? '@chartanalysis What happened in this window?'
+                  : selection
+                    ? `@insidertrading Analyse ${selection.tradingsymbol}…`
+                    : 'Shift+drag on chart, then right-click to add range…'
               }
-              disabled={!selection || sending}
+              disabled={!chatEnabled || sending}
               onChange={event => onChatDraftChange(event.target.value)}
               onKeyDown={event => {
                 if (event.key === 'Enter' && !event.shiftKey) {
@@ -452,7 +497,7 @@ function HomeAiDrawer({
               <button
                 type="button"
                 className="hm-chat-send"
-                disabled={!chatDraft.trim() || !selection || !connected}
+                disabled={!chatDraft.trim() || !chatEnabled || !connected}
                 onClick={onSendChat}
               >
                 Send
@@ -496,6 +541,8 @@ export default function Home() {
     loadDrawerBool(INFO_PANEL_COLLAPSED_KEY, false),
   )
   const [chatDraft, setChatDraft] = useState('')
+  const [chartRange, setChartRange] = useState<ChartTimeRange | null>(null)
+  const [chartChatContext, setChartChatContext] = useState<HomeChartChatContext | null>(null)
   const [aiDrawerCollapsed, setAiDrawerCollapsed] = useState(() =>
     loadDrawerBool(AI_DRAWER_COLLAPSED_KEY, false),
   )
@@ -579,12 +626,6 @@ export default function Home() {
   }, [accountEnv, broker, navigate])
 
   useEffect(() => {
-    hydrateMessages([])
-    resetAgent(null)
-    setChatDraft('')
-  }, [selection?.symboltoken, selection?.broker, hydrateMessages, resetAgent])
-
-  useEffect(() => {
     if (!selection || selection.logo35x35 || selection.logo50x50 || selection.logo150x150) return
     let cancelled = false
     searchWatchlistSymbol(selection.broker, selection.tradingsymbol, selection.accountEnv)
@@ -666,12 +707,57 @@ export default function Home() {
 
   const sendChat = async () => {
     const text = chatDraft.trim()
-    if (!text || !selection || sending) return
-    const prompt = buildResearchAgentPrompt(text, selection.tradingsymbol)
+    if (!text || sending) return
+    if (!selection && !chartChatContext) return
+
+    const prompt = chartChatContext
+      ? buildChartRangeAgentPrompt(text, chartChatContext)
+      : selection
+        ? buildResearchAgentPrompt(text, selection.tradingsymbol)
+        : ''
     if (!prompt.trim()) return
+
     const ok = await sendMessage(prompt, text)
     if (ok) setChatDraft('')
   }
+
+  const clearChartChatContext = useCallback(() => {
+    setChartChatContext(null)
+    setChartRange(null)
+  }, [])
+
+  const addStockRangeToChat = useCallback((range: ChartTimeRange) => {
+    if (!selection) return
+    setChartRange(range)
+    setChartChatContext({
+      ...range,
+      kind: 'stock',
+      symbol: selection.tradingsymbol,
+      displayName: selection.displayName,
+    })
+    setAiDrawerCollapsed(false)
+    localStorage.setItem(AI_DRAWER_COLLAPSED_KEY, 'false')
+    setChatDraft(prev => insertResearchTagMention(prev, '@chartanalysis'))
+  }, [selection])
+
+  const addIndicesRangeToChat = useCallback((range: ChartTimeRange) => {
+    setChartRange(range)
+    setChartChatContext({
+      ...range,
+      kind: 'indices',
+      indices: ['SPX500', 'NSDQ100', 'DJ30'],
+    })
+    setAiDrawerCollapsed(false)
+    localStorage.setItem(AI_DRAWER_COLLAPSED_KEY, 'false')
+    setChatDraft(prev => insertResearchTagMention(prev, '@chartanalysis'))
+  }, [])
+
+  useEffect(() => {
+    hydrateMessages([])
+    resetAgent(null)
+    setChatDraft('')
+    clearChartChatContext()
+  }, [selection?.symboltoken, selection?.broker, hydrateMessages, resetAgent, clearChartChatContext])
 
   const insertChatTag = (mention: string) => {
     setChatDraft(prev => insertResearchTagMention(prev, mention))
@@ -821,10 +907,22 @@ export default function Home() {
                     </div>
                     <span className={streamBadgeClass}>{streamStatus.label}</span>
                   </div>
-                  <HomeChart selection={selection} ltp={ltp} />
+                  <HomeChart
+                    selection={selection}
+                    ltp={ltp}
+                    chartRange={chartRange}
+                    onChartRangeChange={setChartRange}
+                    onAddRangeToChat={addStockRangeToChat}
+                  />
                 </>
               ) : (
-                <HomeIndicesChart broker={broker} accountEnv={accountEnv} />
+                <HomeIndicesChart
+                  broker={broker}
+                  accountEnv={accountEnv}
+                  chartRange={chartRange}
+                  onChartRangeChange={setChartRange}
+                  onAddRangeToChat={addIndicesRangeToChat}
+                />
               )}
             </section>
 
@@ -908,6 +1006,8 @@ export default function Home() {
           onToggle={toggleAiDrawer}
           onResizeStart={startAiDrawerResize}
           selection={selection}
+          chartChatContext={chartChatContext}
+          onClearChartContext={clearChartChatContext}
           chatDraft={chatDraft}
           onChatDraftChange={setChatDraft}
           onSendChat={() => { void sendChat() }}

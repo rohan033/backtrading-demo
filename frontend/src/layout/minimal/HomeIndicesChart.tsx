@@ -8,6 +8,7 @@ import {
 } from 'lightweight-charts'
 
 import { useHomeIndicesLiveFeed } from '../../hooks/useHomeIndicesLiveFeed'
+import HomeChartRangeSelector, { type ChartTimeRange } from '../../components/charts/HomeChartRangeSelector'
 import { loadHomeChartHistory } from '../../lib/homeChartHistory'
 import {
   formatIndexHoverTime,
@@ -77,9 +78,15 @@ function IndexVisibilityIcon({ visible }: { visible: boolean }) {
 export default function HomeIndicesChart({
   broker,
   accountEnv,
+  chartRange,
+  onChartRangeChange,
+  onAddRangeToChat,
 }: {
   broker: WatchlistBroker
   accountEnv: string
+  chartRange: ChartTimeRange | null
+  onChartRangeChange: (range: ChartTimeRange | null) => void
+  onAddRangeToChat: (range: ChartTimeRange) => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -371,6 +378,12 @@ export default function HomeIndicesChart({
       <div className="hm-chart-body hm-chart-body--indices">
       <div className="hm-chart-host-wrap">
         <div ref={hostRef} className="hm-chart-host" />
+        <HomeChartRangeSelector
+          chartRef={chartRef}
+          activeRange={chartRange}
+          onRangeChange={onChartRangeChange}
+          onAddToChat={onAddRangeToChat}
+        />
         {legend.length ? (
           <div className="hm-indices-tooltip" aria-live="polite" aria-label="Index prices">
             {(hoverTip?.rows ?? legend
@@ -406,6 +419,7 @@ export default function HomeIndicesChart({
           <span className="hm-chart-label">No index history available</span>
         ) : null}
       </div>
+      <div className="hm-chart-range-hint">Shift+drag to select a range · right-click selection to add to AI chat</div>
       {legend.length ? (
         <div className="hm-indices-legend-wrap">
           <button
