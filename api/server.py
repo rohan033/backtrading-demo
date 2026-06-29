@@ -31,7 +31,7 @@ from api.watchlist_routes import router as watchlist_router
 from api.watchlist_panel_routes import router as watchlist_panel_router
 from api.market_news_routes import router as market_news_router
 from api.news_feed import get_news_feed_hub
-from api.watchlist_feed import get_watchlist_feed_hub
+from api.watchlist_feed import get_watchlist_feed_hub, market_preview_uses_shared_hub
 from control_plane.client_mode import normalize_client_mode
 from control_plane.engine_registry import EngineRegistry
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
@@ -2366,7 +2366,8 @@ async def ws_news(ws: WebSocket):
 async def ws_control_market(ws: WebSocket):
     await ws.accept()
     log.info("[CONTROL_MARKET] Client connected")
-    stream_task: asyncio.Task | None = None
+    hub = get_watchlist_feed_hub()
+    legacy_task: asyncio.Task | None = None
     try:
         while True:
             raw = await ws.receive_text()
@@ -2374,27 +2375,34 @@ async def ws_control_market(ws: WebSocket):
             if msg.get("type") != "subscribe":
                 continue
 
-            if stream_task is not None:
-                stream_task.cancel()
+            if legacy_task is not None:
+                legacy_task.cancel()
                 try:
-                    await stream_task
+                    await legacy_task
                 except asyncio.CancelledError:
                     pass
+                legacy_task = None
 
+            if market_preview_uses_shared_hub(msg):
+                await hub.set_market_preview_subscription(ws, msg)
+                continue
+
+            await hub.clear_market_preview_subscription(ws)
             log.info(
-                "[CONTROL_MARKET] subscribe broker=%s symbol=%s token=%s",
+                "[CONTROL_MARKET] subscribe broker=%s symbol=%s token=%s (legacy)",
                 msg.get("broker"),
                 msg.get("symbol"),
                 msg.get("token"),
             )
-            stream_task = asyncio.create_task(_run_market_preview(ws, msg))
+            legacy_task = asyncio.create_task(_run_market_preview(ws, msg))
     except WebSocketDisconnect:
         log.info("[CONTROL_MARKET] Client disconnected")
     finally:
-        if stream_task is not None:
-            stream_task.cancel()
+        await hub.clear_market_preview_subscription(ws)
+        if legacy_task is not None:
+            legacy_task.cancel()
             try:
-                await stream_task
+                await legacy_task
             except asyncio.CancelledError:
                 pass
 

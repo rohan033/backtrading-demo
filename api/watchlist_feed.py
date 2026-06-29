@@ -1,10 +1,11 @@
-"""Multi-broker websocket feeds for watchlist clients."""
+"""Multi-broker websocket feeds for watchlist and market-preview clients."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -12,6 +13,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 from brokers.interfaces import Subscription, TickData
 
 log = logging.getLogger("backtrading")
+
+FEED_IDLE_SHUTDOWN_SEC = 60
 
 
 def _feed_key(broker: str, account_env: str) -> str:
@@ -42,6 +45,27 @@ def _subscriptions_from_watchlists(
                 token=token,
             )
     return grouped
+
+
+@dataclass(frozen=True)
+class PreviewSubscription:
+    broker: str
+    account_env: str
+    token: str
+    symbol: str
+    exchange: str
+
+
+def preview_subscription_from_msg(msg: dict[str, Any]) -> PreviewSubscription:
+    broker = "fake" if msg.get("use_fake_client") else (msg.get("broker") or "angel").lower()
+    account_env = msg.get("account_env") or ("demo" if broker == "etoro" else "live")
+    return PreviewSubscription(
+        broker=broker,
+        account_env=str(account_env),
+        token=str(msg["token"]),
+        symbol=str(msg["symbol"]),
+        exchange=str(msg.get("exchange") or ("ETORO" if broker == "etoro" else "NSE")),
+    )
 
 
 class _BrokerFeed:
@@ -90,8 +114,6 @@ class _BrokerFeed:
         self.subscriptions = {str(s.token): s for s in subscriptions}
         if self.client is None:
             return
-        # Use sync_subscriptions for all brokers — it diffs old vs new and only
-        # sends Subscribe/Unsubscribe for the delta, preventing TopicAlreadySubscribed spam.
         await self.client.sync_subscriptions(subscriptions)
 
     async def stop(self) -> None:
@@ -107,38 +129,54 @@ class _BrokerFeed:
 class WatchlistFeedHub:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._clients: dict[int, list[dict[str, Any]]] = {}
+        self._watchlist_clients: dict[int, tuple[WebSocket, list[dict[str, Any]]]] = {}
+        self._preview_clients: dict[int, tuple[WebSocket, PreviewSubscription | None]] = {}
         self._feeds: dict[str, _BrokerFeed] = {}
         self._previous_ltp: dict[str, float] = {}
+        self._last_tick_payload: dict[str, dict[str, Any]] = {}
         self._tick_queue: asyncio.Queue[tuple[str, str, TickData]] | None = None
         self._broadcast_task: asyncio.Task | None = None
-        self._active_connections: set[WebSocket] = set()
+        self._idle_shutdown_task: asyncio.Task | None = None
 
     async def connect(self, ws: WebSocket) -> None:
         await ws.accept()
-        self._active_connections.add(ws)
-        if self._broadcast_task is None:
-            self._tick_queue = asyncio.Queue()
-            self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+        self._watchlist_clients[id(ws)] = (ws, [])
+        self._cancel_idle_shutdown()
+        self._ensure_broadcast_loop()
 
     def disconnect(self, ws: WebSocket) -> None:
-        self._active_connections.discard(ws)
-        self._clients.pop(id(ws), None)
-        if not self._active_connections and self._broadcast_task is not None:
-            self._broadcast_task.cancel()
-            self._broadcast_task = None
-            self._tick_queue = None
+        self._watchlist_clients.pop(id(ws), None)
 
     async def set_client_watchlists(self, ws: WebSocket, watchlists: list[dict[str, Any]]) -> None:
-        self._clients[id(ws)] = watchlists
+        self._watchlist_clients[id(ws)] = (ws, watchlists)
         await self._rebuild_feeds()
+        await self._send_watchlist_snapshot(ws, watchlists)
+
+    def _collect_grouped_subscriptions(self) -> dict[str, dict[str, Subscription]]:
+        grouped: dict[str, dict[str, Subscription]] = {}
+        for _, watchlists in self._watchlist_clients.values():
+            for key, bucket in _subscriptions_from_watchlists(watchlists).items():
+                grouped.setdefault(key, {}).update(bucket)
+        for _, preview in self._preview_clients.values():
+            if preview is None:
+                continue
+            key = _feed_key(preview.broker, preview.account_env)
+            grouped.setdefault(key, {})[preview.token] = Subscription(
+                exchange=preview.exchange,
+                symbol=preview.symbol,
+                token=preview.token,
+            )
+        return grouped
 
     async def _rebuild_feeds(self) -> None:
         async with self._lock:
-            grouped: dict[str, dict[str, Subscription]] = {}
-            for watchlists in self._clients.values():
-                for key, bucket in _subscriptions_from_watchlists(watchlists).items():
-                    grouped.setdefault(key, {}).update(bucket)
+            grouped = self._collect_grouped_subscriptions()
+            if not grouped:
+                await self._schedule_idle_shutdown()
+                return
+
+            self._cancel_idle_shutdown()
+            self._ensure_broadcast_loop()
 
             active_keys = set(grouped)
             for key in list(self._feeds):
@@ -149,6 +187,9 @@ class WatchlistFeedHub:
                     for cache_key in list(self._previous_ltp):
                         if cache_key.startswith(prefix):
                             self._previous_ltp.pop(cache_key, None)
+                    for cache_key in list(self._last_tick_payload):
+                        if cache_key.startswith(prefix):
+                            self._last_tick_payload.pop(cache_key, None)
 
             for key, subs in grouped.items():
                 broker, account_env = key.split(":", 1)
@@ -169,10 +210,32 @@ class WatchlistFeedHub:
                 else:
                     await self._feeds[key].sync(subscription_list)
 
-            if not grouped:
+    def _ensure_broadcast_loop(self) -> None:
+        if self._broadcast_task is None:
+            self._tick_queue = asyncio.Queue()
+            self._broadcast_task = asyncio.create_task(self._broadcast_loop())
+
+    def _cancel_idle_shutdown(self) -> None:
+        if self._idle_shutdown_task is not None:
+            self._idle_shutdown_task.cancel()
+            self._idle_shutdown_task = None
+
+    async def _schedule_idle_shutdown(self) -> None:
+        self._cancel_idle_shutdown()
+        self._idle_shutdown_task = asyncio.create_task(self._idle_shutdown_worker())
+
+    async def _idle_shutdown_worker(self) -> None:
+        try:
+            await asyncio.sleep(FEED_IDLE_SHUTDOWN_SEC)
+            async with self._lock:
+                if self._collect_grouped_subscriptions():
+                    return
                 for feed in list(self._feeds.values()):
                     await feed.stop()
                 self._feeds.clear()
+                log.info("[WATCHLIST] broker feeds stopped after %ss idle", FEED_IDLE_SHUTDOWN_SEC)
+        except asyncio.CancelledError:
+            raise
 
     async def _broadcast_loop(self) -> None:
         assert self._tick_queue is not None
@@ -182,6 +245,37 @@ class WatchlistFeedHub:
                 await self._broadcast_tick(broker, account_env, tick)
         except asyncio.CancelledError:
             raise
+
+    def _build_watchlist_payload(
+        self,
+        broker: str,
+        account_env: str,
+        tick: TickData,
+        ltp: float,
+        change_pct: float,
+        direction: str,
+    ) -> dict[str, Any]:
+        token = str(tick.token)
+        return {
+            "type": "tick",
+            "broker": broker,
+            "account_env": account_env,
+            "token": token,
+            "symbol": tick.symbol,
+            "exchange": tick.exchange,
+            "ltp": ltp,
+            "change_pct": round(change_pct, 2),
+            "direction": direction,
+        }
+
+    def _build_preview_payload(self, tick: TickData, ltp: float) -> dict[str, Any]:
+        return {
+            "type": "tick",
+            "symbol": tick.symbol,
+            "token": str(tick.token),
+            "exchange": tick.exchange,
+            "ltp": ltp,
+        }
 
     async def _broadcast_tick(self, broker: str, account_env: str, tick: TickData) -> None:
         token = str(tick.token)
@@ -204,27 +298,80 @@ class WatchlistFeedHub:
         else:
             direction = "flat"
 
-        payload = {
-            "type": "tick",
-            "broker": broker,
-            "account_env": account_env,
-            "token": token,
-            "symbol": tick.symbol,
-            "exchange": tick.exchange,
-            "ltp": ltp,
-            "change_pct": round(change_pct, 2),
-            "direction": direction,
-        }
+        watchlist_payload = self._build_watchlist_payload(
+            broker,
+            account_env,
+            tick,
+            ltp,
+            change_pct,
+            direction,
+        )
+        preview_payload = self._build_preview_payload(tick, ltp)
+        self._last_tick_payload[cache_key] = watchlist_payload
 
-        dead: list[WebSocket] = []
-        for ws in list(self._active_connections):
+        dead_watchlist: list[WebSocket] = []
+        for ws, _ in list(self._watchlist_clients.values()):
             try:
-                await ws.send_json(payload)
+                await ws.send_json(watchlist_payload)
             except Exception:
-                dead.append(ws)
-        for ws in dead:
+                dead_watchlist.append(ws)
+
+        dead_preview: list[int] = []
+        for client_id, (pws, preview) in list(self._preview_clients.items()):
+            if preview is None:
+                continue
+            if (
+                preview.broker != broker
+                or preview.account_env != account_env
+                or preview.token != token
+            ):
+                continue
+            try:
+                await pws.send_json(preview_payload)
+            except Exception:
+                dead_preview.append(client_id)
+
+        for ws in dead_watchlist:
             self.disconnect(ws)
+        for client_id in dead_preview:
+            self._preview_clients.pop(client_id, None)
+
+        if dead_watchlist or dead_preview:
             await self._rebuild_feeds()
+
+    async def _send_watchlist_snapshot(self, ws: WebSocket, watchlists: list[dict[str, Any]]) -> None:
+        ticks: list[dict[str, Any]] = []
+        for key, bucket in _subscriptions_from_watchlists(watchlists).items():
+            broker, account_env = key.split(":", 1)
+            for token in bucket:
+                cache_key = _tick_cache_key(broker, account_env, token)
+                payload = self._last_tick_payload.get(cache_key)
+                if payload:
+                    ticks.append(payload)
+        if not ticks:
+            return
+        try:
+            await ws.send_json({"type": "snapshot", "ticks": ticks})
+        except Exception:
+            self.disconnect(ws)
+
+    async def _send_preview_snapshot(self, ws: WebSocket, preview: PreviewSubscription) -> None:
+        cache_key = _tick_cache_key(preview.broker, preview.account_env, preview.token)
+        payload = self._last_tick_payload.get(cache_key)
+        if not payload:
+            return
+        try:
+            await ws.send_json(self._build_preview_payload(
+                TickData(
+                    symbol=str(payload.get("symbol") or preview.symbol),
+                    token=str(payload.get("token") or preview.token),
+                    exchange=str(payload.get("exchange") or preview.exchange),
+                    ltp=float(payload["ltp"]),
+                ),
+                float(payload["ltp"]),
+            ))
+        except Exception:
+            self._preview_clients.pop(id(ws), None)
 
     async def handle(self, ws: WebSocket) -> None:
         await self.connect(ws)
@@ -243,6 +390,26 @@ class WatchlistFeedHub:
             self.disconnect(ws)
             await self._rebuild_feeds()
 
+    async def set_market_preview_subscription(self, ws: WebSocket, msg: dict[str, Any]) -> None:
+        preview = preview_subscription_from_msg(msg)
+        self._preview_clients[id(ws)] = (ws, preview)
+        self._cancel_idle_shutdown()
+        self._ensure_broadcast_loop()
+        log.info(
+            "[CONTROL_MARKET] subscribe broker=%s symbol=%s token=%s (shared hub)",
+            preview.broker,
+            preview.symbol,
+            preview.token,
+        )
+        await self._rebuild_feeds()
+        await self._send_preview_snapshot(ws, preview)
+
+    async def clear_market_preview_subscription(self, ws: WebSocket) -> None:
+        if id(ws) not in self._preview_clients:
+            return
+        self._preview_clients.pop(id(ws), None)
+        await self._rebuild_feeds()
+
 
 _hub: WatchlistFeedHub | None = None
 
@@ -252,3 +419,18 @@ def get_watchlist_feed_hub() -> WatchlistFeedHub:
     if _hub is None:
         _hub = WatchlistFeedHub()
     return _hub
+
+
+def market_preview_uses_shared_hub(cfg: dict[str, Any]) -> bool:
+    if cfg.get("use_fake_client"):
+        return False
+    broker = (cfg.get("broker") or "angel").lower()
+    if broker == "fake":
+        return False
+    if broker == "etoro":
+        return True
+    if broker == "angel":
+        from brokers.angel.feed_config import angel_uses_websocket_feed
+
+        return angel_uses_websocket_feed(cfg.get("feed_mode"))
+    return False

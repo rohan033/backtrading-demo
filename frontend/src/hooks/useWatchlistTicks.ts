@@ -67,6 +67,25 @@ export function useWatchlistTicks(watchlists: Watchlist[], enabled: boolean) {
 
       ws.onmessage = event => {
         const msg = JSON.parse(event.data)
+        if (msg.type === 'snapshot' && Array.isArray(msg.ticks)) {
+          setTicks(prev => {
+            const next = { ...prev }
+            for (const tick of msg.ticks) {
+              const token = String(tick.token)
+              const broker = String(tick.broker || 'angel')
+              const accountEnv = String(tick.account_env || 'live')
+              const key = watchlistTickKey(broker, accountEnv, token)
+              next[key] = {
+                token,
+                ltp: Number(tick.ltp),
+                change_pct: Number(tick.change_pct),
+                direction: tick.direction,
+              }
+            }
+            return next
+          })
+          return
+        }
         if (msg.type !== 'tick') return
         const token = String(msg.token)
         const broker = String(msg.broker || 'angel')

@@ -101,7 +101,7 @@ export function applyWatchlistFeedToStreamStatus(
   return {
     ...planeStatus,
     status: 'flowing',
-    label: 'Live (watchlist feed)',
+    label: 'Live',
     detail: 'Reusing the shared watchlist WebSocket feed.',
     tone: 'ok',
     lastTickAgeSec: 0,

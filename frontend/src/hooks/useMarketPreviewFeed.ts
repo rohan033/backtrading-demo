@@ -35,7 +35,7 @@ function watchlistStreamStatus(
     const ageSec = Math.max(0, Math.round(ageMs / 1000))
     return { status: 'stale', label: `Watchlist feed stale (${ageSec}s)`, tone: 'error' }
   }
-  return { status: 'flowing', label: 'Live (watchlist feed)', tone: 'ok' }
+  return { status: 'flowing', label: 'Live', tone: 'ok' }
 }
 
 /**
