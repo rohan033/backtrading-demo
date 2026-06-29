@@ -1,0 +1,235 @@
+.ms-header-trailing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.ms-news-bar {
+  position: relative;
+  min-width: 0;
+  flex: 1;
+  max-width: min(560px, 52vw);
+}
+
+.ms-news-bar__trigger,
+.ms-news-bar__single {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 4px 10px;
+  border: 1.5px solid var(--ms-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+}
+
+.ms-news-bar__trigger {
+  cursor: pointer;
+  font-family: var(--ms-font);
+  color: var(--ms-text);
+  text-align: left;
+}
+
+.ms-news-bar__trigger:hover {
+  background: rgba(255, 255, 255, 0.95);
+}
+
+.ms-news-bar__topic {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+}
+
+.ms-news-bar__headline {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ms-news-bar__headline--link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.ms-news-bar__headline--link:hover {
+  text-decoration: underline;
+}
+
+.ms-news-bar__badge {
+  flex-shrink: 0;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #E8F6EE;
+  color: #1A8C4A;
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.ms-news-bar__chevron {
+  flex-shrink: 0;
+  color: var(--ms-muted);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.ms-news-bar__clear {
+  height: 22px;
+  padding: 0 8px;
+  border: 1.5px solid var(--ms-border);
+  border-radius: 999px;
+  background: #FFFFFF;
+  color: var(--ms-text);
+  font-family: var(--ms-font);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ms-news-bar__clear:hover:not(:disabled) {
+  background: #F5F5F5;
+}
+
+.ms-news-bar__clear:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ms-news-bar__clear--inline {
+  flex-shrink: 0;
+}
+
+.ms-news-bar__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 60;
+  width: min(360px, 72vw);
+  max-height: min(420px, 60vh);
+  display: flex;
+  flex-direction: column;
+  border: 1.5px solid var(--ms-border);
+  border-radius: 8px;
+  background: #FFFFFF;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+  overflow: hidden;
+}
+
+.ms-news-bar__menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #ECECEC;
+  background: #F8F8F8;
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.ms-news-bar__error {
+  padding: 6px 10px;
+  border-bottom: 1px solid #F0D0D0;
+  background: #FFF5F5;
+  color: #9E1B1B;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.ms-news-bar__menu-body {
+  overflow-y: auto;
+}
+
+.ms-news-bar__group + .ms-news-bar__group {
+  border-top: 1px solid #ECECEC;
+}
+
+.ms-news-bar__group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px 4px;
+  font-size: 10px;
+}
+
+.ms-news-bar__group-head strong {
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.ms-news-bar__group-head span {
+  color: #1A8C4A;
+  font-weight: 800;
+}
+
+.ms-news-bar__group ul {
+  list-style: none;
+}
+
+.ms-news-bar__group li + li {
+  border-top: 1px solid #F0F0F0;
+}
+
+.ms-news-bar__group a {
+  display: block;
+  padding: 7px 10px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.ms-news-bar__group a:hover {
+  background: #FAFAFA;
+}
+
+.ms-news-bar__group span {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.25;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.ms-news-bar__group em {
+  display: block;
+  margin-top: 2px;
+  color: var(--ms-muted);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.ms-news-bar__panel-link {
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-top: 1px solid #ECECEC;
+  background: #FFFFFF;
+  color: var(--ms-btn);
+  cursor: pointer;
+  font-family: var(--ms-font);
+  font-size: 10px;
+  font-weight: 800;
+  text-align: center;
+}
+
+.ms-news-bar__panel-link:hover {
+  background: #F7FAFF;
+}

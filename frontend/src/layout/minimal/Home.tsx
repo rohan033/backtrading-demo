@@ -22,6 +22,7 @@ import {
   type WatchlistSymbolHit,
 } from '../../lib/watchlistBrokers'
 import {
+  applyHomeChartViewport,
   candlesToVolumeData,
   fetchWatchlistSymbolCandles,
   mergeLiveTickIntoWatchlistCandles,
@@ -224,7 +225,7 @@ function HomeChart({
     volumeRef.current?.setData(hasVolume ? volumeData : [])
     const autoFitKey = `${tickKey}:line`
     if (lineData.length && !userInteractedRef.current && lastAutoFitKeyRef.current !== autoFitKey) {
-      chart.timeScale().fitContent()
+      applyHomeChartViewport(chart, lineData.length)
       lastAutoFitKeyRef.current = autoFitKey
     }
   }, [hasVolume, lineData, tickKey, volumeData])

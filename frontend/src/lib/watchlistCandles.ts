@@ -301,3 +301,45 @@ export function applyWatchlistCandleViewport(
     to: barCount + (compact ? 4 : 12),
   })
 }
+
+/** Home page default: ~3h15m of 1-min bars with empty space after the latest price. */
+export const HOME_CHART_VISIBLE_BARS = 195
+export const HOME_CHART_RIGHT_PADDING_BARS = 68
+
+type ChartTimeScale = {
+  applyOptions: (options: Record<string, number>) => void
+  fitContent: () => void
+  getVisibleLogicalRange: () => { from: number; to: number } | null
+  setVisibleLogicalRange: (range: { from: number; to: number }) => void
+}
+
+export function applyHomeChartViewport(
+  chart: { timeScale: () => ChartTimeScale } | null,
+  barCount: number,
+): void {
+  if (!chart || barCount <= 0) return
+
+  const timeScale = chart.timeScale()
+  timeScale.applyOptions({
+    barSpacing: 7,
+    minBarSpacing: 2,
+    rightOffset: 0,
+  })
+
+  if (barCount <= HOME_CHART_VISIBLE_BARS) {
+    timeScale.fitContent()
+    const range = timeScale.getVisibleLogicalRange()
+    if (!range) return
+    const span = Math.max(range.to - range.from, 24)
+    timeScale.setVisibleLogicalRange({
+      from: range.from,
+      to: range.to + Math.max(HOME_CHART_RIGHT_PADDING_BARS, span * 0.35),
+    })
+    return
+  }
+
+  timeScale.setVisibleLogicalRange({
+    from: barCount - HOME_CHART_VISIBLE_BARS,
+    to: barCount + HOME_CHART_RIGHT_PADDING_BARS,
+  })
+}

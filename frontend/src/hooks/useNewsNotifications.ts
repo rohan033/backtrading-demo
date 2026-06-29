@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { showPlatformToast } from '../lib/platform-toast'
-
 export type NewsNotification = {
   id: string
   scope: 'company' | 'market' | string
@@ -23,7 +21,6 @@ export type NewsUpdateGroup = {
 
 type UseNewsNotificationsOptions = {
   enabled?: boolean
-  onOpenUpdates?: () => void
 }
 
 function newsWsUrl(): string {
@@ -72,34 +69,12 @@ function groupNotifications(items: NewsNotification[]): NewsUpdateGroup[] {
     .sort((a, b) => (b.latest.datetime || 0) - (a.latest.datetime || 0))
 }
 
-function toastNewsGroup(topic: string, notifications: NewsNotification[], onOpenUpdates?: () => void) {
-  if (!notifications.length) return
-  const count = notifications.length
-  showPlatformToast({
-    title: `News updates for ${topic} (+${count})`,
-    message: count === 1 ? notifications[0].headline : `${count} new headlines available`,
-    variant: 'success',
-    duration: 7000,
-    actions: onOpenUpdates
-      ? {
-          label: 'View',
-          onClick: onOpenUpdates,
-        }
-      : undefined,
-  })
-}
-
 export function useNewsNotifications(options: UseNewsNotificationsOptions = {}) {
-  const { enabled = true, onOpenUpdates } = options
+  const { enabled = true } = options
   const [notifications, setNotifications] = useState<NewsNotification[]>([])
   const seenRef = useRef<Set<string>>(new Set())
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const onOpenUpdatesRef = useRef(onOpenUpdates)
-
-  useEffect(() => {
-    onOpenUpdatesRef.current = onOpenUpdates
-  }, [onOpenUpdates])
 
   const mergeNotifications = useCallback((incoming: NewsNotification[]) => {
     setNotifications(prev => {
@@ -158,10 +133,6 @@ export function useNewsNotifications(options: UseNewsNotificationsOptions = {}) 
         }
         if (!fresh.length) return
         mergeNotifications(fresh)
-        const grouped = groupNotifications(fresh)
-        for (const group of grouped) {
-          toastNewsGroup(group.topic, group.items, onOpenUpdatesRef.current)
-        }
       }
 
       ws.onclose = () => {

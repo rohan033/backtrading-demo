@@ -16,6 +16,7 @@ import Home from './Home'
 import Earnings from './Earnings'
 import EarningsMonitorBar from './EarningsMonitorBar'
 import MarketClockBar from './MarketClockBar'
+import NewsNotificationsBar from './NewsNotificationsBar'
 import { useUrlState } from './useUrlState'
 import { useWatchlistEarnings } from '../../hooks/useWatchlistEarnings'
 import type { WatchlistEarningsRef } from '../../lib/marketResearch'
@@ -128,10 +129,20 @@ function MainPanel({
   tab,
   setTab,
   earnings,
+  newsGroups,
+  onClearNewsUpdates,
+  clearingNewsUpdates,
+  clearNewsError,
+  onOpenNewsPanel,
 }: {
   tab: MainTab
   setTab: (t: MainTab) => void
   earnings: ReturnType<typeof useWatchlistEarnings>
+  newsGroups: NewsUpdateGroup[]
+  onClearNewsUpdates: () => void
+  clearingNewsUpdates: boolean
+  clearNewsError: string
+  onOpenNewsPanel: () => void
 }) {
   return (
     <main className="ms-main">
@@ -153,7 +164,16 @@ function MainPanel({
             {'\u00a0Earnings\u00a0'}
           </Pill>
         </div>
-        <MarketClockBar />
+        <div className="ms-header-trailing">
+          <NewsNotificationsBar
+            groups={newsGroups}
+            onClear={onClearNewsUpdates}
+            onOpenPanel={onOpenNewsPanel}
+            clearing={clearingNewsUpdates}
+            clearError={clearNewsError}
+          />
+          <MarketClockBar />
+        </div>
       </div>
       <div className="ms-body" style={{ padding: 0, overflow: 'hidden' }}>
         {tab === 'home' ? (
@@ -486,11 +506,15 @@ export default function MinimalShell() {
   const { state, navigate } = useUrlState()
   const { watchlists, ticks, windowChanges } = useWatchlistStream()
   const setNewsTab = (t: NewsTab) => navigate({ news: t })
-  const { groups: newsGroups, clearNotifications } = useNewsNotifications({
-    onOpenUpdates: () => setNewsTab('new'),
-  })
   const [clearingNewsUpdates, setClearingNewsUpdates] = useState(false)
   const [clearNewsError, setClearNewsError] = useState('')
+  const [rightCollapsed, setRightCollapsed] = useState(() => loadStoredBool(LEFT_COLLAPSED_KEY))
+  const handleOpenNewsPanel = () => {
+    setRightCollapsed(false)
+    localStorage.setItem(LEFT_COLLAPSED_KEY, 'false')
+    setNewsTab('new')
+  }
+  const { groups: newsGroups, clearNotifications } = useNewsNotifications()
   const handleClearNewsUpdates = () => {
     setClearNewsError('')
     setClearingNewsUpdates(true)
@@ -500,7 +524,6 @@ export default function MinimalShell() {
       })
       .finally(() => setClearingNewsUpdates(false))
   }
-  const [rightCollapsed, setRightCollapsed] = useState(() => loadStoredBool(LEFT_COLLAPSED_KEY))
   const [rightWidth, setRightWidth] = useState(() =>
     loadStoredNumber(RIGHT_WIDTH_KEY, RIGHT_WIDTH_MIN, RIGHT_WIDTH_MIN, RIGHT_WIDTH_MAX),
   )
@@ -587,7 +610,16 @@ export default function MinimalShell() {
           onOpenSymbol={handleOpenMonitorSymbol}
           onOpenEarnings={() => setMainTab('earnings')}
         />
-        <MainPanel tab={mainTab} setTab={setMainTab} earnings={earnings} />
+        <MainPanel
+          tab={mainTab}
+          setTab={setMainTab}
+          earnings={earnings}
+          newsGroups={newsGroups}
+          onClearNewsUpdates={handleClearNewsUpdates}
+          clearingNewsUpdates={clearingNewsUpdates}
+          clearNewsError={clearNewsError}
+          onOpenNewsPanel={handleOpenNewsPanel}
+        />
       </div>
       <SideDrawer
         collapsed={rightCollapsed}
