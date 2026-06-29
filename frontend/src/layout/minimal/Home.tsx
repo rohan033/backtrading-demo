@@ -43,6 +43,7 @@ import {
   HomeRecommendationsPanel,
   HomeSentimentPanel,
 } from './HomeResearchPanels'
+import HomeIndicesChart from './HomeIndicesChart'
 
 type InfoTab = 'news' | 'filings' | 'earnings' | 'insider' | 'sentiment'
 
@@ -608,6 +609,13 @@ export default function Home() {
     setSearchError('')
   }
 
+  const showIndices = useCallback(() => {
+    persistSelection(null)
+    setQuery('')
+    setResults([])
+    setSearchError('')
+  }, [persistSelection])
+
   const handleBrokerChange = (nextBroker: WatchlistBroker) => {
     const nextEnv = defaultAccountEnv(nextBroker)
     setBroker(nextBroker)
@@ -752,6 +760,14 @@ export default function Home() {
 
         <button
           type="button"
+          className={`hm-indices-btn${!selection ? ' hm-indices-btn--active' : ''}`}
+          onClick={showIndices}
+        >
+          Indices
+        </button>
+
+        <button
+          type="button"
           className="hm-search-btn"
           disabled={searching || !query.trim()}
           onClick={() => void tryQuickSelect()}
@@ -792,9 +808,19 @@ export default function Home() {
                   <HomeChart selection={selection} ltp={ltp} />
                 </>
               ) : (
-                <div className="hm-chart-empty">
-                  Search for a stock to load the chart, live price, and research panels.
-                </div>
+                <>
+                  <div className="hm-chart-head">
+                    <div className="hm-chart-head__main">
+                      <div className="hm-chart-copy">
+                        <div className="hm-chart-title">US indices</div>
+                        <div className="hm-chart-subtitle">
+                          SPX500 · NSDQ100 · DJ30 · % change from window start
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <HomeIndicesChart broker={broker} accountEnv={accountEnv} />
+                </>
               )}
             </section>
 

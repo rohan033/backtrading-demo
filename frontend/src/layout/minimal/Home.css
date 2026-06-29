@@ -14,7 +14,7 @@
 /* ── Toolbar ─────────────────────────────────────────────── */
 .hm-toolbar {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto auto;
+  grid-template-columns: minmax(180px, 1fr) auto auto auto;
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
@@ -80,6 +80,25 @@
 .hm-search-btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.hm-indices-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 1.5px solid var(--ms-border, #303030);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ms-text, #202020);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.hm-indices-btn--active {
+  background: #4A90D9;
+  border-color: #4A90D9;
+  color: #fff;
 }
 
 .hm-search-results {
@@ -449,6 +468,22 @@
   position: relative;
 }
 
+.hm-chart-body--indices {
+  display: flex;
+  flex-direction: column;
+}
+
+.hm-chart-host-wrap {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.hm-chart-body--indices .hm-chart-host {
+  position: absolute;
+  inset: 0;
+}
+
 .hm-chart-host {
   position: absolute;
   inset: 0;
@@ -476,6 +511,71 @@
   font-size: 11px;
   color: #CCC;
   font-style: italic;
+}
+
+.hm-chart-label--error {
+  color: #C0392B;
+  font-style: normal;
+  padding: 0 16px;
+  text-align: center;
+}
+
+.hm-indices-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 8px 12px 10px;
+  border-top: 1px solid #ECECEC;
+  background: #FAFAFA;
+}
+
+.hm-indices-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 11px;
+  color: #444;
+  cursor: pointer;
+}
+
+.hm-indices-legend-item:hover {
+  background: #F0F0F0;
+  border-color: #E0E0E0;
+}
+
+.hm-indices-legend-item--hidden {
+  opacity: 0.45;
+}
+
+.hm-indices-legend-item--hidden .hm-indices-legend-label,
+.hm-indices-legend-item--hidden .hm-indices-legend-change {
+  text-decoration: line-through;
+}
+
+.hm-indices-visibility-icon {
+  flex-shrink: 0;
+  color: #666;
+}
+
+.hm-indices-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.hm-indices-legend-label {
+  font-weight: 700;
+  color: #202020;
+}
+
+.hm-indices-legend-change {
+  font-variant-numeric: tabular-nums;
+  color: #666;
 }
 
 /* ── Recommendation trends ─────────────────────────────── */
