@@ -9,6 +9,7 @@ import {
 
 import { useHomeIndicesLiveFeed } from '../../hooks/useHomeIndicesLiveFeed'
 import HomeChartRangeSelector, { type ChartTimeRange } from '../../components/charts/HomeChartRangeSelector'
+import HomeChartSessionShading from '../../components/charts/HomeChartSessionShading'
 import { loadHomeChartHistory } from '../../lib/homeChartHistory'
 import {
   formatIndexHoverTime,
@@ -24,6 +25,12 @@ import {
   mergeLiveTickIntoWatchlistCandles,
   type WatchlistSanitizedCandle,
 } from '../../lib/watchlistCandles'
+import {
+  chartMarketTimeFormatter,
+  chartSessionLabel,
+  chartSessionMarketForBroker,
+} from '../../lib/homeChartSessionShading'
+import { candleChartTimeRange } from '../../lib/homeChartNewsMarkers'
 import type { WatchlistBroker } from '../../lib/watchlistBrokers'
 
 type HoverTipRow = {
@@ -231,6 +238,13 @@ export default function HomeIndicesChart({
     [seriesLines],
   )
 
+  const chartTimeRange = useMemo(() => {
+    const allCandles = Object.values(liveSeriesCandles).flat()
+    return candleChartTimeRange(sortedUniqueCandles(allCandles))
+  }, [liveSeriesCandles])
+
+  const sessionMarket = useMemo(() => chartSessionMarketForBroker(broker), [broker])
+
   useEffect(() => {
     const el = hostRef.current
     if (!el) return
@@ -247,6 +261,9 @@ export default function HomeIndicesChart({
       grid: {
         vertLines: { color: '#F1F1F1' },
         horzLines: { color: '#F1F1F1' },
+      },
+      localization: {
+        timeFormatter: chartMarketTimeFormatter(sessionMarket),
       },
       rightPriceScale: {
         visible: false,
@@ -313,7 +330,7 @@ export default function HomeIndicesChart({
       chartRef.current = null
       seriesRef.current.clear()
     }
-  }, [chartKey])
+  }, [chartKey, sessionMarket])
 
   useEffect(() => {
     const chart = chartRef.current
@@ -380,6 +397,13 @@ export default function HomeIndicesChart({
       <div className="hm-chart-body hm-chart-body--indices">
       <div className="hm-chart-host-wrap">
         <div ref={hostRef} className="hm-chart-host" />
+        <HomeChartSessionShading
+          chartRef={chartRef}
+          market={sessionMarket}
+          fromTime={chartTimeRange?.from}
+          toTime={chartTimeRange?.to}
+          chartRevision={maxLineCount}
+        />
         <HomeChartRangeSelector
           chartRef={chartRef}
           activeRange={chartRange}
@@ -423,6 +447,17 @@ export default function HomeIndicesChart({
       </div>
       <div className="hm-chart-range-hint">
         <span>Shift+drag to select · right-click for options · Esc to clear</span>
+        <div className="hm-chart-session-legend" aria-hidden="true">
+          <span className="hm-chart-session-legend-tz">
+            {sessionMarket === 'US' ? 'ET' : 'IST'}
+          </span>
+          {(['closed', 'pre', 'open', 'after'] as const).map(session => (
+            <span key={session} className="hm-chart-session-legend-item">
+              <span className={`hm-chart-session-swatch hm-chart-session-swatch--${session}`} />
+              {chartSessionLabel(session)}
+            </span>
+          ))}
+        </div>
         {chartRange ? (
           <button
             type="button"

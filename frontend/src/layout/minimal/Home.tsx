@@ -4,11 +4,14 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineData,
+  type Time,
 } from 'lightweight-charts'
 import './Home.css'
 import CompanyNewsPanel from '../../components/watchlist/CompanyNewsPanel'
 import { ChatMarkdown } from '../../components/ui/chat-markdown'
 import { formatBrokerMoney } from '../../lib/currency'
+import { useCompanyNews } from '../../hooks/useCompanyNews'
+import { formatNewsTimestamp, type CompanyNewsItem } from '../../lib/companyNews'
 import { stripAiActionBlocks } from '../../lib/aiActionBlocks'
 import { splitAssistantDisplayContent } from '../../lib/aiReplySummary'
 import { finnhubSymbol } from '../../lib/marketResearch'
@@ -30,6 +33,16 @@ import {
 import { watchlistTickKey } from '../../lib/watchlists'
 import { loadHomeChartHistory } from '../../lib/homeChartHistory'
 import {
+  buildHomeChartNewsMarkers,
+  candleChartTimeRange,
+  newsItemsAtChartTime,
+} from '../../lib/homeChartNewsMarkers'
+import {
+  chartMarketTimeFormatter,
+  chartSessionLabel,
+  chartSessionMarketForBroker,
+} from '../../lib/homeChartSessionShading'
+import {
   buildResearchAgentPrompt,
   insertResearchTagMention,
   RESEARCH_CHAT_TAGS,
@@ -43,6 +56,7 @@ import {
 import { useCursorAgentChat } from '../../lib/useCursorAgentChat'
 import { useUrlState } from './useUrlState'
 import HomeChartRangeSelector, { type ChartTimeRange } from '../../components/charts/HomeChartRangeSelector'
+import HomeChartSessionShading from '../../components/charts/HomeChartSessionShading'
 import {
   HomeEarningsPanel,
   HomeFilingsPanel,
@@ -115,6 +129,8 @@ function linePointsFromCandles(candles: WatchlistSanitizedCandle[], liveLtp: num
 function HomeChart({
   selection,
   ltp,
+  newsSymbol,
+  showNewsMarkers,
   chartRange,
   onChartRangeChange,
   onAddRangeToChat,
@@ -122,6 +138,8 @@ function HomeChart({
 }: {
   selection: HomeSelection
   ltp: number | null
+  newsSymbol: string
+  showNewsMarkers: boolean
   chartRange: ChartTimeRange | null
   onChartRangeChange: (range: ChartTimeRange | null) => void
   onAddRangeToChat: (range: ChartTimeRange) => void
@@ -131,10 +149,22 @@ function HomeChart({
   const chartRef = useRef<IChartApi | null>(null)
   const lineRef = useRef<ISeriesApi<'Line'> | null>(null)
   const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null)
+  const newsByTimeRef = useRef<Map<number, CompanyNewsItem[]>>(new Map())
+  const showNewsMarkersRef = useRef(showNewsMarkers)
   const userInteractedRef = useRef(false)
   const lastAutoFitKeyRef = useRef<string | null>(null)
   const [candles, setCandles] = useState<WatchlistSanitizedCandle[]>([])
   const [loading, setLoading] = useState(false)
+  const [newsHover, setNewsHover] = useState<{
+    time: number
+    items: CompanyNewsItem[]
+  } | null>(null)
+
+  showNewsMarkersRef.current = showNewsMarkers
+
+  const { items: newsItems, loading: newsLoading } = useCompanyNews(
+    showNewsMarkers ? newsSymbol : null,
+  )
 
   const tickKey = watchlistTickKey(selection.broker, selection.accountEnv, selection.symboltoken)
   const candleData = useMemo(
@@ -144,6 +174,17 @@ function HomeChart({
   const lineData = useMemo(() => linePointsFromCandles(candleData, ltp), [candleData, ltp])
   const volumeData = useMemo(() => candlesToVolumeData(candleData), [candleData])
   const hasVolume = volumeData.some(item => Number(item.value) > 0)
+  const chartTimeRange = useMemo(() => candleChartTimeRange(candleData), [candleData])
+  const sessionMarket = useMemo(
+    () => chartSessionMarketForBroker(selection.broker),
+    [selection.broker],
+  )
+  const newsMarkers = useMemo(
+    () => buildHomeChartNewsMarkers(newsItems, chartTimeRange),
+    [chartTimeRange, newsItems],
+  )
+
+  newsByTimeRef.current = newsMarkers.byTime
 
   useEffect(() => {
     const el = hostRef.current
@@ -159,6 +200,9 @@ function HomeChart({
         vertLines: { color: '#F1F1F1' },
         horzLines: { color: '#F1F1F1' },
       },
+      localization: {
+        timeFormatter: chartMarketTimeFormatter(sessionMarket),
+      },
       rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.08, bottom: 0.24 } },
       timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
       crosshair: { mode: 0 },
@@ -166,6 +210,21 @@ function HomeChart({
     chartRef.current = chart
     lineRef.current = null
     volumeRef.current = null
+
+    const crosshairHandler = (param: { time?: Time; point?: { x: number; y: number } }) => {
+      if (!showNewsMarkersRef.current || !param.time || !param.point) {
+        setNewsHover(null)
+        return
+      }
+      const time = typeof param.time === 'number' ? param.time : Number(param.time)
+      if (!Number.isFinite(time)) {
+        setNewsHover(null)
+        return
+      }
+      const items = newsItemsAtChartTime(newsByTimeRef.current, time)
+      setNewsHover(items.length ? { time, items } : null)
+    }
+    chart.subscribeCrosshairMove(crosshairHandler)
 
     const resize = () => {
       chart.applyOptions({
@@ -180,6 +239,7 @@ function HomeChart({
     el.addEventListener('pointerdown', markUserInteracted)
 
     return () => {
+      chart.unsubscribeCrosshairMove(crosshairHandler)
       el.removeEventListener('wheel', markUserInteracted)
       el.removeEventListener('pointerdown', markUserInteracted)
       observer.disconnect()
@@ -188,7 +248,7 @@ function HomeChart({
       lineRef.current = null
       volumeRef.current = null
     }
-  }, [tickKey])
+  }, [sessionMarket, tickKey])
 
   useEffect(() => {
     let cancelled = false
@@ -249,12 +309,17 @@ function HomeChart({
     }
     lineRef.current.setData(lineData)
     volumeRef.current?.setData(hasVolume ? volumeData : [])
+    lineRef.current.setMarkers(showNewsMarkers ? newsMarkers.markers : [])
     const autoFitKey = `${tickKey}:line`
     if (lineData.length && !userInteractedRef.current && lastAutoFitKeyRef.current !== autoFitKey) {
       applyHomeChartViewport(chart, lineData.length)
       lastAutoFitKeyRef.current = autoFitKey
     }
-  }, [hasVolume, lineData, tickKey, volumeData])
+  }, [hasVolume, lineData, newsMarkers.markers, showNewsMarkers, tickKey, volumeData])
+
+  useEffect(() => {
+    if (!showNewsMarkers) setNewsHover(null)
+  }, [showNewsMarkers])
 
   return (
     <div className="hm-chart-body">
@@ -262,6 +327,31 @@ function HomeChart({
         <>
           <div className="hm-chart-host-wrap">
             <div ref={hostRef} className="hm-chart-host" />
+            <HomeChartSessionShading
+              chartRef={chartRef}
+              market={sessionMarket}
+              fromTime={chartTimeRange?.from}
+              toTime={chartTimeRange?.to}
+              chartRevision={`${tickKey}:${lineData.length}`}
+            />
+            {showNewsMarkers && newsHover ? (
+              <div className="hm-chart-news-tooltip" aria-live="polite">
+                <div className="hm-chart-news-tooltip-time">
+                  {formatNewsTimestamp(newsHover.time)}
+                </div>
+                {newsHover.items.slice(0, 2).map(item => (
+                  <div key={item.id} className="hm-chart-news-tooltip-item">
+                    <div className="hm-chart-news-tooltip-headline">{item.headline}</div>
+                    <div className="hm-chart-news-tooltip-meta">{item.source}</div>
+                  </div>
+                ))}
+                {newsHover.items.length > 2 ? (
+                  <div className="hm-chart-news-tooltip-more">
+                    +{newsHover.items.length - 2} more
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
             <HomeChartRangeSelector
               chartRef={chartRef}
               activeRange={chartRange}
@@ -270,7 +360,21 @@ function HomeChart({
             />
           </div>
           <div className="hm-chart-range-hint">
-            <span>Shift+drag to select · right-click for options · Esc to clear</span>
+            <span>
+              Shift+drag to select · right-click for options · Esc to clear
+              {showNewsMarkers ? ' · hover flags for headlines' : ''}
+            </span>
+            <div className="hm-chart-session-legend" aria-hidden="true">
+              <span className="hm-chart-session-legend-tz">
+                {sessionMarket === 'US' ? 'ET' : 'IST'}
+              </span>
+              {(['closed', 'pre', 'open', 'after'] as const).map(session => (
+                <span key={session} className="hm-chart-session-legend-item">
+                  <span className={`hm-chart-session-swatch hm-chart-session-swatch--${session}`} />
+                  {chartSessionLabel(session)}
+                </span>
+              ))}
+            </div>
             {chartRange ? (
               <button
                 type="button"
@@ -286,6 +390,9 @@ function HomeChart({
           ) : null}
           {loading && !lineData.length ? (
             <span className="hm-chart-label">loading chart…</span>
+          ) : null}
+          {showNewsMarkers && newsLoading && !newsItems.length ? (
+            <span className="hm-chart-label hm-chart-label--news">loading news flags…</span>
           ) : null}
         </>
       )}
@@ -305,6 +412,7 @@ function InfoPlaceholder({ title, body }: { title: string; body: string }) {
 const AI_DRAWER_WIDTH_KEY = 'home-ai-drawer-width'
 const AI_DRAWER_COLLAPSED_KEY = 'home-ai-drawer-collapsed'
 const INFO_PANEL_COLLAPSED_KEY = 'home-info-panel-collapsed'
+const HOME_NEWS_MARKERS_KEY = 'home-chart-news-markers'
 const AI_DRAWER_MIN = 280
 const AI_DRAWER_MAX = 520
 const AI_DRAWER_DEFAULT = 340
@@ -557,6 +665,9 @@ export default function Home() {
   const [chatDraft, setChatDraft] = useState('')
   const [chartRange, setChartRange] = useState<ChartTimeRange | null>(null)
   const [chartChatContext, setChartChatContext] = useState<HomeChartChatContext | null>(null)
+  const [showNewsMarkers, setShowNewsMarkers] = useState(() =>
+    loadDrawerBool(HOME_NEWS_MARKERS_KEY, true),
+  )
   const [aiDrawerCollapsed, setAiDrawerCollapsed] = useState(() =>
     loadDrawerBool(AI_DRAWER_COLLAPSED_KEY, false),
   )
@@ -734,6 +845,18 @@ export default function Home() {
     const ok = await sendMessage(prompt, text)
     if (ok) setChatDraft('')
   }
+
+  const toggleNewsMarkers = useCallback(() => {
+    setShowNewsMarkers(prev => {
+      const next = !prev
+      try {
+        localStorage.setItem(HOME_NEWS_MARKERS_KEY, String(next))
+      } catch {
+        // ignore storage errors
+      }
+      return next
+    })
+  }, [])
 
   const clearChartSelection = useCallback(() => {
     setChartRange(null)
@@ -929,11 +1052,24 @@ export default function Home() {
                         </div>
                       </div>
                     </div>
-                    <span className={streamBadgeClass}>{streamStatus.label}</span>
+                    <div className="hm-chart-head__aside">
+                      <button
+                        type="button"
+                        className={`hm-chart-toggle${showNewsMarkers ? ' hm-chart-toggle--active' : ''}`}
+                        onClick={toggleNewsMarkers}
+                        aria-pressed={showNewsMarkers}
+                        title="Show company news flags on chart"
+                      >
+                        News flags
+                      </button>
+                      <span className={streamBadgeClass}>{streamStatus.label}</span>
+                    </div>
                   </div>
                   <HomeChart
                     selection={selection}
                     ltp={ltp}
+                    newsSymbol={newsSymbol}
+                    showNewsMarkers={showNewsMarkers}
                     chartRange={chartRange}
                     onChartRangeChange={setChartRange}
                     onAddRangeToChat={addStockRangeToChat}
