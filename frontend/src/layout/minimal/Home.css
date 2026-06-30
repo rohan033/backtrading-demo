@@ -524,6 +524,66 @@
   pointer-events: none;
 }
 
+.hm-chart-hover-tooltip {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 4;
+  max-width: 260px;
+  padding: 8px 10px;
+  border: 1px solid #E0E0E0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+}
+
+.hm-chart-hover-tooltip-time {
+  margin-bottom: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #666;
+}
+
+.hm-chart-hover-tooltip-price {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #202020;
+  font-variant-numeric: tabular-nums;
+}
+
+.hm-chart-hover-tooltip-change {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.hm-chart-hover-tooltip-change--up {
+  color: #1B8A4B;
+}
+
+.hm-chart-hover-tooltip-change--down {
+  color: #C62828;
+}
+
+.hm-chart-hover-tooltip-change--flat {
+  color: #666;
+}
+
+.hm-chart-hover-tooltip-change--none {
+  color: #888;
+}
+
+.hm-chart-hover-tooltip-news--split {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #ECECEC;
+}
+
 .hm-chart-news-tooltip-time {
   margin-bottom: 6px;
   font-size: 10px;

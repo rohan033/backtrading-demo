@@ -12,6 +12,7 @@ import { ChatMarkdown } from '../../components/ui/chat-markdown'
 import { formatBrokerMoney } from '../../lib/currency'
 import { useCompanyNews } from '../../hooks/useCompanyNews'
 import { formatNewsTimestamp, type CompanyNewsItem } from '../../lib/companyNews'
+import { formatWindowChangePct, windowChangeTone } from '../../lib/watchlistChangeColumns'
 import { stripAiActionBlocks } from '../../lib/aiActionBlocks'
 import { splitAssistantDisplayContent } from '../../lib/aiReplySummary'
 import { finnhubSymbol } from '../../lib/marketResearch'
@@ -202,8 +203,20 @@ function HomeChart({
     time: number
     items: CompanyNewsItem[]
   } | null>(null)
+  const [chartHover, setChartHover] = useState<{
+    time: number
+    price: number
+    changePct: number
+  } | null>(null)
+
+  const currentPriceRef = useRef<number | null>(null)
+  const linePriceByTimeRef = useRef<Map<number, number>>(new Map())
 
   showNewsMarkersRef.current = showNewsMarkers
+  currentPriceRef.current = ltp ?? lineData[lineData.length - 1]?.value ?? null
+  linePriceByTimeRef.current = new Map(
+    lineData.map(point => [typeof point.time === 'number' ? point.time : Number(point.time), point.value]),
+  )
 
   const { items: newsItems, loading: newsLoading } = useCompanyNews(
     showNewsMarkers ? newsSymbol : null,
@@ -282,13 +295,40 @@ function HomeChart({
     lineRef.current = null
     volumeRef.current = null
 
-    const crosshairHandler = (param: { time?: Time; point?: { x: number; y: number } }) => {
-      if (!showNewsMarkersRef.current || !param.time || !param.point) {
+    const crosshairHandler = (param: {
+      time?: Time
+      point?: { x: number; y: number }
+      seriesData?: Map<ISeriesApi<'Line'>, LineData>
+    }) => {
+      if (!param.time || !param.point) {
         setNewsHover(null)
+        setChartHover(null)
         return
       }
       const time = typeof param.time === 'number' ? param.time : Number(param.time)
       if (!Number.isFinite(time)) {
+        setNewsHover(null)
+        setChartHover(null)
+        return
+      }
+
+      const series = lineRef.current
+      const bar = series ? param.seriesData?.get(series) : undefined
+      const hoveredPrice = typeof bar?.value === 'number'
+        ? bar.value
+        : linePriceByTimeRef.current.get(time)
+      const currentPrice = currentPriceRef.current
+      if (hoveredPrice != null && currentPrice != null && hoveredPrice > 0) {
+        setChartHover({
+          time,
+          price: hoveredPrice,
+          changePct: ((currentPrice - hoveredPrice) / hoveredPrice) * 100,
+        })
+      } else {
+        setChartHover(null)
+      }
+
+      if (!showNewsMarkersRef.current) {
         setNewsHover(null)
         return
       }
@@ -470,20 +510,41 @@ function HomeChart({
                 label="AI trade setup"
               />
             ) : null}
-            {showNewsMarkers && newsHover ? (
-              <div className="hm-chart-news-tooltip" aria-live="polite">
-                <div className="hm-chart-news-tooltip-time">
-                  {formatNewsTimestamp(newsHover.time)}
-                </div>
-                {newsHover.items.slice(0, 2).map(item => (
-                  <div key={item.id} className="hm-chart-news-tooltip-item">
-                    <div className="hm-chart-news-tooltip-headline">{item.headline}</div>
-                    <div className="hm-chart-news-tooltip-meta">{item.source}</div>
+            {chartHover || (showNewsMarkers && newsHover) ? (
+              <div className="hm-chart-hover-tooltip" aria-live="polite">
+                {chartHover ? (
+                  <div className="hm-chart-hover-tooltip-price-row">
+                    <div className="hm-chart-hover-tooltip-time">
+                      {formatNewsTimestamp(chartHover.time)}
+                    </div>
+                    <div className="hm-chart-hover-tooltip-price">
+                      {formatBrokerMoney(selection.broker, chartHover.price)}
+                      <span
+                        className={`hm-chart-hover-tooltip-change hm-chart-hover-tooltip-change--${windowChangeTone(chartHover.changePct)}`}
+                      >
+                        {formatWindowChangePct(chartHover.changePct)} vs now
+                      </span>
+                    </div>
                   </div>
-                ))}
-                {newsHover.items.length > 2 ? (
-                  <div className="hm-chart-news-tooltip-more">
-                    +{newsHover.items.length - 2} more
+                ) : null}
+                {showNewsMarkers && newsHover ? (
+                  <div className={`hm-chart-hover-tooltip-news${chartHover ? ' hm-chart-hover-tooltip-news--split' : ''}`}>
+                    {!chartHover ? (
+                      <div className="hm-chart-hover-tooltip-time">
+                        {formatNewsTimestamp(newsHover.time)}
+                      </div>
+                    ) : null}
+                    {newsHover.items.slice(0, 2).map(item => (
+                      <div key={item.id} className="hm-chart-news-tooltip-item">
+                        <div className="hm-chart-news-tooltip-headline">{item.headline}</div>
+                        <div className="hm-chart-news-tooltip-meta">{item.source}</div>
+                      </div>
+                    ))}
+                    {newsHover.items.length > 2 ? (
+                      <div className="hm-chart-news-tooltip-more">
+                        +{newsHover.items.length - 2} more
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
               </div>
