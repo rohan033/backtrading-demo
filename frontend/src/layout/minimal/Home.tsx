@@ -213,10 +213,6 @@ function HomeChart({
   const linePriceByTimeRef = useRef<Map<number, number>>(new Map())
 
   showNewsMarkersRef.current = showNewsMarkers
-  currentPriceRef.current = ltp ?? lineData[lineData.length - 1]?.value ?? null
-  linePriceByTimeRef.current = new Map(
-    lineData.map(point => [typeof point.time === 'number' ? point.time : Number(point.time), point.value]),
-  )
 
   const { items: newsItems, loading: newsLoading } = useCompanyNews(
     showNewsMarkers ? newsSymbol : null,
@@ -228,6 +224,11 @@ function HomeChart({
     [candles, ltp],
   )
   const lineData = useMemo(() => linePointsFromCandles(candleData, ltp), [candleData, ltp])
+
+  currentPriceRef.current = ltp ?? lineData[lineData.length - 1]?.value ?? null
+  linePriceByTimeRef.current = new Map(
+    lineData.map(point => [typeof point.time === 'number' ? point.time : Number(point.time), point.value]),
+  )
   const volumeData = useMemo(() => candlesToVolumeData(candleData), [candleData])
   const hasVolume = volumeData.some(item => Number(item.value) > 0)
   const chartTimeRange = useMemo(() => candleChartTimeRange(candleData), [candleData])
