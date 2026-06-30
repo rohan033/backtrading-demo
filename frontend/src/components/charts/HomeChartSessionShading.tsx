@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { IChartApi, Time } from 'lightweight-charts'
+import type { IChartApi } from 'lightweight-charts'
 
+import { chartBandRect } from '../../lib/chartBandGeometry'
 import {
   buildChartSessionBands,
   type ChartSessionBand,
@@ -10,57 +11,6 @@ import {
 type RenderedBand = ChartSessionBand & {
   left: number
   width: number
-}
-
-type ChartTimeEdges = {
-  from: number
-  to: number
-  width: number
-}
-
-function chartTimeEdges(chart: IChartApi): ChartTimeEdges | null {
-  const width = chart.timeScale().width()
-  if (width <= 0) return null
-
-  const leftRaw = chart.timeScale().coordinateToTime(0)
-  const rightRaw = chart.timeScale().coordinateToTime(width)
-  if (leftRaw == null || rightRaw == null) return null
-
-  const from = typeof leftRaw === 'number' ? leftRaw : Number(leftRaw)
-  const to = typeof rightRaw === 'number' ? rightRaw : Number(rightRaw)
-  if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return null
-
-  return { from, to, width }
-}
-
-function timeToX(chart: IChartApi, edges: ChartTimeEdges, time: number): number | null {
-  if (time < edges.from) return 0
-  if (time > edges.to) return edges.width
-
-  const direct = chart.timeScale().timeToCoordinate(time as Time)
-  if (direct != null) return direct
-
-  return ((time - edges.from) / (edges.to - edges.from)) * edges.width
-}
-
-function bandGeometry(
-  chart: IChartApi,
-  band: ChartSessionBand,
-): { left: number; width: number } | null {
-  const edges = chartTimeEdges(chart)
-  if (!edges) return null
-
-  const start = Math.max(band.fromTime, edges.from)
-  const end = Math.min(band.toTime, edges.to)
-  if (end <= start) return null
-
-  const left = timeToX(chart, edges, start)
-  const right = timeToX(chart, edges, end)
-  if (left == null || right == null) return null
-
-  const width = right - left
-  if (width < 1) return null
-  return { left, width }
 }
 
 type Props = {
@@ -95,7 +45,7 @@ export default function HomeChartSessionShading({
 
     const next: RenderedBand[] = []
     for (const band of sessionBands) {
-      const geometry = bandGeometry(chart, band)
+      const geometry = chartBandRect(chart, band.fromTime, band.toTime)
       if (!geometry) continue
       next.push({ ...band, ...geometry })
     }

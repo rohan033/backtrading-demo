@@ -1,12 +1,14 @@
 export const EXECUTION_SOURCE_USER = 'user'
 export const EXECUTION_SOURCE_AI_RESEARCH = 'ai_research'
 export const EXECUTION_SOURCE_AI_CHATBOT_PANEL = 'ai_chatbot_panel'
+export const EXECUTION_SOURCE_CHART_OPPORTUNITY = 'chart_opportunity_auto'
 export const EXECUTION_SOURCE_MOMENTUM_TRADE = 'momentum-trade'
 
 export const EXECUTION_SOURCE_LABELS: Record<string, string> = {
   [EXECUTION_SOURCE_USER]: 'User',
   [EXECUTION_SOURCE_AI_RESEARCH]: 'AI Research',
   [EXECUTION_SOURCE_AI_CHATBOT_PANEL]: 'AI Chatbot',
+  [EXECUTION_SOURCE_CHART_OPPORTUNITY]: 'Chart scan',
   [EXECUTION_SOURCE_MOMENTUM_TRADE]: 'Momentum',
 }
 

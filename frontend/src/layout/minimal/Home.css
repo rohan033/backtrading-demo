@@ -601,6 +601,159 @@
   position: relative;
 }
 
+.hm-chart-scan-select {
+  padding: 2px 6px;
+  border: 1px solid var(--ms-border, #303030);
+  border-radius: 999px;
+  background: #fff;
+  color: #555;
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.hm-chart-scan-select:hover {
+  background: #F7F7F7;
+  color: #333;
+}
+
+.hm-chart-scan-select:focus-visible {
+  outline: 2px solid rgba(91, 155, 213, 0.55);
+  outline-offset: 1px;
+}
+
+.hm-chart-toggle--scan.hm-chart-toggle--active {
+  background: #EAF4FF;
+  color: #1B5E9B;
+  border-color: #5B9BD5;
+}
+
+.hm-chart-toggle--levels.hm-chart-toggle--active {
+  background: #F3F3F3;
+  color: #424242;
+  border-color: #9E9E9E;
+}
+
+.hm-chart-scan-meta {
+  padding: 0 10px 6px;
+  font-size: 9px;
+  line-height: 1.35;
+  color: #6B7A8C;
+}
+
+.hm-chart-levels-meta {
+  padding: 0 10px 6px;
+  font-size: 9px;
+  line-height: 1.35;
+  color: #6B6B6B;
+}
+
+.hm-chart-opportunity-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.hm-chart-opportunity-layer--scan {
+  z-index: 1;
+}
+
+.hm-chart-opportunity-layer--levels {
+  z-index: 1;
+}
+
+.hm-chart-opportunity-layer--setup {
+  z-index: 2;
+}
+
+.hm-chart-opportunity-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+
+.hm-chart-opportunity-band--scan {
+  background: rgba(91, 155, 213, 0.08);
+  border-left: 1px dashed rgba(91, 155, 213, 0.55);
+  border-right: 1px dashed rgba(91, 155, 213, 0.55);
+}
+
+.hm-chart-opportunity-band--signal {
+  background: rgba(123, 97, 255, 0.16);
+  border-left: 2px solid rgba(123, 97, 255, 0.65);
+  border-right: 2px solid rgba(123, 97, 255, 0.65);
+}
+
+.hm-chart-opportunity-band--eureka {
+  background: rgba(255, 193, 7, 0.22);
+  border-left: 3px solid rgba(255, 152, 0, 0.9);
+  border-right: 3px solid rgba(255, 152, 0, 0.9);
+  animation: hm-chart-eureka-pulse 1.4s ease-in-out infinite;
+}
+
+.hm-chart-opportunity-band--levels {
+  background: rgba(120, 120, 120, 0.06);
+  border-left: 1px dashed rgba(120, 120, 120, 0.45);
+  border-right: 1px dashed rgba(120, 120, 120, 0.45);
+}
+
+.hm-chart-opportunity-band--setup {
+  background: rgba(123, 97, 255, 0.1);
+  border-left: 1px solid rgba(123, 97, 255, 0.45);
+  border-right: 1px solid rgba(123, 97, 255, 0.45);
+}
+
+@keyframes hm-chart-eureka-pulse {
+  0%, 100% { background: rgba(255, 193, 7, 0.18); }
+  50% { background: rgba(255, 193, 7, 0.34); }
+}
+
+.hm-chart-opportunity-label--eureka {
+  background: rgba(255, 152, 0, 0.95);
+  color: #fff;
+  animation: hm-chart-eureka-pulse 1.4s ease-in-out infinite;
+}
+
+.hm-chart-opportunity-layer--eureka {
+  z-index: 3;
+}
+
+.hm-chart-opportunity-label {
+  position: absolute;
+  top: 8px;
+  z-index: 3;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.hm-chart-opportunity-label--scan {
+  background: rgba(91, 155, 213, 0.9);
+  color: #fff;
+}
+
+.hm-chart-opportunity-label--signal {
+  background: rgba(123, 97, 255, 0.92);
+  color: #fff;
+}
+
+.hm-chart-opportunity-label--levels {
+  background: rgba(100, 100, 100, 0.88);
+  color: #fff;
+}
+
+.hm-chart-opportunity-label--setup {
+  background: rgba(123, 97, 255, 0.78);
+  color: #fff;
+}
+
 .hm-chart-range-layer {
   position: absolute;
   inset: 0;

@@ -53,10 +53,38 @@ import {
   formatChartRangeLabel,
   type HomeChartChatContext,
 } from '../../lib/homeChartChatContext'
-import { useCursorAgentChat } from '../../lib/useCursorAgentChat'
+import { useCursorAgentChat, type AgentInteractionMode } from '../../lib/useCursorAgentChat'
+import { useChartOpportunityMonitor } from '../../hooks/useChartOpportunityMonitor'
+import {
+  buildChartOpportunityAgentPrompt,
+  buildChartOpportunityChatDraft,
+  formatOpportunityKind,
+  type ChartOpportunityChatContext,
+} from '../../lib/chartOpportunityChat'
+import type { ChartOpportunitySignal } from '../../lib/chartOpportunityDetector'
+import { buildChartScanWindow, detectChartOpportunity } from '../../lib/chartOpportunityDetector'
+import {
+  buildChartLevelOverlay,
+  buildChartLevelWindow,
+  HOME_CHART_LEVELS_KEY,
+  isChartLevelLookbackMinutes,
+  loadChartLevelLookbackMinutes,
+  saveChartLevelLookbackMinutes,
+} from '../../lib/chartLevelOverlay'
+import {
+  CHART_SCAN_LOOKBACK_OPTIONS,
+  formatChartScanLookbackLabel,
+  formatChartScanLookbackPhrase,
+  isChartScanLookbackMinutes,
+  loadChartScanLookbackMinutes,
+  saveChartScanLookbackMinutes,
+  type ChartScanLookbackMinutes,
+} from '../../lib/chartOpportunityConfig'
 import { useUrlState } from './useUrlState'
 import HomeChartRangeSelector, { type ChartTimeRange } from '../../components/charts/HomeChartRangeSelector'
 import HomeChartSessionShading from '../../components/charts/HomeChartSessionShading'
+import ChartOpportunityBand from '../../components/charts/ChartOpportunityBand'
+import ChartLevelLines from '../../components/charts/ChartLevelLines'
 import {
   HomeEarningsPanel,
   HomeFilingsPanel,
@@ -131,19 +159,33 @@ function HomeChart({
   ltp,
   newsSymbol,
   showNewsMarkers,
+  autoTradeScan,
+  scanLookbackMinutes,
+  showChartLevels,
+  levelLookbackMinutes,
+  eurekaRange,
+  opportunityRange,
   chartRange,
   onChartRangeChange,
   onAddRangeToChat,
   onClearChartRange,
+  onCandleDataChange,
 }: {
   selection: HomeSelection
   ltp: number | null
   newsSymbol: string
   showNewsMarkers: boolean
+  autoTradeScan: boolean
+  scanLookbackMinutes: ChartScanLookbackMinutes
+  showChartLevels: boolean
+  levelLookbackMinutes: ChartScanLookbackMinutes
+  eurekaRange: ChartTimeRange | null
+  opportunityRange: ChartTimeRange | null
   chartRange: ChartTimeRange | null
   onChartRangeChange: (range: ChartTimeRange | null) => void
   onAddRangeToChat: (range: ChartTimeRange) => void
   onClearChartRange: () => void
+  onCandleDataChange: (candles: WatchlistSanitizedCandle[]) => void
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
@@ -153,6 +195,7 @@ function HomeChart({
   const showNewsMarkersRef = useRef(showNewsMarkers)
   const userInteractedRef = useRef(false)
   const lastAutoFitKeyRef = useRef<string | null>(null)
+  const [overlayRevision, setOverlayRevision] = useState(0)
   const [candles, setCandles] = useState<WatchlistSanitizedCandle[]>([])
   const [loading, setLoading] = useState(false)
   const [newsHover, setNewsHover] = useState<{
@@ -183,6 +226,34 @@ function HomeChart({
     () => buildHomeChartNewsMarkers(newsItems, chartTimeRange),
     [chartTimeRange, newsItems],
   )
+  const scanWindowRange = useMemo(() => {
+    if (!autoTradeScan || !candleData.length) return null
+    const window = buildChartScanWindow(candleData, scanLookbackMinutes)
+    return window ? { fromTime: window.fromTime, toTime: window.toTime } : null
+  }, [autoTradeScan, candleData, scanLookbackMinutes])
+  const watchRange = useMemo(() => {
+    if (!autoTradeScan || opportunityRange || eurekaRange) return null
+    const signal = detectChartOpportunity(candleData, { lookbackMinutes: scanLookbackMinutes, minScore: 45 })
+    return signal ? { fromTime: signal.fromTime, toTime: signal.toTime } : null
+  }, [autoTradeScan, candleData, eurekaRange, opportunityRange, scanLookbackMinutes])
+  const levelWindowRange = useMemo(() => {
+    if (!showChartLevels || !candleData.length) return null
+    const window = buildChartLevelWindow(candleData, levelLookbackMinutes)
+    return window ? { fromTime: window.fromTime, toTime: window.toTime } : null
+  }, [candleData, levelLookbackMinutes, showChartLevels])
+  const levelOverlay = useMemo(() => {
+    if (!showChartLevels || !candleData.length) return null
+    return buildChartLevelOverlay(candleData, levelLookbackMinutes)
+  }, [candleData, levelLookbackMinutes, showChartLevels])
+  const levelSetup = useMemo(() => {
+    if (!showChartLevels || !candleData.length) return null
+    return detectChartOpportunity(candleData, { lookbackMinutes: levelLookbackMinutes, minScore: 45 })
+  }, [candleData, levelLookbackMinutes, showChartLevels])
+  const levelSetupRange = useMemo(() => {
+    if (!showChartLevels || !levelSetup || autoTradeScan) return null
+    return { fromTime: levelSetup.fromTime, toTime: levelSetup.toTime }
+  }, [autoTradeScan, levelSetup, showChartLevels])
+  const overlayKey = `${tickKey}:${lineData.length}:${overlayRevision}:${scanLookbackMinutes}:${levelLookbackMinutes}:${scanWindowRange?.fromTime ?? 0}:${levelWindowRange?.fromTime ?? 0}`
 
   newsByTimeRef.current = newsMarkers.byTime
 
@@ -315,11 +386,16 @@ function HomeChart({
       applyHomeChartViewport(chart, lineData.length)
       lastAutoFitKeyRef.current = autoFitKey
     }
+    setOverlayRevision(rev => rev + 1)
   }, [hasVolume, lineData, newsMarkers.markers, showNewsMarkers, tickKey, volumeData])
 
   useEffect(() => {
     if (!showNewsMarkers) setNewsHover(null)
   }, [showNewsMarkers])
+
+  useEffect(() => {
+    onCandleDataChange(candleData)
+  }, [candleData, onCandleDataChange])
 
   return (
     <div className="hm-chart-body">
@@ -332,8 +408,68 @@ function HomeChart({
               market={sessionMarket}
               fromTime={chartTimeRange?.from}
               toTime={chartTimeRange?.to}
-              chartRevision={`${tickKey}:${lineData.length}`}
+              chartRevision={overlayKey}
             />
+            {autoTradeScan && scanWindowRange ? (
+              <ChartOpportunityBand
+                chartRef={chartRef}
+                range={scanWindowRange}
+                chartRevision={overlayKey}
+                variant="scan"
+                label={`${formatChartScanLookbackLabel(scanLookbackMinutes)} scan`}
+              />
+            ) : null}
+            {autoTradeScan && watchRange ? (
+              <ChartOpportunityBand
+                chartRef={chartRef}
+                range={watchRange}
+                chartRevision={overlayKey}
+                variant="signal"
+                label="Setup watch"
+              />
+            ) : null}
+            {showChartLevels && levelWindowRange ? (
+              <ChartOpportunityBand
+                chartRef={chartRef}
+                range={levelWindowRange}
+                chartRevision={overlayKey}
+                variant="levels"
+                label={`${formatChartScanLookbackLabel(levelLookbackMinutes)} levels`}
+              />
+            ) : null}
+            {showChartLevels && levelSetupRange ? (
+              <ChartOpportunityBand
+                chartRef={chartRef}
+                range={levelSetupRange}
+                chartRevision={overlayKey}
+                variant="setup"
+                label="Setup highlight"
+              />
+            ) : null}
+            <ChartLevelLines
+              seriesRef={lineRef}
+              enabled={showChartLevels}
+              overlay={levelOverlay}
+              setupLevels={levelSetup?.levels ?? null}
+            />
+            {eurekaRange ? (
+              <ChartOpportunityBand
+                chartRef={chartRef}
+                range={eurekaRange}
+                chartRevision={overlayKey}
+                variant="eureka"
+                label="Eureka · invoking AI"
+              />
+            ) : null}
+            {opportunityRange && !eurekaRange ? (
+              <ChartOpportunityBand
+                chartRef={chartRef}
+                range={opportunityRange}
+                chartRevision={overlayKey}
+                variant="signal"
+                label="AI trade setup"
+              />
+            ) : null}
             {showNewsMarkers && newsHover ? (
               <div className="hm-chart-news-tooltip" aria-live="polite">
                 <div className="hm-chart-news-tooltip-time">
@@ -363,6 +499,9 @@ function HomeChart({
             <span>
               Shift+drag to select · right-click for options · Esc to clear
               {showNewsMarkers ? ' · hover flags for headlines' : ''}
+              {autoTradeScan ? ' · auto trade scan on' : ''}
+              {autoTradeScan ? ` · ${formatChartScanLookbackLabel(scanLookbackMinutes)} window` : ''}
+              {showChartLevels ? ' · chart levels on' : ''}
             </span>
             <div className="hm-chart-session-legend" aria-hidden="true">
               <span className="hm-chart-session-legend-tz">
@@ -413,6 +552,7 @@ const AI_DRAWER_WIDTH_KEY = 'home-ai-drawer-width'
 const AI_DRAWER_COLLAPSED_KEY = 'home-ai-drawer-collapsed'
 const INFO_PANEL_COLLAPSED_KEY = 'home-info-panel-collapsed'
 const HOME_NEWS_MARKERS_KEY = 'home-chart-news-markers'
+const HOME_AUTO_TRADE_SCAN_KEY = 'home-chart-auto-trade-scan'
 const AI_DRAWER_MIN = 280
 const AI_DRAWER_MAX = 520
 const AI_DRAWER_DEFAULT = 340
@@ -668,6 +808,24 @@ export default function Home() {
   const [showNewsMarkers, setShowNewsMarkers] = useState(() =>
     loadDrawerBool(HOME_NEWS_MARKERS_KEY, true),
   )
+  const [autoTradeScan, setAutoTradeScan] = useState(() =>
+    loadDrawerBool(HOME_AUTO_TRADE_SCAN_KEY, false),
+  )
+  const [showChartLevels, setShowChartLevels] = useState(() =>
+    loadDrawerBool(HOME_CHART_LEVELS_KEY, false),
+  )
+  const [scanLookbackMinutes, setScanLookbackMinutes] = useState<ChartScanLookbackMinutes>(
+    () => loadChartScanLookbackMinutes(),
+  )
+  const [levelLookbackMinutes, setLevelLookbackMinutes] = useState<ChartScanLookbackMinutes>(
+    () => loadChartLevelLookbackMinutes(),
+  )
+  const [chartCandles, setChartCandles] = useState<WatchlistSanitizedCandle[]>([])
+  const [opportunityContext, setOpportunityContext] = useState<ChartOpportunityChatContext | null>(null)
+  const [opportunityRange, setOpportunityRange] = useState<ChartTimeRange | null>(null)
+  const [eurekaRange, setEurekaRange] = useState<ChartTimeRange | null>(null)
+  const [agentInteractionMode, setAgentInteractionMode] = useState<AgentInteractionMode>('ask')
+  const autoOpportunityInFlightRef = useRef(false)
   const [aiDrawerCollapsed, setAiDrawerCollapsed] = useState(() =>
     loadDrawerBool(AI_DRAWER_COLLAPSED_KEY, false),
   )
@@ -686,7 +844,7 @@ export default function Home() {
     stopMessage,
     hydrateMessages,
     resetAgent,
-  } = useCursorAgentChat(!aiDrawerCollapsed, 'ask', null, undefined, true)
+  } = useCursorAgentChat(!aiDrawerCollapsed, agentInteractionMode, null, undefined, true)
 
   const chatMessages = useMemo(
     () => agentMessages.filter(
@@ -833,18 +991,134 @@ export default function Home() {
   const sendChat = async () => {
     const text = chatDraft.trim()
     if (!text || sending) return
-    if (!selection && !chartChatContext) return
+    if (!selection && !chartChatContext && !opportunityContext) return
 
-    const prompt = chartChatContext
-      ? buildChartRangeAgentPrompt(text, chartChatContext)
-      : selection
-        ? buildResearchAgentPrompt(text, selection.tradingsymbol)
-        : ''
+    const prompt = opportunityContext
+      ? buildChartOpportunityAgentPrompt(opportunityContext)
+      : chartChatContext
+        ? buildChartRangeAgentPrompt(text, chartChatContext)
+        : selection
+          ? buildResearchAgentPrompt(text, selection.tradingsymbol)
+          : ''
     if (!prompt.trim()) return
 
     const ok = await sendMessage(prompt, text)
     if (ok) setChatDraft('')
   }
+
+  const handleOpportunityDetected = useCallback(async (signal: ChartOpportunitySignal) => {
+    if (!selection || autoOpportunityInFlightRef.current || sending) return
+
+    autoOpportunityInFlightRef.current = true
+    try {
+      const context: ChartOpportunityChatContext = {
+        fromTime: signal.fromTime,
+        toTime: signal.toTime,
+        kind: 'stock',
+        broker: selection.broker,
+        accountEnv: selection.accountEnv,
+        symbol: selection.tradingsymbol,
+        displayName: selection.displayName,
+        opportunity: signal,
+        autoTriggered: true,
+      }
+      const range = { fromTime: signal.fromTime, toTime: signal.toTime }
+      const draft = buildChartOpportunityChatDraft(context)
+      const prompt = buildChartOpportunityAgentPrompt(context)
+
+      setOpportunityContext(context)
+      setOpportunityRange(range)
+      setEurekaRange(range)
+      setChartRange(range)
+      setChartChatContext(context)
+      setAgentInteractionMode('execute')
+      setAiDrawerCollapsed(false)
+      localStorage.setItem(AI_DRAWER_COLLAPSED_KEY, 'false')
+      setChatDraft(draft)
+
+      if (health?.ready && connected && !sending) {
+        await sendMessage(prompt, draft.trim())
+        setChatDraft('')
+      }
+    } finally {
+      window.setTimeout(() => {
+        autoOpportunityInFlightRef.current = false
+      }, 15_000)
+    }
+  }, [connected, health?.ready, selection, sendMessage, sending])
+
+  const {
+    watchSignal,
+    scanWindow,
+    blocked: opportunityBlocked,
+    blockReason: opportunityBlockReason,
+  } = useChartOpportunityMonitor({
+    enabled: autoTradeScan && Boolean(selection),
+    candles: chartCandles,
+    selection,
+    lookbackMinutes: scanLookbackMinutes,
+    onOpportunity: signal => { void handleOpportunityDetected(signal) },
+  })
+
+  const handleCandleDataChange = useCallback((candles: WatchlistSanitizedCandle[]) => {
+    setChartCandles(candles)
+  }, [])
+
+  const levelOverlayMeta = useMemo(() => {
+    if (!showChartLevels || !chartCandles.length) return null
+    return buildChartLevelOverlay(chartCandles, levelLookbackMinutes)
+  }, [chartCandles, levelLookbackMinutes, showChartLevels])
+
+  const levelSetupMeta = useMemo(() => {
+    if (!showChartLevels || !chartCandles.length) return null
+    return detectChartOpportunity(chartCandles, { lookbackMinutes: levelLookbackMinutes, minScore: 45 })
+  }, [chartCandles, levelLookbackMinutes, showChartLevels])
+
+  const toggleAutoTradeScan = useCallback(() => {
+    setAutoTradeScan(prev => {
+      const next = !prev
+      try {
+        localStorage.setItem(HOME_AUTO_TRADE_SCAN_KEY, String(next))
+      } catch {
+        // ignore storage errors
+      }
+      if (!next) {
+        setOpportunityRange(null)
+        setEurekaRange(null)
+        setOpportunityContext(null)
+        setAgentInteractionMode('ask')
+      }
+      return next
+    })
+  }, [])
+
+  const handleScanLookbackChange = useCallback((value: string) => {
+    const minutes = Number(value)
+    if (!isChartScanLookbackMinutes(minutes)) return
+    setScanLookbackMinutes(minutes)
+    saveChartScanLookbackMinutes(minutes)
+    setOpportunityRange(null)
+    setEurekaRange(null)
+  }, [])
+
+  const toggleChartLevels = useCallback(() => {
+    setShowChartLevels(prev => {
+      const next = !prev
+      try {
+        localStorage.setItem(HOME_CHART_LEVELS_KEY, String(next))
+      } catch {
+        // ignore storage errors
+      }
+      return next
+    })
+  }, [])
+
+  const handleLevelLookbackChange = useCallback((value: string) => {
+    const minutes = Number(value)
+    if (!isChartLevelLookbackMinutes(minutes)) return
+    setLevelLookbackMinutes(minutes)
+    saveChartLevelLookbackMinutes(minutes)
+  }, [])
 
   const toggleNewsMarkers = useCallback(() => {
     setShowNewsMarkers(prev => {
@@ -864,7 +1138,11 @@ export default function Home() {
 
   const clearChartChatContext = useCallback(() => {
     setChartChatContext(null)
+    setOpportunityContext(null)
+    setOpportunityRange(null)
+    setEurekaRange(null)
     setChartRange(null)
+    setAgentInteractionMode('ask')
   }, [])
 
   const addStockRangeToChat = useCallback((range: ChartTimeRange) => {
@@ -1055,6 +1333,55 @@ export default function Home() {
                     <div className="hm-chart-head__aside">
                       <button
                         type="button"
+                        className={`hm-chart-toggle${autoTradeScan ? ' hm-chart-toggle--active hm-chart-toggle--scan' : ''}`}
+                        onClick={toggleAutoTradeScan}
+                        aria-pressed={autoTradeScan}
+                        title="Scan recent price action and auto-send trade setups to Strategy AI"
+                        disabled={opportunityBlocked && autoTradeScan}
+                      >
+                        Auto trade scan
+                      </button>
+                      {autoTradeScan ? (
+                        <select
+                          className="hm-chart-scan-select"
+                          value={scanLookbackMinutes}
+                          onChange={event => handleScanLookbackChange(event.target.value)}
+                          aria-label="Scan lookback window"
+                          title="How far back to scan on the chart"
+                        >
+                          {CHART_SCAN_LOOKBACK_OPTIONS.map(option => (
+                            <option key={option.minutes} value={option.minutes}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                      <button
+                        type="button"
+                        className={`hm-chart-toggle${showChartLevels ? ' hm-chart-toggle--active hm-chart-toggle--levels' : ''}`}
+                        onClick={toggleChartLevels}
+                        aria-pressed={showChartLevels}
+                        title="Show support, resistance, SMA, and setup levels on chart"
+                      >
+                        Chart levels
+                      </button>
+                      {showChartLevels ? (
+                        <select
+                          className="hm-chart-scan-select"
+                          value={levelLookbackMinutes}
+                          onChange={event => handleLevelLookbackChange(event.target.value)}
+                          aria-label="Level lookback window"
+                          title="How far back to compute chart levels"
+                        >
+                          {CHART_SCAN_LOOKBACK_OPTIONS.map(option => (
+                            <option key={option.minutes} value={option.minutes}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : null}
+                      <button
+                        type="button"
                         className={`hm-chart-toggle${showNewsMarkers ? ' hm-chart-toggle--active' : ''}`}
                         onClick={toggleNewsMarkers}
                         aria-pressed={showNewsMarkers}
@@ -1070,11 +1397,38 @@ export default function Home() {
                     ltp={ltp}
                     newsSymbol={newsSymbol}
                     showNewsMarkers={showNewsMarkers}
+                    autoTradeScan={autoTradeScan}
+                    scanLookbackMinutes={scanLookbackMinutes}
+                    showChartLevels={showChartLevels}
+                    levelLookbackMinutes={levelLookbackMinutes}
+                    eurekaRange={eurekaRange}
+                    opportunityRange={opportunityRange}
                     chartRange={chartRange}
                     onChartRangeChange={setChartRange}
                     onAddRangeToChat={addStockRangeToChat}
                     onClearChartRange={clearChartSelection}
+                    onCandleDataChange={handleCandleDataChange}
                   />
+                  {autoTradeScan ? (
+                    <div className="hm-chart-scan-meta">
+                      {opportunityBlocked
+                        ? `Scan paused — active auto strategy (${opportunityBlockReason || 'in progress'})`
+                        : watchSignal
+                          ? `Watching: ${watchSignal.reasons[0]} (score ${watchSignal.score}) — purple band on chart`
+                          : scanWindow
+                            ? `Blue dashed band = ${formatChartScanLookbackPhrase(scanLookbackMinutes)} scan window`
+                            : 'Loading candle history for scan…'}
+                    </div>
+                  ) : null}
+                  {showChartLevels ? (
+                    <div className="hm-chart-levels-meta">
+                      {levelOverlayMeta
+                        ? levelSetupMeta
+                          ? `${formatOpportunityKind(levelSetupMeta.kind)} (score ${levelSetupMeta.score}) — red/green dashed = resistance/support · gray dotted = SMA 20`
+                          : `Red/green dashed = resistance/support · gray dotted = SMA 20 · ${formatChartScanLookbackPhrase(levelLookbackMinutes)} window`
+                        : 'Loading candle history for levels…'}
+                    </div>
+                  ) : null}
                 </>
               ) : (
                 <HomeIndicesChart
