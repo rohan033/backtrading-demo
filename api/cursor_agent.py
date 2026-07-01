@@ -138,6 +138,38 @@ WEB_SEARCH_DISABLED_HINT = """Web search toggle is OFF (optional).
 
 Prefer repo and control-plane context first. Websearch/webfetch are still allowed if you need them — the toggle is a UI preference, not a hard block."""
 
+AGENT_MODE_A2UI_HINT = """Agent Mode UI rules (critical — Generative UI only):
+
+- NEVER use markdown in chat (no ##, **, backticks, bullet lists with - or *). The UI cannot render markdown.
+- Keep prose minimal: at most one short Text component under ~100 characters, or omit Text entirely.
+- Use fenced JSON `a2ui` blocks for all trader-facing UI. Allowed components:
+  CandidateDebate, TopStockPicks, TradeDecision, StrategySetupForm (via ai_action), InsightCards (via ai_summary), ButtonRow, StrategySummary.
+- Before picking a symbol, shortlist exactly 3 candidates:
+  1) CandidateDebate — max 2 short sentences (no markdown).
+  2) TopStockPicks — exactly 3 items (symbol, name, optional logoUrl).
+  3) TradeDecision — final pick in one short sentence + symbol.
+- For deployable setups, emit ai_action (renders as StrategySetupForm with capital/qty fields + Deploy button):
+
+```json
+{"ai_action":{"type":"strategy_suggestion","title":"RPOWER breakout","payload":{"broker":"angel","account_env":"live","symbol":"RPOWER-EQ","token":"14977","exchange":"NSE","close_price":42.5,"long_percent":5,"short_percent":2.5,"initial_threshold":0.15,"max_available_capital":10000}}}
+```
+
+- For highlights/lowlights/cautions, use ai_summary (renders as InsightCards — not prose):
+
+```json
+{"ai_summary":{"highlights":["Strong volume"],"lowlights":["Wide spread"],"cautions":["Intraday only"]}}
+```
+
+- For quick user choices, use ButtonRow:
+
+```json
+{"a2ui":{"component":"ButtonRow","props":{"buttons":[{"label":"Deploy $1k","prompt":"Deploy the strategy with $1000 capital"},{"label":"Paper trade","prompt":"Save strategy for paper trading only"}]}}}
+```
+
+- Respect the thread broker context in every payload (broker + account_env).
+- Trade loop: after deploy, monitor until target/stop; use TradeDecision for hold/exit updates.
+- Tool/MCP progress is logged elsewhere — never narrate tools in chat."""
+
 ASK_BLOCKED_TOOL_NAMES = frozenset({
     "shell",
     "run_terminal_cmd",
@@ -252,7 +284,7 @@ class CursorAgentService:
             if agent_id is None and session.get("cursor_agent_id"):
                 agent_id = session.get("cursor_agent_id")
             store.append_message(research_session_id, role="user", content=user_prompt)
-            if session.get("title") in (None, "", "New research"):
+            if session.get("title") in (None, "", "New research", "New thread"):
                 store.update_session(
                     research_session_id,
                     {"title": derive_session_title(user_prompt)},
@@ -323,6 +355,7 @@ class CursorAgentService:
                         tool_detail=_tool_call_text(event),
                     )
                     _maybe_tag_research_execution_from_tool(research_session_id, event)
+                    _maybe_sync_agent_thread_focus(research_session_id)
                 blocked, reason = _tool_call_blocked(
                     event,
                     interaction_mode=mode,
@@ -380,6 +413,22 @@ class CursorAgentService:
                         final_text,
                         message_id=assistant_message_id,
                     )
+                    _maybe_sync_agent_thread_focus(research_session_id)
+                    session_metadata = dict((store.get_session(research_session_id) or {}).get("metadata") or {})
+                    if session_metadata.get("product") == "agent_mode":
+                        from api.a2ui_bridge import (
+                            derive_agent_thread_title_from_text,
+                            should_refresh_agent_thread_title,
+                        )
+
+                        current = store.get_session(research_session_id) or session
+                        if should_refresh_agent_thread_title(current):
+                            next_title = derive_agent_thread_title_from_text(final_text, current)
+                            if next_title:
+                                store.update_session(research_session_id, {"title": next_title})
+                        from api.ai_research_routes import enrich_session_metadata
+
+                        enrich_session_metadata(store, research_session_id)
                     summary = derive_research_summary(final_text)
                     if summary:
                         store.update_session(research_session_id, {"summary": summary})
@@ -579,12 +628,48 @@ def _wrap_prompt(
             )
     else:
         parts.append(ASK_MODE_HINT)
+    if research_session_id:
+        session = get_ai_research_store().get_session(research_session_id)
+        metadata = (session or {}).get("metadata") or {}
+        if metadata.get("product") == "agent_mode":
+            parts.append(AGENT_MODE_A2UI_HINT)
+            broker = str(metadata.get("broker") or "angel").lower()
+            account_env = str(
+                metadata.get("account_env") or ("demo" if broker == "etoro" else "live")
+            ).lower()
+            parts.append(
+                f"Agent thread broker context: {broker} / {account_env}. "
+                "Search instruments, suggest strategies, and fill ai_action payloads for this broker "
+                "unless the user explicitly asks to switch."
+            )
     parts.append(USER_FACING_RESPONSE_HINT)
     if new_agent:
         parts.append(f"User question:\n{user_prompt}")
     else:
         parts.append(user_prompt)
     return "\n\n".join(parts)
+
+
+def _maybe_sync_agent_thread_focus(research_session_id: str) -> None:
+    try:
+        from control_plane.agent_thread_state import sync_focus_from_actions, sync_focus_from_registry
+
+        store = get_ai_research_store()
+        session = store.get_session(research_session_id)
+        if not session:
+            return
+        metadata = session.get("metadata") or {}
+        if metadata.get("product") != "agent_mode":
+            return
+        from control_plane.engine_registry import EngineRegistry
+
+        store.sync_session_action_links(research_session_id, EngineRegistry())
+        session = store.get_session(research_session_id)
+        if session:
+            sync_focus_from_actions(session)
+            sync_focus_from_registry(session, EngineRegistry())
+    except Exception as exc:
+        log.warning("[CURSOR_AGENT] agent thread focus sync failed: %s", exc)
 
 
 def _maybe_tag_research_execution_from_tool(

@@ -155,7 +155,7 @@ def delete_research_action(session_id: str, action_id: str):
     return {"status": True, "data": session}
 
 
-_AI_ACTION_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", re.IGNORECASE)
+from api.fenced_json import iter_fenced_json_blocks
 
 
 def derive_session_title(text: str, *, max_len: int = 240) -> str:
@@ -205,7 +205,7 @@ def enrich_session_metadata(store: AiResearchStore, session_id: str) -> None:
     first_message = _first_user_message_content(store, session_id)
     current_title = str(session.get("title") or "").strip()
     if first_message:
-        needs_title = current_title in ("", "New research")
+        needs_title = current_title in ("", "New research", "New thread")
         looks_truncated = current_title.endswith("…")
         if needs_title or looks_truncated:
             next_title = derive_session_title(first_message)
@@ -243,30 +243,8 @@ def _json_contains_ai_action(text: str) -> bool:
     return isinstance(payload, dict) and bool(payload.get("ai_action"))
 
 
-_AI_SUMMARY_BLOCK_RE = _AI_ACTION_BLOCK_RE
-
-
-def _json_contains_ai_summary(text: str) -> bool:
-    import json
-
-    try:
-        payload = json.loads(text.strip())
-    except json.JSONDecodeError:
-        return False
-    if not isinstance(payload, dict):
-        return False
-    summary = payload.get("ai_summary")
-    return isinstance(summary, dict) and bool(summary)
-
-
 def extract_reply_summary(content: str) -> dict[str, list[str]] | None:
-    import json
-
-    for match in _AI_SUMMARY_BLOCK_RE.finditer(content):
-        try:
-            payload = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
+    for _, payload in iter_fenced_json_blocks(content):
         if not isinstance(payload, dict):
             continue
         summary = payload.get("ai_summary")
@@ -294,13 +272,13 @@ def _normalize_summary_items(value: Any) -> list[str]:
 def strip_ai_summary_blocks(content: str) -> str:
     import json
 
-    def replace_fenced(match: re.Match[str]) -> str:
-        return "" if _json_contains_ai_summary(match.group(1)) else match.group(0)
-
-    text = _AI_SUMMARY_BLOCK_RE.sub(replace_fenced, content)
+    cleaned = content
+    for full_match, payload in iter_fenced_json_blocks(content):
+        if isinstance(payload, dict) and payload.get("ai_summary"):
+            cleaned = cleaned.replace(full_match, "", 1)
 
     kept_lines: list[str] = []
-    for line in text.splitlines():
+    for line in cleaned.splitlines():
         stripped_line = line.strip()
         if stripped_line.startswith("{") and stripped_line.endswith("}"):
             try:
@@ -319,13 +297,13 @@ def strip_ai_summary_blocks(content: str) -> str:
 def strip_ai_action_blocks(content: str) -> str:
     import json
 
-    def replace_fenced(match: re.Match[str]) -> str:
-        return "" if _json_contains_ai_action(match.group(1)) else match.group(0)
-
-    text = _AI_ACTION_BLOCK_RE.sub(replace_fenced, content)
+    cleaned = content
+    for full_match, payload in iter_fenced_json_blocks(content):
+        if isinstance(payload, dict) and payload.get("ai_action"):
+            cleaned = cleaned.replace(full_match, "", 1)
 
     kept_lines: list[str] = []
-    for line in text.splitlines():
+    for line in cleaned.splitlines():
         stripped_line = line.strip()
         if stripped_line.startswith("{") and stripped_line.endswith("}"):
             try:
@@ -343,13 +321,7 @@ def strip_ai_action_blocks(content: str) -> str:
 
 def extract_actions_from_assistant_text(content: str) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
-    for match in _AI_ACTION_BLOCK_RE.finditer(content):
-        import json
-
-        try:
-            payload = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            continue
+    for _, payload in iter_fenced_json_blocks(content):
         if isinstance(payload, dict) and payload.get("ai_action"):
             action = payload["ai_action"]
             if isinstance(action, dict):

@@ -121,7 +121,6 @@ export function useMarketPreviewFeed({
   const useDedicatedStream = Boolean(
     enabled
     && symbol
-    && token
     && (!reuseWatchlist || reuseFallback),
   )
 
@@ -148,7 +147,7 @@ export function useMarketPreviewFeed({
   const effectiveLtp = watchlistLtp ?? (useDedicatedStream ? controlStream.ltp : null)
 
   const streamStatus = useMemo((): MarketStreamStatus => {
-    if (!enabled || !token || !symbol) {
+    if (!enabled || !symbol) {
       return { status: 'idle', label: 'Select a stock to preview', tone: 'muted' }
     }
     if (reuseWatchlist && !reuseFallback) {

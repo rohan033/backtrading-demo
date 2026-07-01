@@ -25,6 +25,8 @@ from strategy import Strategy
 from backtesting import Backtesting
 from api.manual_robo_routes import router as manual_robo_router
 from api.ai_research_routes import get_ai_research_store, router as ai_research_router
+from api.agent_routes import router as agent_router
+from api.agent_agui_routes import router as agent_agui_router
 from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket, router as cursor_agent_router
 from api.workspace_media import router as workspace_media_router
 from api.watchlist_routes import router as watchlist_router
@@ -119,6 +121,8 @@ app.add_middleware(
 app.include_router(manual_robo_router)
 app.include_router(cursor_agent_router)
 app.include_router(ai_research_router)
+app.include_router(agent_router)
+app.include_router(agent_agui_router)
 app.include_router(workspace_media_router)
 app.include_router(watchlist_router)
 app.include_router(watchlist_panel_router)

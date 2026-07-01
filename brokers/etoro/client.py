@@ -181,6 +181,42 @@ class EtoroClient:
             return EtoroRateLimitError(message, payload)
         return EtoroApiError(message, status_code, payload)
 
+    INSTRUMENT_BATCH_SIZE = 50
+
+    @staticmethod
+    def _instruments_from_market_data_response(response: Any) -> list[dict[str, Any]]:
+        """Normalize /market-data/instruments response lists."""
+        if not isinstance(response, dict):
+            return []
+
+        instruments: list[Any] = []
+        for key in ("instrumentDisplayDatas", "items", "instruments", "Instrument", "data", "displayData"):
+            value = response.get(key)
+            if isinstance(value, list):
+                instruments = value
+                break
+            if isinstance(value, dict):
+                instruments = [value]
+                break
+
+        return [item for item in instruments if isinstance(item, dict)]
+
+    async def _aget_instrument_batches(self, instrument_ids: list[int]) -> list[dict[str, Any]]:
+        if not instrument_ids:
+            return []
+
+        output: list[dict[str, Any]] = []
+        batch_size = self.INSTRUMENT_BATCH_SIZE
+        for start in range(0, len(instrument_ids), batch_size):
+            batch = instrument_ids[start:start + batch_size]
+            response = await self.arequest(
+                "GET",
+                "/market-data/instruments",
+                params={"instrumentIds": batch},
+            )
+            output.extend(self._instruments_from_market_data_response(response))
+        return output
+
     async def arequest(
         self,
         method: str,
@@ -240,44 +276,23 @@ class EtoroClient:
         if not instrument_ids:
             return symbol_map
 
-        for start in range(0, len(instrument_ids), 100):
-            batch = instrument_ids[start:start + 100]
-            response = await self.arequest(
-                "GET",
-                "/market-data/instruments",
-                params={"instrumentIds": batch},
+        for instrument in await self._aget_instrument_batches(instrument_ids):
+            instrument_id = (
+                instrument.get("instrumentId")
+                or instrument.get("instrumentID")
+                or instrument.get("InstrumentID")
             )
-            instruments: list[Any] = []
-            if isinstance(response, dict):
-                instruments = (
-                    response.get("items")
-                    or response.get("instruments")
-                    or response.get("Instrument")
-                    or response.get("data")
-                    or []
-                )
-            if isinstance(instruments, dict):
-                instruments = [instruments]
-
-            for instrument in instruments:
-                if not isinstance(instrument, dict):
-                    continue
-                instrument_id = (
-                    instrument.get("instrumentId")
-                    or instrument.get("instrumentID")
-                    or instrument.get("InstrumentID")
-                )
-                if instrument_id is None:
-                    continue
-                symbol = (
-                    instrument.get("symbolFull")
-                    or instrument.get("internalSymbolFull")
-                    or instrument.get("displayName")
-                    or instrument.get("instrumentDisplayName")
-                    or instrument.get("symbol")
-                )
-                if symbol:
-                    symbol_map[int(instrument_id)] = str(symbol)
+            if instrument_id is None:
+                continue
+            symbol = (
+                instrument.get("symbolFull")
+                or instrument.get("internalSymbolFull")
+                or instrument.get("displayName")
+                or instrument.get("instrumentDisplayName")
+                or instrument.get("symbol")
+            )
+            if symbol:
+                symbol_map[int(instrument_id)] = str(symbol)
 
         return symbol_map
 
@@ -287,66 +302,26 @@ class EtoroClient:
         if not instrument_ids:
             return records
 
-        for start in range(0, len(instrument_ids), 100):
-            batch = instrument_ids[start:start + 100]
-            response = await self.arequest(
-                "GET",
-                "/market-data/instruments",
-                params={"instrumentIds": batch},
+        for instrument in await self._aget_instrument_batches(instrument_ids):
+            instrument_id = (
+                instrument.get("instrumentId")
+                or instrument.get("instrumentID")
+                or instrument.get("InstrumentID")
             )
-            instruments: list[Any] = []
-            if isinstance(response, dict):
-                instruments = (
-                    response.get("items")
-                    or response.get("instruments")
-                    or response.get("Instrument")
-                    or response.get("data")
-                    or []
-                )
-            if isinstance(instruments, dict):
-                instruments = [instruments]
-
-            for instrument in instruments:
-                if not isinstance(instrument, dict):
-                    continue
-                instrument_id = (
-                    instrument.get("instrumentId")
-                    or instrument.get("instrumentID")
-                    or instrument.get("InstrumentID")
-                )
-                if instrument_id is None:
-                    continue
-                records[int(instrument_id)] = instrument
+            if instrument_id is None:
+                continue
+            records[int(instrument_id)] = instrument
 
         return records
 
     async def aget_instrument_display_data(self, instrument_ids: list[int]) -> list[dict[str, Any]]:
-        """Fetch display metadata (logos, asset class) for eToro instruments."""
-        if not instrument_ids:
-            return []
-
-        output: list[dict[str, Any]] = []
-        for start in range(0, len(instrument_ids), 100):
-            batch = instrument_ids[start:start + 100]
-            response = await self.arequest(
-                "GET",
-                "/market-data/get-instrument-display-data",
-                params={"instrumentIds": batch},
-            )
-            instruments: Any = []
-            if isinstance(response, dict):
-                instruments = (
-                    response.get("items")
-                    or response.get("instruments")
-                    or response.get("Instrument")
-                    or response.get("data")
-                    or response.get("displayData")
-                    or []
-                )
-            if isinstance(instruments, dict):
-                instruments = [instruments]
-            output.extend(item for item in instruments if isinstance(item, dict))
-        return output
+        """Fetch display metadata (logos, names) via /market-data/instruments."""
+        try:
+            return await self._aget_instrument_batches(instrument_ids)
+        except EtoroApiError as exc:
+            if exc.status_code == 404:
+                return []
+            raise
 
     async def aresolve_instrument_id(self, symbol: str) -> int | None:
         if not symbol:

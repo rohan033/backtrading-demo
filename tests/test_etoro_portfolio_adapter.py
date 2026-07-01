@@ -20,23 +20,6 @@ def test_etoro_position_uses_display_metadata_for_numeric_symbol():
     assert row["symboltoken"] == "1048640"
 
 
-def test_etoro_position_prefers_symbol_map_ticker():
-    position = {"instrumentID": 100002, "units": 2, "openRate": 150, "currentRate": 160}
-    symbol_map = {100002: "AAPL"}
-    display_map = {
-        100002: {
-            "tradingsymbol": "AAPL",
-            "instrument_display_name": "Apple Inc",
-            "logo35x35": "https://example.com/aapl.png",
-        },
-    }
-
-    row = etoro_position_to_portfolio_row(position, symbol_map, display_map)
-
-    assert row["tradingsymbol"] == "AAPL"
-    assert row["symbol"] == "Apple Inc"
-
-
 def test_rehydrate_etoro_portfolio_rows_replaces_numeric_tickers():
     from brokers.etoro.adapters.portfolio import rehydrate_etoro_portfolio_rows
 

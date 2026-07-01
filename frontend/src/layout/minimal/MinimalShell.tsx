@@ -13,6 +13,7 @@ import { watchlistTickKey, type Watchlist } from '../../lib/watchlists'
 import WatchAndTrade from './WatchAndTrade'
 import Strategies from './Strategies'
 import Home from './Home'
+import AgentMode from './agent/AgentMode'
 import Earnings from './Earnings'
 import Portfolio from './Portfolio'
 import EarningsMonitorBar from './EarningsMonitorBar'
@@ -23,10 +24,10 @@ import { useWatchlistEarnings } from '../../hooks/useWatchlistEarnings'
 import type { WatchlistEarningsRef } from '../../lib/marketResearch'
 
 /* ─── types ─────────────────────────────────────────────── */
-type MainTab = 'home' | 'watch-trade' | 'orders' | 'strategies' | 'earnings'
+type MainTab = 'home' | 'watch-trade' | 'orders' | 'strategies' | 'earnings' | 'agent'
 type NewsTab = 'watchlist' | 'new' | 'news' | 'market'
 
-const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'strategies', 'earnings']
+const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'strategies', 'earnings', 'agent']
 const NEWS_TABS: NewsTab[] = ['watchlist', 'news', 'market', 'new']
 const LEFT_COLLAPSED_KEY = 'minimal-shell-left-collapsed'
 const RIGHT_WIDTH_KEY = 'minimal-shell-right-width'
@@ -164,6 +165,9 @@ function MainPanel({
           <Pill active={tab === 'earnings'} onClick={() => setTab('earnings')}>
             {'\u00a0Earnings\u00a0'}
           </Pill>
+          <Pill active={tab === 'agent'} onClick={() => setTab('agent')}>
+            {'\u00a0Agent\u00a0'}
+          </Pill>
         </div>
         <div className="ms-header-trailing">
           <NewsNotificationsBar
@@ -192,6 +196,8 @@ function MainPanel({
           />
         ) : tab === 'orders' ? (
           <Portfolio />
+        ) : tab === 'agent' ? (
+          <AgentMode />
         ) : (
           <div style={{ height: '100%', background: '#EBEBEB' }} />
         )}

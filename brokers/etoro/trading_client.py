@@ -295,11 +295,12 @@ class EtoroTradingClient(EtoroClient, TickClient):
 
     @staticmethod
     def _rate_ltp(rate):
-        last = rate.get("lastExecution")
-        if last is not None:
-            return float(last)
-        bid = rate.get("bid")
-        ask = rate.get("ask")
+        for key in ("lastExecution", "LastExecution", "close", "Close"):
+            last = rate.get(key)
+            if last is not None:
+                return float(last)
+        bid = rate.get("bid") or rate.get("Bid")
+        ask = rate.get("ask") or rate.get("Ask")
         if bid is not None and ask is not None:
             return (float(bid) + float(ask)) / 2
         if bid is not None:

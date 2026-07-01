@@ -122,6 +122,37 @@ def _is_numeric_symbol(text: str) -> bool:
     return bool(text) and text.isdigit()
 
 
+def _logos_from_images(images: list | None) -> dict[str, str]:
+    if not isinstance(images, list):
+        return {}
+    logos: dict[str, str] = {}
+    fallback_png: tuple[int, str] | None = None
+    for image in images:
+        if not isinstance(image, dict):
+            continue
+        uri = image.get("uri") or image.get("url")
+        if not uri:
+            continue
+        width = image.get("width")
+        try:
+            width_num = int(width) if width is not None else None
+        except (TypeError, ValueError):
+            width_num = None
+        if width_num == 35:
+            logos["logo35x35"] = str(uri)
+        elif width_num == 50:
+            logos["logo50x50"] = str(uri)
+        elif width_num == 150:
+            logos["logo150x150"] = str(uri)
+        fmt = str(image.get("format") or "").lower()
+        if fmt == "png" and width_num is not None:
+            if fallback_png is None or width_num > fallback_png[0]:
+                fallback_png = (width_num, str(uri))
+    if fallback_png and not logos.get("logo150x150"):
+        logos.setdefault("logo150x150", fallback_png[1])
+    return logos
+
+
 def metadata_from_etoro_record(record: dict | None) -> dict:
     if not isinstance(record, dict):
         return {}
@@ -137,13 +168,14 @@ def metadata_from_etoro_record(record: dict | None) -> dict:
         or record.get("displayName")
         or ticker
     )
+    logos = _logos_from_images(record.get("images"))
     return {
         "tradingsymbol": ticker,
         "internal_asset_class_name": record.get("internalAssetClassName") or record.get("internal_asset_class_name"),
         "instrument_display_name": display_name,
-        "logo35x35": record.get("logo35x35"),
-        "logo50x50": record.get("logo50x50"),
-        "logo150x150": record.get("logo150x150"),
+        "logo35x35": record.get("logo35x35") or logos.get("logo35x35"),
+        "logo50x50": record.get("logo50x50") or logos.get("logo50x50"),
+        "logo150x150": record.get("logo150x150") or logos.get("logo150x150"),
     }
 
 
@@ -167,7 +199,10 @@ async def etoro_display_map_for_records(client, records: list[dict]) -> dict[int
         return {}
 
     display_map: dict[int, dict] = {}
-    display_records = await client.aget_instrument_display_data(instrument_ids)
+    try:
+        display_records = await client.aget_instrument_display_data(instrument_ids)
+    except Exception:
+        display_records = []
     for record in display_records:
         instrument_id = etoro_instrument_id(record)
         if instrument_id is None:
