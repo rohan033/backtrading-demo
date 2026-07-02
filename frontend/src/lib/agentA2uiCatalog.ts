@@ -10,11 +10,17 @@ export type A2uiComponentName =
   | 'ButtonRow'
   | 'TopStockPicks'
   | 'CandidateDebate'
+  | 'MonitorBatch'
 
 export type A2uiStockPick = {
   symbol: string
   name?: string
   logoUrl?: string
+  /** One-line thesis / why this name made the shortlist */
+  recommendation?: string
+  token?: string
+  exchange?: string
+  score?: number
 }
 
 export type A2uiButton = {
@@ -53,6 +59,7 @@ export const A2UI_CATALOG: A2uiComponentName[] = [
   'ButtonRow',
   'TopStockPicks',
   'CandidateDebate',
+  'MonitorBatch',
 ]
 
 export function isA2uiSurfaceMessage(value: unknown): value is A2uiSurfaceMessage {

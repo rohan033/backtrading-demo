@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { A2uiRenderer } from '@/components/agent/A2uiRenderer'
-import { useAgentTradeMonitor } from '@/hooks/useAgentTradeMonitor'
+import {
+  compactSurfacesAfterDeploy,
+  deployedSummarySurface,
+} from '@/lib/agentA2uiHydrate'
 import {
   isChatSurface,
   type A2uiSurfaceMessage,
@@ -9,6 +12,7 @@ import {
 } from '@/lib/agentA2uiCatalog'
 import type { AgentThreadFocus } from '@/lib/agentThreads'
 import { updateAgentThread } from '@/lib/agentThreads'
+import { deployAgentStrategy } from '@/lib/agentStrategyDeploy'
 import type { AgentAguiChatState, AgentInteractionMode } from '@/lib/useAgentAguiChat'
 import {
   defaultAccountEnv,
@@ -24,6 +28,8 @@ const MODE_LABELS: Record<AgentInteractionMode, string> = {
 type ChatApi = AgentAguiChatState & {
   sendMessage: (prompt: string) => Promise<boolean>
   stop: () => void
+  appendSurface?: (surface: A2uiSurfaceMessage) => void
+  resetSurfaces?: (surfaces: A2uiSurfaceMessage[]) => void
 }
 
 type Props = {
@@ -31,6 +37,8 @@ type Props = {
   variant: 'chat' | 'activity'
   focus?: AgentThreadFocus | null
   executionId?: string | null
+  executionStatus?: string | null
+  strategyDeployed?: boolean
   livePrice?: number | null
   interactionMode: AgentInteractionMode
   onInteractionModeChange: (mode: AgentInteractionMode) => void
@@ -40,6 +48,7 @@ type Props = {
   activitySeed?: A2uiSurfaceMessage | null
   chat: ChatApi
   onRunFinished: () => void
+  onDeploySuccess?: () => void
 }
 
 export default function AgentModeActivityPanel({
@@ -47,6 +56,8 @@ export default function AgentModeActivityPanel({
   variant,
   focus,
   executionId,
+  executionStatus,
+  strategyDeployed: strategyDeployedProp,
   livePrice = null,
   interactionMode,
   onInteractionModeChange,
@@ -55,30 +66,25 @@ export default function AgentModeActivityPanel({
   onBrokerChange,
   activitySeed = null,
   chat,
+  onDeploySuccess,
 }: Props) {
   const [draft, setDraft] = useState('')
   const [toolLogOpen, setToolLogOpen] = useState(false)
+  const [deploying, setDeploying] = useState(false)
+  const [deployError, setDeployError] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  const { surfaces, sending, error, sendMessage, stop } = chat
+  const { surfaces, sending, error, sendMessage, stop, appendSurface, resetSurfaces } = chat
 
-  useAgentTradeMonitor({
-    threadId,
-    focus: focus || null,
-    executionId: executionId || null,
-    livePrice,
-    interactionMode,
-    sending,
-    sendMessage,
-    enabled: variant === 'activity' && Boolean(executionId),
-  })
+  const strategyDeployed = strategyDeployedProp ?? Boolean(executionId || focus?.execution_id)
 
   const chatSurfaces = useMemo(() => {
     const rows = surfaces.filter(surface => isChatSurface(surface))
-    if (variant !== 'activity' || !activitySeed) return rows
-    const rest = rows.filter(surface => surface.messageId !== activitySeed.messageId)
+    const compacted = compactSurfacesAfterDeploy(rows, strategyDeployed)
+    if (variant !== 'activity' || !activitySeed) return compacted
+    const rest = compacted.filter(surface => surface.messageId !== activitySeed.messageId)
     return [activitySeed, ...rest]
-  }, [activitySeed, surfaces, variant])
+  }, [activitySeed, surfaces, strategyDeployed, variant])
 
   const toolLogs = useMemo(
     () => surfaces.filter(surface => surface.type === 'a2ui_tool_log'),
@@ -108,27 +114,78 @@ export default function AgentModeActivityPanel({
   const handleA2uiAction = useCallback(async (action: A2uiUserAction) => {
     if (action.type === 'pick_symbol') {
       const symbol = action.symbol.split('-')[0]
-      await sendMessage(`Set up a trade on ${symbol} (${broker} / ${accountEnv}). Show TopStockPicks if comparing, then StrategySetupForm.`)
+      await sendMessage(
+        `User selected ${symbol} (${broker} / ${accountEnv}). `
+        + `Finalize setup for ${symbol}: use search_instruments for token/exchange, `
+        + `emit ai_summary (highlights/lowlights/cautions from Finnhub news + your research), `
+        + `then ai_action StrategySetupForm. Do NOT deploy or place orders until the user clicks Deploy.`,
+      )
       return
     }
     if (action.type === 'deploy_strategy') {
-      const payload = action.payload
-      const symbol = String(payload.symbol || '')
-      const capital = payload.max_available_capital
-      const target = payload.long_percent
-      const stop = payload.short_percent
-      const threshold = payload.initial_threshold
-      const entry = payload.close_price
-      const prompt = interactionMode === 'execute'
-        ? `Deploy live strategy on ${symbol} (${broker} / ${accountEnv}): capital $${capital}, target ${target}%, stop ${stop}%, threshold ${threshold}%, entry ref ${entry}. Use create_strategy then start_strategy.`
-        : `Switch to execute mode and deploy ${symbol} with capital $${capital}, target ${target}%, stop ${stop}%.`
-      await sendMessage(prompt)
+      if (interactionMode !== 'execute') {
+        await sendMessage(`Switch to execute mode and deploy ${String(action.payload.symbol || '')}.`)
+        return
+      }
+      setDeployError('')
+      setDeploying(true)
+      try {
+        const payload = action.payload
+        const { executionId: newExecId, entryPrice } = await deployAgentStrategy({
+          threadId,
+          payload: {
+            ...payload,
+            broker,
+            account_env: accountEnv,
+            actionId: payload.actionId ? String(payload.actionId) : undefined,
+            title: payload.title ? String(payload.title) : undefined,
+          },
+          broker,
+          accountEnv,
+          livePrice,
+        })
+        const summary = deployedSummarySurface(
+          {
+            symbol: String(payload.symbol || ''),
+            token: payload.token ? String(payload.token) : null,
+            exchange: String(payload.exchange || (broker === 'etoro' ? 'ETORO' : 'NSE')),
+            broker,
+            account_env: accountEnv,
+            close_price: entryPrice,
+            long_percent: Number(payload.long_percent ?? 0) || null,
+            short_percent: Number(payload.short_percent ?? 0) || null,
+            max_available_capital: Number(payload.max_available_capital ?? 0) || null,
+            execution_id: newExecId,
+          },
+          newExecId,
+          'running',
+          entryPrice,
+        )
+        appendSurface?.(summary)
+        resetSurfaces?.(compactSurfacesAfterDeploy([...surfaces, summary], true))
+        onDeploySuccess?.()
+      } catch (err) {
+        setDeployError(err instanceof Error ? err.message : 'Deploy failed')
+      } finally {
+        setDeploying(false)
+      }
       return
     }
     if (action.type === 'send_prompt') {
       await sendMessage(action.prompt)
     }
-  }, [accountEnv, broker, interactionMode, sendMessage])
+  }, [
+    accountEnv,
+    appendSurface,
+    broker,
+    interactionMode,
+    livePrice,
+    onDeploySuccess,
+    resetSurfaces,
+    sendMessage,
+    surfaces,
+    threadId,
+  ])
 
   const submit = async () => {
     const text = draft.trim()
@@ -150,6 +207,8 @@ export default function AgentModeActivityPanel({
               surface={surface}
               className="am-activity-item"
               onAction={handleA2uiAction}
+              broker={broker}
+              accountEnv={accountEnv}
             />
           ))
         ) : (
@@ -159,6 +218,8 @@ export default function AgentModeActivityPanel({
               : 'Agent activity will appear here as the thread runs.'}
           </div>
         )}
+        {deployError ? <div className="am-chat-error">{deployError}</div> : null}
+        {deploying ? <div className="am-chat-status">Placing order…</div> : null}
       </div>
       {toolLogs.length ? (
         <div className="am-tool-log">

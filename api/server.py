@@ -27,6 +27,8 @@ from api.manual_robo_routes import router as manual_robo_router
 from api.ai_research_routes import get_ai_research_store, router as ai_research_router
 from api.agent_routes import router as agent_router
 from api.agent_agui_routes import router as agent_agui_router
+from api.agent_monitor_routes import router as agent_monitor_router
+from api.agent_monitor_feed import get_agent_monitor_feed_hub
 from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket, router as cursor_agent_router
 from api.workspace_media import router as workspace_media_router
 from api.watchlist_routes import router as watchlist_router
@@ -54,6 +56,7 @@ from control_plane.execution_sources import (
 from control_plane.execution_source_links import ensure_research_source_on_engine
 from control_plane.news_poller import get_news_poller
 from control_plane.insider_poller import get_insider_poller
+from control_plane.agent_monitor import get_agent_monitor_service
 from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
 from brokers.angel.adapters.portfolio import angel_portfolio_rows_from_holdings
 from brokers.etoro.adapters.portfolio import (
@@ -123,6 +126,7 @@ app.include_router(cursor_agent_router)
 app.include_router(ai_research_router)
 app.include_router(agent_router)
 app.include_router(agent_agui_router)
+app.include_router(agent_monitor_router)
 app.include_router(workspace_media_router)
 app.include_router(watchlist_router)
 app.include_router(watchlist_panel_router)
@@ -324,6 +328,8 @@ class MomentumEnterRequest(BaseModel):
     allow_partial_stocks: bool = True
     instrument_class: InstrumentClass = "equity"
     watchlist_id: Optional[int] = None
+    source_id: Optional[ExecutionSourceId] = None
+    source_meta_id: Optional[str] = None
 
 
 # ── Endpoints ──
@@ -340,9 +346,11 @@ async def control_plane_lifespan(_app: FastAPI):
     await start_telegram_inbound_services()
     await _news_poller.start()
     await _insider_poller.start()
+    await get_agent_monitor_service().start()
     try:
         yield
     finally:
+        await get_agent_monitor_service().stop()
         await _insider_poller.stop()
         await _news_poller.stop()
         await stop_telegram_inbound_services()
@@ -864,8 +872,17 @@ async def momentum_enter(req: MomentumEnterRequest):
 
     # 4. Create the monitor-only strategy and register the poll job so the
     #    engine tracks the position we just opened.
+    link_source_id = req.source_id or EXECUTION_SOURCE_MOMENTUM_TRADE
+    link_meta_id = (req.source_meta_id or "").strip() or None
+    if link_source_id == EXECUTION_SOURCE_AI_RESEARCH and not link_meta_id:
+        raise HTTPException(
+            status_code=400,
+            detail='source_meta_id is required when source_id is "ai_research"',
+        )
+
     monitor_req = ControlPlaneExecutionRequest(
-        source_id=EXECUTION_SOURCE_MOMENTUM_TRADE,
+        source_id=link_source_id,
+        source_meta_id=link_meta_id,
         broker="etoro",
         account_env=env,
         strategy_name="one-percent",
@@ -1631,6 +1648,11 @@ async def close_execution_position(
 
     try:
         client = await _etoro_trading_client(account_env)
+        position_row = None
+        for row in get_live_events_db().get_executor_positions(execution_id):
+            if str(row.get("position_id") or row.get("positionId") or "") == str(position_id):
+                position_row = row
+                break
         closed = await client.aclose_position(
             position_id,
             units=req.units,
@@ -1680,6 +1702,18 @@ async def close_execution_position(
     # Mark the position as closed in the local DB immediately so the next GET /positions
     # reflects the new state without waiting for the next remote poll.
     db.mark_position_closed(str(position_id), execution_id)
+
+    try:
+        from control_plane.agent_trade_completion import log_position_close_for_execution
+
+        log_position_close_for_execution(
+            execution_id,
+            position_id=str(position_id),
+            position_row=position_row,
+            engine=engine,
+        )
+    except Exception as exc:
+        log.debug("[CONTROL_ETORO] agent trade log skip: %s", exc)
 
     log.info(
         "[CONTROL_ETORO] close_position OK execution=%s position=%s env=%s units=%s",
@@ -2458,6 +2492,11 @@ async def ws_watchlist(ws: WebSocket):
 @app.websocket("/ws/news")
 async def ws_news(ws: WebSocket):
     await get_news_feed_hub().handle(ws)
+
+
+@app.websocket("/ws/agent/monitor")
+async def ws_agent_monitor(ws: WebSocket):
+    await get_agent_monitor_feed_hub().handle(ws)
 
 
 @app.websocket("/ws/control/market")

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 CONTROL_PLANE_MCP_PATH = "/mcp"
 CONTROL_PLANE_MCP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
-CONTROL_PLANE_READ_API_PATTERN = r"^/api/(search|portfolio|historical)"
+CONTROL_PLANE_READ_API_PATTERN = r"^/api/(search|portfolio|historical|market)"
 
 
 def _customize_mcp_component(route, component) -> None:

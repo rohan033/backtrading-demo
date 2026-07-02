@@ -30,6 +30,10 @@ GET_PORTFOLIO_TOOL = "get_portfolio"
 SEARCH_SCRIP_TOOL = "search_scrip"
 GET_ACCOUNT_PORTFOLIO_TOOL = "get_account_portfolio"
 GET_HISTORICAL_CANDLES_TOOL = "get_historical_candles"
+GET_COMPANY_NEWS_TOOL = "get_company_news"
+GET_MARKET_NEWS_TOOL = "get_market_news"
+GET_RECOMMENDATION_TRENDS_TOOL = "get_recommendation_trends"
+GET_INSIDER_TRANSACTIONS_TOOL = "get_insider_transactions"
 
 # Live event read tools
 GET_CONTROL_EVENTS_TOOL = "get_control_events"
@@ -70,6 +74,10 @@ READ_MCP_TOOLS = (
     SEARCH_SCRIP_TOOL,
     GET_ACCOUNT_PORTFOLIO_TOOL,
     GET_HISTORICAL_CANDLES_TOOL,
+    GET_COMPANY_NEWS_TOOL,
+    GET_MARKET_NEWS_TOOL,
+    GET_RECOMMENDATION_TRENDS_TOOL,
+    GET_INSIDER_TRANSACTIONS_TOOL,
     GET_CONTROL_EVENTS_TOOL,
     GET_CONTROL_TRADES_TOOL,
     GET_CONTROL_ORDERS_TOOL,
@@ -136,7 +144,7 @@ CREATE_STRATEGY_TOOL_RE = re.compile(
 
 EXECUTE_CONTROL_PLANE_MCP_HINT = f"""Control plane actions (Execute mode — MCP only):
 - Use `{CONTROL_PLANE_MCP_SERVER}` MCP tools for every control-plane operation. Do NOT use shell, curl, wget, httpx CLI, or other raw HTTP to hit `/api/control/` or other local API URLs.
-- Read first with GET tools when you need context: `{GET_STRATEGIES_TOOL}`, `{GET_STRATEGY_TOOL}`, `{GET_ENGINES_TOOL}`, `{GET_ENGINE_TOOL}`, `{GET_PORTFOLIO_TOOL}`, `{SEARCH_INSTRUMENTS_TOOL}`, `{GET_CONTROL_EVENTS_TOOL}`, `{GET_CONTROL_TRADES_TOOL}`, `{GET_CONTROL_ORDERS_TOOL}`, `{GET_RESEARCH_SESSIONS_TOOL}`, `{GET_RESEARCH_SESSION_TOOL}`, `{GET_RESEARCH_MESSAGES_TOOL}`, `{GET_HISTORICAL_CANDLES_TOOL}`.
+- Read first with GET tools when you need context: `{GET_STRATEGIES_TOOL}`, `{GET_STRATEGY_TOOL}`, `{GET_ENGINES_TOOL}`, `{GET_ENGINE_TOOL}`, `{GET_PORTFOLIO_TOOL}`, `{SEARCH_INSTRUMENTS_TOOL}`, `{GET_COMPANY_NEWS_TOOL}`, `{GET_MARKET_NEWS_TOOL}`, `{GET_RECOMMENDATION_TRENDS_TOOL}`, `{GET_CONTROL_EVENTS_TOOL}`, `{GET_CONTROL_TRADES_TOOL}`, `{GET_CONTROL_ORDERS_TOOL}`, `{GET_RESEARCH_SESSIONS_TOOL}`, `{GET_RESEARCH_SESSION_TOOL}`, `{GET_RESEARCH_MESSAGES_TOOL}`, `{GET_HISTORICAL_CANDLES_TOOL}`.
 - Mutate with POST tools: `{CREATE_STRATEGY_TOOL}`, `{START_STRATEGY_TOOL}`, `{STOP_STRATEGY_TOOL}`, `{UNSCHEDULE_STRATEGY_TOOL}`, `{UNSCHEDULE_ALL_STRATEGIES_TOOL}`, `{STOP_ALL_STRATEGIES_TOOL}`.
 - Scheduling helpers: `{GET_DEFAULT_STRATEGY_SCHEDULE_TOOL}`, `{GET_TRADING_DAY_OPTIONS_TOOL}`, `{GET_STRATEGY_DUPLICATE_TEMPLATE_TOOL}`.
 - When calling `{CREATE_STRATEGY_TOOL}`, always include source_id in the JSON body:
@@ -145,7 +153,7 @@ EXECUTE_CONTROL_PLANE_MCP_HINT = f"""Control plane actions (Execute mode — MCP
   - "user" for manual/user flows (leave source_meta_id blank)"""
 
 ASK_CONTROL_PLANE_READ_MCP_HINT = f"""Read-only control plane data (Ask mode):
-- Use `{CONTROL_PLANE_MCP_SERVER}` MCP read tools (`get_*` and `search_*`) to inspect saved strategies, engines, portfolio, live events, and research sessions.
+- Use `{CONTROL_PLANE_MCP_SERVER}` MCP read tools (`get_*` and `search_*`) to inspect saved strategies, engines, portfolio, live events, research sessions, and Finnhub market data (`{GET_COMPANY_NEWS_TOOL}`, `{GET_MARKET_NEWS_TOOL}`, `{GET_RECOMMENDATION_TRENDS_TOOL}`, `{GET_INSIDER_TRANSACTIONS_TOOL}`).
 - Do NOT use shell, curl, wget, httpx CLI, or other raw HTTP to hit `/api/control/` or other local API URLs.
 - Do NOT use MCP tools that create, start, stop, schedule, or mutate strategies/engines. Switch to Execute mode for those actions."""
 
@@ -171,6 +179,10 @@ MCP_TOOL_DESCRIPTIONS: dict[str, str] = {
     SEARCH_SCRIP_TOOL: "Search NSE/BSE scrip symbols and tokens.",
     GET_ACCOUNT_PORTFOLIO_TOOL: "Fetch Angel account holdings from the legacy portfolio endpoint.",
     GET_HISTORICAL_CANDLES_TOOL: "Fetch historical OHLC candles for a symbol token.",
+    GET_COMPANY_NEWS_TOOL: "Finnhub company news for a symbol (headlines, summaries, URLs). Use when researching a trade.",
+    GET_MARKET_NEWS_TOOL: "Finnhub market news by category (general, forex, crypto, merger).",
+    GET_RECOMMENDATION_TRENDS_TOOL: "Finnhub analyst recommendation trends for a symbol.",
+    GET_INSIDER_TRANSACTIONS_TOOL: "Finnhub insider transactions (Form 3/4/5) for a symbol.",
     GET_CONTROL_EVENTS_TOOL: "List recent control-plane live events.",
     GET_CONTROL_TRADES_TOOL: "List recent live trades.",
     GET_CONTROL_ORDERS_TOOL: "List recent live orders.",

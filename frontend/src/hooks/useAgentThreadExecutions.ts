@@ -9,6 +9,7 @@ import {
   type ResearchSessionExecution,
 } from '@/lib/researchActionLinks'
 import type { AiResearchAction } from '@/lib/aiResearch'
+import { isAgentStrategyRunning, resolveExecutionRuntimeStatus } from '@/lib/agentMonitorControl'
 
 const CONTROL_API = '/api/control'
 
@@ -98,7 +99,7 @@ export function useAgentThreadExecutions(thread: AgentThread | null, focus: Agen
           fromActions.push({
             executionId,
             symbol: String(action.payload?.symbol || row?.engine?.symbol || focus?.symbol || ''),
-            status: action.status || row?.engine?.status,
+            status: resolveExecutionRuntimeStatus(row?.engine?.status, action.status),
             broker: String(action.payload?.broker || row?.engine?.broker || focus?.broker || ''),
             accountEnv: String(action.payload?.account_env || focus?.account_env || 'live'),
           })
@@ -122,12 +123,15 @@ export function useAgentThreadExecutions(thread: AgentThread | null, focus: Agen
 
   useEffect(() => {
     void refresh()
-  }, [refresh])
+    if (!thread?.thread_id) return undefined
+    const timer = window.setInterval(() => {
+      void refresh()
+    }, 30_000)
+    return () => window.clearInterval(timer)
+  }, [refresh, thread?.thread_id])
 
   const primaryExecutionId = useMemo(() => {
-    const running = executions.filter(
-      row => row.status === 'running' || row.status === 'active',
-    )
+    const running = executions.filter(row => isAgentStrategyRunning(row.status))
     if (running.length) {
       return running[running.length - 1].executionId
     }
@@ -179,6 +183,7 @@ export function useAgentThreadExecutions(thread: AgentThread | null, focus: Agen
     primaryExecution,
     primaryExecutionId,
     reconciledFocus,
+    linkedRows,
     loading,
     refresh,
   }

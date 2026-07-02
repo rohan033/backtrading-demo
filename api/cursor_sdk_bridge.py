@@ -22,10 +22,72 @@ CURSOR_API_ENV_FILE = ".cursor-api.env"
 CURSOR_AGENT_MODEL_ENV = "CURSOR_AGENT_MODEL"
 CURSOR_AGENT_WORKSPACE_ENV = "CURSOR_AGENT_WORKSPACE"
 CURSOR_AGENT_MAX_SESSIONS_ENV = "CURSOR_AGENT_MAX_SESSIONS"
+CURSOR_AGENT_MODE_ENV = "CURSOR_AGENT_MODE"
+CURSOR_AGENT_MONITOR_MODE_ENV = "CURSOR_AGENT_MONITOR_MODE"
+CURSOR_AGENT_THINKING_ENV = "CURSOR_AGENT_THINKING"
+CURSOR_AGENT_DEEP_RESEARCH_ENV = "CURSOR_AGENT_DEEP_RESEARCH"
+CURSOR_AGENT_MODEL_PARAMS_ENV = "CURSOR_AGENT_MODEL_PARAMS"
 
 DEFAULT_MODEL = "composer-2.5"
 MAX_AGENT_SESSIONS = 32
 CURSOR_CONFIG_HINT = f"Set {CURSOR_API_KEY_ENV} in {CURSOR_API_ENV_FILE} and restart the control plane."
+VALID_SDK_MODES = frozenset({"agent", "plan"})
+
+
+def _truthy_env(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sdk_mode(*, message_source: str | None = None) -> str:
+    if message_source == "agent_monitor":
+        mode = os.getenv(CURSOR_AGENT_MONITOR_MODE_ENV, "").strip().lower()
+        if mode not in VALID_SDK_MODES:
+            mode = os.getenv(CURSOR_AGENT_MODE_ENV, "agent").strip().lower()
+    else:
+        mode = os.getenv(CURSOR_AGENT_MODE_ENV, "agent").strip().lower()
+    return mode if mode in VALID_SDK_MODES else "agent"
+
+
+def _sdk_model_selection(model_id: str):
+    from cursor_sdk import ModelParameterValue, ModelSelection
+
+    params: list[ModelParameterValue] = []
+    raw_params = os.getenv(CURSOR_AGENT_MODEL_PARAMS_ENV, "").strip()
+    if raw_params:
+        try:
+            parsed = json.loads(raw_params)
+            if isinstance(parsed, list):
+                for row in parsed:
+                    if not isinstance(row, dict):
+                        continue
+                    param_id = str(row.get("id") or "").strip()
+                    value = str(row.get("value") or "").strip()
+                    if param_id and value:
+                        params.append(ModelParameterValue(id=param_id, value=value))
+        except json.JSONDecodeError:
+            log.warning("[CURSOR_SDK] invalid %s JSON — ignoring", CURSOR_AGENT_MODEL_PARAMS_ENV)
+
+    thinking = os.getenv(CURSOR_AGENT_THINKING_ENV, "").strip().lower()
+    if thinking and thinking not in {"off", "false", "0", "none"}:
+        params.append(ModelParameterValue(id="thinking", value=thinking))
+
+    if _truthy_env(CURSOR_AGENT_DEEP_RESEARCH_ENV):
+        params.append(ModelParameterValue(id="deep_research", value="true"))
+
+    if not params:
+        return model_id
+    return ModelSelection(id=model_id, params=tuple(params))
+
+
+def _build_send_options(*, mcp_servers: dict[str, Any] | None, message_source: str | None):
+    from cursor_sdk import SendOptions
+
+    mode = _sdk_mode(message_source=message_source)
+    model = _sdk_model_selection(os.getenv(CURSOR_AGENT_MODEL_ENV, DEFAULT_MODEL).strip() or DEFAULT_MODEL)
+    kwargs: dict[str, Any] = {"mode": mode, "model": model}
+    if mcp_servers is not None:
+        kwargs["mcp_servers"] = mcp_servers
+    return SendOptions(**kwargs)
 
 
 def load_cursor_api_env() -> bool:
@@ -211,6 +273,7 @@ class CursorSdkBridge:
         mcp_servers: dict[str, Any] | None = None,
         cancel_event: asyncio.Event | None = None,
         active_run: dict[str, Any] | None = None,
+        message_source: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Run a fully-formed prompt through Cursor SDK and yield generic events."""
         if not self.configured:
@@ -232,6 +295,7 @@ class CursorSdkBridge:
                 session_name,
                 agent_id,
                 mcp_servers=mcp_servers,
+                message_source=message_source,
             )
         except CursorAgentError as exc:
             log.error("[CURSOR_SDK] Agent startup failed session=%s: %s", session_name, exc)
@@ -248,11 +312,10 @@ class CursorSdkBridge:
             return
 
         try:
-            from cursor_sdk import SendOptions
-
-            send_options = SendOptions(mode="agent")
-            if mcp_servers is not None:
-                send_options = SendOptions(mode="agent", mcp_servers=mcp_servers)
+            send_options = _build_send_options(
+                mcp_servers=mcp_servers,
+                message_source=message_source,
+            )
             run = await agent.send(message, send_options)
             if active_run is not None:
                 active_run["run"] = run
@@ -262,6 +325,7 @@ class CursorSdkBridge:
                 "agent_id": agent.agent_id,
                 "run_id": run.id,
                 "model": self.model(),
+                "sdk_mode": _sdk_mode(message_source=message_source),
                 "new_agent": created_new_agent,
                 "session_name": session_name,
             }
@@ -377,15 +441,17 @@ class CursorSdkBridge:
         agent_id: Optional[str],
         *,
         mcp_servers: dict[str, Any] | None,
+        message_source: str | None = None,
     ):
         from cursor_sdk import AgentOptions
 
         api_key = os.environ[CURSOR_API_KEY_ENV].strip()
+        model_id = os.getenv(CURSOR_AGENT_MODEL_ENV, DEFAULT_MODEL).strip() or DEFAULT_MODEL
         options = AgentOptions(
             api_key=api_key,
-            model=self.model(),
+            model=_sdk_model_selection(model_id),
             local=LocalAgentOptions(cwd=self.workspace()),
-            mode="agent",
+            mode=_sdk_mode(message_source=message_source),
             mcp_servers=mcp_servers,
         )
 

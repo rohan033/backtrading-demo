@@ -208,7 +208,17 @@ def expand_agent_text_to_surfaces(text: str, *, role: str = "agent") -> Iterator
         yield component_to_surface(component, props, role=role)
 
     for action in extract_actions_from_assistant_text(text):
-        action_type = str(action.get("type") or "")
+        action_type = str(action.get("type") or "").lower()
+        if action_type in {"trade_complete", "trade_completed", "session_complete"}:
+            payload = dict(action.get("payload") or action)
+            symbol = str(payload.get("symbol") or "")
+            pnl = payload.get("pnl")
+            outcome = str(payload.get("outcome") or "")
+            label = f"Trade closed — {outcome or 'done'}"
+            if pnl is not None:
+                label += f" · PnL {pnl}"
+            yield trade_decision_surface(label, symbol or None)
+            continue
         if action_type in {"strategy_suggestion", "strategy"} or action.get("payload"):
             yield strategy_setup_surface(action)
 
@@ -313,3 +323,29 @@ def _symbol_from_detail(detail: str) -> str | None:
     if match:
         return match.group(1)
     return None
+
+
+def monitor_batch_surface(
+    *,
+    run_id: str,
+    symbol: str,
+    event_count: int,
+    kinds: list[str] | None = None,
+    items: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    unique_kinds = list(dict.fromkeys(kinds or []))
+    return {
+        "type": "a2ui_surface",
+        "messageId": f"monitor-{run_id}",
+        "role": "agent",
+        "components": [{
+            "id": f"monitor-{run_id}-root",
+            "component": "MonitorBatch",
+            "props": {
+                "symbol": symbol,
+                "eventCount": event_count,
+                "kinds": unique_kinds,
+                "items": items or [],
+            },
+        }],
+    }

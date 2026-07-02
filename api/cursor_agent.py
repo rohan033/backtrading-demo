@@ -144,17 +144,42 @@ AGENT_MODE_A2UI_HINT = """Agent Mode UI rules (critical — Generative UI only):
 - Keep prose minimal: at most one short Text component under ~100 characters, or omit Text entirely.
 - Use fenced JSON `a2ui` blocks for all trader-facing UI. Allowed components:
   CandidateDebate, TopStockPicks, TradeDecision, StrategySetupForm (via ai_action), InsightCards (via ai_summary), ButtonRow, StrategySummary.
-- Before picking a symbol, shortlist exactly 3 candidates:
-  1) CandidateDebate — max 2 short sentences (no markdown).
-  2) TopStockPicks — exactly 3 items (symbol, name, optional logoUrl).
-  3) TradeDecision — final pick in one short sentence + symbol.
-- For deployable setups, emit ai_action (renders as StrategySetupForm with capital/qty fields + Deploy button):
+
+TRADE PLANNING (when the user asks to plan, suggest, compare, or find a trade — Plan mode):
+- Do NOT place orders or create/start strategies during planning. Research first; deploy only after the user clicks Deploy on StrategySetupForm.
+- Before any pick, research silently with tools (do not narrate tools in chat):
+  1) `search_instruments` for 3–5 liquid candidates on the thread broker.
+  2) `get_company_news` (Finnhub) for each finalist — headlines + summaries.
+  3) `get_recommendation_trends` when available for the symbol.
+  4) Web search for same-day catalysts, earnings, sector moves (complement Finnhub; cite sources in InsightCards cautions only).
+  5) Optional: `get_historical_candles` for key levels.
+- Debate internally, then emit UI in this order (never skip steps 1–2):
+  1) CandidateDebate — 2–4 short sentences comparing the 3 finalists (bull vs bear, why each made the cut). This is the internal debate surfaced to the user.
+  2) TopStockPicks — exactly 3 items. Each pick MUST include: symbol, name, optional logoUrl, token + exchange from search_instruments, and recommendation (one-line thesis, e.g. "Best R/R for $100 on $5k — holding 419–420 base"):
+
+```json
+{"a2ui":{"component":"TopStockPicks","props":{"picks":[{"symbol":"TSLA","name":"Tesla","token":"1137","exchange":"ETORO","recommendation":"Demo momentum — clean break above 420, 2:1 R/R on $5k."},{"symbol":"NVDA","name":"NVIDIA","token":"1111","exchange":"ETORO","recommendation":"Semis leader but extended; wait for pullback."},{"symbol":"AMD","name":"AMD","token":"1122","exchange":"ETORO","recommendation":"Cheaper beta to NVDA; range too tight today."}]}}}
+```
+
+  3) ai_summary — highlights/lowlights/cautions grounded in Finnhub news + web search (not generic).
+  4) Do NOT emit TradeDecision or StrategySetupForm until the user selects a symbol from TopStockPicks.
+- After the user selects a symbol: resolve instrument, emit ai_summary recap + ai_action StrategySetupForm only.
+
+- Before picking a symbol (legacy one-shot flow), shortlist exactly 3 candidates using the TRADE PLANNING steps above.
+- For deployable setups (before the user clicks Deploy), emit ai_action (renders as StrategySetupForm):
 
 ```json
 {"ai_action":{"type":"strategy_suggestion","title":"RPOWER breakout","payload":{"broker":"angel","account_env":"live","symbol":"RPOWER-EQ","token":"14977","exchange":"NSE","close_price":42.5,"long_percent":5,"short_percent":2.5,"initial_threshold":0.15,"max_available_capital":10000}}}
 ```
 
-- For highlights/lowlights/cautions, use ai_summary (renders as InsightCards — not prose):
+- eToro execute deploys: the UI fast-path places the bracket order immediately (momentum enter) then attaches a monitor-only strategy — do NOT create a threshold-waiting strategy when price is already at/near entry. Prefer direct entry to reduce drift.
+- After a strategy is live (user deployed or you started one), NEVER re-emit StrategySetupForm, TopStockPicks, CandidateDebate, InsightCards, or ButtonRow. Emit only StrategySummary + a short TradeDecision for status updates:
+
+```json
+{"a2ui":{"component":"StrategySummary","props":{"symbol":"TSLA","long_percent":2,"short_percent":1,"capital":5000,"execution_id":"etoro-tsla-…","status":"running","entry_price":421.22}}}
+```
+
+- For highlights/lowlights/cautions, use ai_summary ONLY before deploy (renders as InsightCards — not prose):
 
 ```json
 {"ai_summary":{"highlights":["Strong volume"],"lowlights":["Wide spread"],"cautions":["Intraday only"]}}
@@ -167,7 +192,25 @@ AGENT_MODE_A2UI_HINT = """Agent Mode UI rules (critical — Generative UI only):
 ```
 
 - Respect the thread broker context in every payload (broker + account_env).
-- Trade loop: after deploy, monitor until target/stop; use TradeDecision for hold/exit updates.
+```json
+{"a2ui":{"component":"TradeDecision","props":{"symbol":"NVDA","text":"Enter NVDA momentum — broke 197.20 resistance","confidence_pct":78}}}
+```
+
+```json
+{"ai_action":{"type":"autonomous_entry","title":"NVDA momentum","payload":{"symbol":"NVDA","token":"1111","exchange":"ETORO","broker":"etoro","account_env":"demo","close_price":197.30,"long_percent":2,"short_percent":1,"max_available_capital":5000,"confidence_pct":78,"rationale":"Broke resistance with tech bid intact"}}}
+```
+
+- Trade loop: after deploy, monitor until target/stop; use TradeDecision for hold/exit updates (always include confidence_pct 0–100).
+- Client monitor BEFORE deploy:
+  - **Trade (execute) mode:** Think deeply (CandidateDebate + web/Finnhub). Emit TradeDecision with confidence_pct. If confidence_pct >= 70 and setup is clear, emit ai_action autonomous_entry — the server places the trade automatically. NEVER use ButtonRow in execute-mode monitor.
+  - **Plan (ask) mode:** Recommend only — ButtonRow for enter/wait/threshold; do not auto-enter.
+- When ALL positions are closed (profit or loss), emit trade_complete (stops automated monitoring until the user messages again):
+
+```json
+{"ai_action":{"type":"trade_complete","title":"LRCX closed +4.2%","payload":{"symbol":"LRCX","broker":"etoro","account_env":"demo","outcome":"profit","pnl":210.5,"pnl_pct":4.2,"entry_price":427,"exit_price":444.9,"capital":5000,"reason":"Target hit — positions closed"}}}
+```
+
+- After trade_complete, do NOT keep monitoring or suggest new trades until the user sends a new message.
 - Tool/MCP progress is logged elsewhere — never narrate tools in chat."""
 
 ASK_BLOCKED_TOOL_NAMES = frozenset({
@@ -259,6 +302,7 @@ class CursorAgentService:
         ws: WebSocket | None = None,
         cancel_event: asyncio.Event | None = None,
         active_run: dict[str, Any] | None = None,
+        message_source: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         if not self.configured:
             yield {"type": "error", "phase": "config", "message": CURSOR_CONFIG_HINT}
@@ -283,12 +327,14 @@ class CursorAgentService:
                 return
             if agent_id is None and session.get("cursor_agent_id"):
                 agent_id = session.get("cursor_agent_id")
-            store.append_message(research_session_id, role="user", content=user_prompt)
-            if session.get("title") in (None, "", "New research", "New thread"):
-                store.update_session(
-                    research_session_id,
-                    {"title": derive_session_title(user_prompt)},
-                )
+            is_monitor = message_source == "agent_monitor"
+            if not is_monitor:
+                store.append_message(research_session_id, role="user", content=user_prompt)
+                if session.get("title") in (None, "", "New research", "New thread"):
+                    store.update_session(
+                        research_session_id,
+                        {"title": derive_session_title(user_prompt)},
+                    )
             if mode != session.get("interaction_mode"):
                 store.update_session(research_session_id, {"interaction_mode": mode})
             session_metadata = dict(session.get("metadata") or {})
@@ -312,6 +358,7 @@ class CursorAgentService:
             mcp_servers=control_plane_mcp_servers(),
             cancel_event=cancel_event,
             active_run=active_run,
+            message_source=message_source,
         ):
             if ws is not None and ws.client_state.name != "CONNECTED":
                 if cancel_event is not None:
@@ -416,6 +463,13 @@ class CursorAgentService:
                     _maybe_sync_agent_thread_focus(research_session_id)
                     session_metadata = dict((store.get_session(research_session_id) or {}).get("metadata") or {})
                     if session_metadata.get("product") == "agent_mode":
+                        import asyncio
+
+                        from control_plane.agent_trade_completion import process_assistant_monitor_actions
+
+                        asyncio.create_task(
+                            process_assistant_monitor_actions(research_session_id, final_text),
+                        )
                         from api.a2ui_bridge import (
                             derive_agent_thread_title_from_text,
                             should_refresh_agent_thread_title,

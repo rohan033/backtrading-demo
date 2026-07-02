@@ -11,6 +11,7 @@ from api.a2ui_bridge import (
 )
 from control_plane.agent_thread_state import (
     focus_from_action,
+    resolve_agent_focus,
     sync_focus_from_actions,
     UI_PHASE_TRADING,
     _latest_strategy_action,
@@ -179,3 +180,100 @@ def test_strategy_setup_surface():
     props = surface["components"][0]["props"]
     assert props["symbol"] == "INFY-EQ"
     assert props["max_available_capital"] == 5000
+
+
+def test_resolve_agent_focus_prefers_running_execution(tmp_path, monkeypatch):
+    db_path = tmp_path / "control_plane.db"
+    monkeypatch.setattr("control_plane.ai_research_store.DB_PATH", str(db_path))
+    monkeypatch.setattr("control_plane.engine_registry.DB_PATH", str(db_path))
+
+    from control_plane.ai_research_store import AiResearchStore
+    from control_plane.engine_registry import EngineRegistry
+
+    store = AiResearchStore()
+    registry = EngineRegistry()
+    session = store.create_session(
+        title="Agent thread",
+        interaction_mode="execute",
+        metadata={
+            "product": "agent_mode",
+            "ui_phase": "trading",
+            "focus": {"symbol": "KLAC", "broker": "etoro", "account_env": "demo"},
+        },
+    )
+    session_id = session["session_id"]
+    store.upsert_action(
+        session_id,
+        {
+            "type": "strategy_suggestion",
+            "title": "KLAC AI equipment breakout",
+            "status": "open",
+            "payload": {"symbol": "KLAC", "broker": "etoro", "account_env": "demo"},
+        },
+    )
+    store.upsert_action(
+        session_id,
+        {
+            "type": "strategy_suggestion",
+            "title": "LRCX deploy",
+            "status": "running",
+            "payload": {
+                "symbol": "LRCX",
+                "broker": "etoro",
+                "account_env": "demo",
+                "execution_id": "etoro-lrcx-strategy-default",
+            },
+        },
+    )
+    registry.upsert_engine(
+        {
+            "id": "etoro-lrcx-strategy-default",
+            "symbol": "LRCX",
+            "broker": "etoro",
+            "status": "running",
+            "metadata": {
+                "source_id": "agent_mode",
+                "source_meta_id": session_id,
+                "execution_config": {"symbol": "LRCX", "account_env": "demo"},
+            },
+        }
+    )
+
+    session = store.get_session(session_id)
+    focus = resolve_agent_focus(session, registry)
+    assert focus["symbol"] == "LRCX"
+
+
+def test_sync_focus_does_not_steal_symbol_from_open_suggestion(tmp_path, monkeypatch):
+    db_path = tmp_path / "control_plane.db"
+    monkeypatch.setattr("control_plane.ai_research_store.DB_PATH", str(db_path))
+
+    from control_plane.ai_research_store import AiResearchStore
+
+    store = AiResearchStore()
+    session = store.create_session(
+        title="Agent thread",
+        interaction_mode="execute",
+        metadata={
+            "product": "agent_mode",
+            "ui_phase": "trading",
+            "focus": {
+                "symbol": "LRCX",
+                "broker": "etoro",
+                "execution_id": "etoro-lrcx-strategy-default",
+            },
+        },
+    )
+    session_id = session["session_id"]
+    store.upsert_action(
+        session_id,
+        {
+            "type": "strategy_suggestion",
+            "title": "KLAC AI equipment breakout",
+            "status": "open",
+            "payload": {"symbol": "KLAC", "broker": "etoro"},
+        },
+    )
+
+    synced = sync_focus_from_actions(store.get_session(session_id))
+    assert synced["metadata"]["focus"]["symbol"] == "LRCX"

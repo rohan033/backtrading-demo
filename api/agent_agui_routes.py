@@ -39,6 +39,11 @@ def _require_agent_thread(thread_id: str) -> dict[str, Any]:
 async def agent_agui_run(req: AgentAguiRunRequest, request: Request):
     load_cursor_api_env()
     thread_id = req.thread_id.strip()
+
+    from control_plane.agent_trade_completion import on_user_message_for_thread
+
+    await on_user_message_for_thread(thread_id)
+
     session = _require_agent_thread(thread_id)
 
     mode = req.interaction_mode.strip().lower()

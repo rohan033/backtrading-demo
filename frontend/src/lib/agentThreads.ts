@@ -25,6 +25,28 @@ export type AgentThreadMetadata = {
   broker?: 'angel' | 'etoro' | string
   account_env?: 'live' | 'demo' | string
   web_search_enabled?: boolean
+  monitor_state?: 'active' | 'completed' | 'idle' | string
+  monitor_active?: boolean
+  monitor_user_enabled?: boolean
+}
+
+export type AgentTradeLog = {
+  id: string
+  session_id: string
+  symbol?: string | null
+  broker?: string | null
+  account_env?: string | null
+  outcome?: string | null
+  pnl?: number | null
+  pnl_pct?: number | null
+  entry_price?: number | null
+  exit_price?: number | null
+  capital?: number | null
+  position_id?: string | null
+  execution_id?: string | null
+  notes?: string | null
+  metadata?: Record<string, unknown>
+  created_at: string
 }
 
 export type AgentThreadAction = {
@@ -52,6 +74,17 @@ export type AgentThread = {
   last_message_at?: string | null
 }
 
+export type AgentThreadMessageMetadata = {
+  attachments?: ChatMediaAttachment[]
+  reply_summary?: ChatReplySummary
+  source?: string
+  monitor_batch?: {
+    symbol?: string
+    eventCount?: number
+    items?: Array<Record<string, unknown>>
+  }
+}
+
 export type AgentThreadMessage = {
   id: string
   session_id: string
@@ -61,7 +94,7 @@ export type AgentThreadMessage = {
   tool_name?: string | null
   tool_status?: string | null
   tool_detail?: string | null
-  metadata?: { attachments?: ChatMediaAttachment[]; reply_summary?: ChatReplySummary } | null
+  metadata?: AgentThreadMessageMetadata | null
   created_at: string
 }
 
@@ -71,7 +104,7 @@ export type AgentThreadMessagePage = {
   oldest_id: string | null
 }
 
-export const AGENT_THREAD_MESSAGE_PAGE_SIZE = 50
+export const AGENT_THREAD_MESSAGE_PAGE_SIZE = 200
 
 const API = '/api/control/agent'
 
@@ -130,6 +163,25 @@ export async function listAgentThreadMessages(
   return normalizeMessagePage(data)
 }
 
+/** Load full thread history (paginated) for hydration after refresh. */
+export async function listAllAgentThreadMessages(
+  threadId: string,
+  options: { pageSize?: number; maxMessages?: number } = {},
+): Promise<AgentThreadMessage[]> {
+  const pageSize = options.pageSize ?? AGENT_THREAD_MESSAGE_PAGE_SIZE
+  const maxMessages = options.maxMessages ?? 500
+  let page = await listAgentThreadMessages(threadId, { limit: pageSize })
+  let all = [...page.messages]
+
+  while (page.has_more && page.oldest_id && all.length < maxMessages) {
+    page = await listAgentThreadMessages(threadId, { limit: pageSize, before: page.oldest_id })
+    if (!page.messages.length) break
+    all = [...page.messages, ...all]
+  }
+
+  return all.slice(-maxMessages)
+}
+
 export function getThreadUiPhase(thread: AgentThread | null): AgentUiPhase {
   const meta = (thread?.metadata || {}) as AgentThreadMetadata
   return meta.ui_phase === 'trading' ? 'trading' : 'chat'
@@ -152,7 +204,11 @@ export function getThreadBrokerContext(thread: AgentThread | null): {
 
 export async function updateAgentThread(
   threadId: string,
-  patch: { title?: string; metadata?: AgentThreadMetadata | Record<string, unknown> },
+  patch: {
+    title?: string
+    interaction_mode?: 'ask' | 'execute'
+    metadata?: AgentThreadMetadata | Record<string, unknown>
+  },
 ): Promise<AgentThread> {
   const res = await fetch(`${API}/threads/${encodeURIComponent(threadId)}`, {
     method: 'PATCH',
@@ -160,6 +216,16 @@ export async function updateAgentThread(
     body: JSON.stringify(patch),
   })
   return parseJson(res)
+}
+
+export async function listAgentTradeLogs(threadId: string): Promise<AgentTradeLog[]> {
+  const res = await fetch(`${API}/threads/${encodeURIComponent(threadId)}/pnl`)
+  return parseJson(res)
+}
+
+export function isMonitorCompleted(thread: AgentThread | null): boolean {
+  const meta = (thread?.metadata || {}) as AgentThreadMetadata
+  return meta.monitor_state === 'completed'
 }
 
 export function messageToThreadChatRow(message: AgentThreadMessage) {

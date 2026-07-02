@@ -92,6 +92,29 @@ class AiResearchStore:
 
             CREATE INDEX IF NOT EXISTS idx_ai_research_messages_session
                 ON ai_research_messages(session_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS agent_trade_logs (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                symbol TEXT,
+                broker TEXT,
+                account_env TEXT,
+                outcome TEXT,
+                pnl REAL,
+                pnl_pct REAL,
+                entry_price REAL,
+                exit_price REAL,
+                capital REAL,
+                position_id TEXT,
+                execution_id TEXT,
+                notes TEXT,
+                metadata_json TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (session_id) REFERENCES ai_research_sessions(session_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_agent_trade_logs_session
+                ON agent_trade_logs(session_id, created_at DESC);
             """
         )
         conn.commit()
@@ -554,6 +577,78 @@ class AiResearchStore:
                     continue
                 return session_id
         return None
+
+    def insert_agent_trade_log(self, row: dict[str, Any]) -> dict[str, Any]:
+        now = _now_utc()
+        log_id = str(row.get("id") or uuid.uuid4())
+        payload = {
+            "id": log_id,
+            "session_id": str(row.get("session_id") or ""),
+            "symbol": row.get("symbol"),
+            "broker": row.get("broker"),
+            "account_env": row.get("account_env"),
+            "outcome": row.get("outcome"),
+            "pnl": row.get("pnl"),
+            "pnl_pct": row.get("pnl_pct"),
+            "entry_price": row.get("entry_price"),
+            "exit_price": row.get("exit_price"),
+            "capital": row.get("capital"),
+            "position_id": row.get("position_id"),
+            "execution_id": row.get("execution_id"),
+            "notes": row.get("notes"),
+            "metadata": row.get("metadata") or {},
+            "created_at": row.get("created_at") or now,
+        }
+        conn = self._connect()
+        conn.execute(
+            """
+            INSERT INTO agent_trade_logs (
+                id, session_id, symbol, broker, account_env, outcome,
+                pnl, pnl_pct, entry_price, exit_price, capital,
+                position_id, execution_id, notes, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload["id"],
+                payload["session_id"],
+                payload["symbol"],
+                payload["broker"],
+                payload["account_env"],
+                payload["outcome"],
+                payload["pnl"],
+                payload["pnl_pct"],
+                payload["entry_price"],
+                payload["exit_price"],
+                payload["capital"],
+                payload["position_id"],
+                payload["execution_id"],
+                payload["notes"],
+                _json_dumps(payload["metadata"]),
+                payload["created_at"],
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return payload
+
+    def list_agent_trade_logs(self, session_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        conn = self._connect()
+        rows = conn.execute(
+            """
+            SELECT * FROM agent_trade_logs
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (session_id, max(1, min(int(limit), 500))),
+        ).fetchall()
+        conn.close()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            data = dict(row)
+            data["metadata"] = _json_loads(data.pop("metadata_json", None), {})
+            result.append(data)
+        return result
 
     @staticmethod
     def _session_row(row) -> dict[str, Any]:

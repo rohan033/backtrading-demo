@@ -37,7 +37,10 @@ def _latest_strategy_action(session: dict[str, Any]) -> dict[str, Any] | None:
     if not candidates:
         return None
 
-    def _score(action: dict[str, Any]) -> tuple[int, int, str]:
+    metadata = session.get("metadata") or {}
+    preferred_sym = _normalize_symbol(str((metadata.get("focus") or {}).get("symbol") or ""))
+
+    def _score(action: dict[str, Any]) -> tuple[int, int, int, str]:
         status = str(action.get("status") or "").lower()
         status_rank = {
             "running": 0,
@@ -48,10 +51,12 @@ def _latest_strategy_action(session: dict[str, Any]) -> dict[str, Any] | None:
         }.get(status, 4)
         payload = action.get("payload") or {}
         has_exec = 0 if payload.get("execution_id") else 1
+        action_sym = _normalize_symbol(str(payload.get("symbol") or ""))
+        sym_match = 1 if preferred_sym and action_sym == preferred_sym else 0
         updated = str(action.get("updated_at") or action.get("created_at") or "")
-        return (status_rank, has_exec, updated)
+        return (status_rank, has_exec, sym_match, updated)
 
-    candidates.sort(key=_score, reverse=True)
+    candidates.sort(key=_score)
     return candidates[0]
 
 
@@ -124,18 +129,7 @@ def _focus_from_engine(engine: dict[str, Any], focus: dict[str, Any]) -> dict[st
     return focus
 
 
-def sync_focus_from_registry(session: dict[str, Any], registry: Any) -> dict[str, Any]:
-    """Attach latest linked execution fields to focus from engine registry."""
-    if not _is_agent_thread(session):
-        return session
-
-    session_id = str(session.get("session_id") or "")
-    if not session_id:
-        return session
-
-    metadata = dict(session.get("metadata") or {})
-    focus = dict(metadata.get("focus") or {})
-
+def _linked_session_engines(session_id: str, registry: Any) -> list[dict[str, Any]]:
     engines = registry.list_engines() if hasattr(registry, "list_engines") else []
     linked: list[dict[str, Any]] = []
     for engine in engines:
@@ -148,11 +142,79 @@ def sync_focus_from_registry(session: dict[str, Any], registry: Any) -> dict[str
         if source_id and source_id not in {"ai_research", "agent_mode"}:
             continue
         linked.append(engine)
+    linked.sort(key=_engine_priority, reverse=True)
+    return linked
 
+
+def resolve_agent_focus(session: dict[str, Any], registry: Any | None = None) -> dict[str, Any]:
+    """Canonical trade focus — running execution beats open suggestions on other symbols."""
+    if not _is_agent_thread(session):
+        return {}
+
+    if registry is None:
+        from control_plane.engine_registry import EngineRegistry
+
+        registry = EngineRegistry()
+
+    metadata = dict(session.get("metadata") or {})
+    focus = dict(metadata.get("focus") or {})
+    session_id = str(session.get("session_id") or "")
+    linked = _linked_session_engines(session_id, registry) if session_id else []
+
+    active_statuses = {"running", "active", "starting"}
+    for engine in linked:
+        if str(engine.get("status") or "").lower() in active_statuses:
+            return _focus_from_engine(engine, dict(focus))
+
+    exec_id = str(focus.get("execution_id") or "").strip()
+    if exec_id:
+        for engine in linked:
+            if str(engine.get("id") or "") == exec_id:
+                return _focus_from_engine(engine, dict(focus))
+        for action in session.get("actions") or []:
+            if not isinstance(action, dict):
+                continue
+            payload = action.get("payload") or {}
+            if str(payload.get("execution_id") or "") == exec_id:
+                from_action = focus_from_action(action)
+                if from_action:
+                    return {**focus, **{k: v for k, v in from_action.items() if v is not None}}
+
+    action = _latest_strategy_action(session)
+    if action:
+        payload = action.get("payload") or {}
+        if str(payload.get("execution_id") or "").strip():
+            from_action = focus_from_action(action)
+            if from_action:
+                return {**focus, **{k: v for k, v in from_action.items() if v is not None}}
+
+    if focus.get("symbol"):
+        return focus
+
+    if action:
+        from_action = focus_from_action(action)
+        if from_action:
+            return {**focus, **{k: v for k, v in from_action.items() if v is not None}}
+
+    return focus
+
+
+def sync_focus_from_registry(session: dict[str, Any], registry: Any) -> dict[str, Any]:
+    """Attach latest linked execution fields to focus from engine registry."""
+    if not _is_agent_thread(session):
+        return session
+
+    session_id = str(session.get("session_id") or "")
+    if not session_id:
+        return session
+
+    metadata = dict(session.get("metadata") or {})
+    focus = dict(metadata.get("focus") or {})
+
+    linked = _linked_session_engines(session_id, registry)
     if not linked:
         return session
 
-    linked.sort(key=_engine_priority, reverse=True)
     focus = _focus_from_engine(linked[0], focus)
 
     metadata["focus"] = focus
@@ -185,8 +247,13 @@ def sync_focus_from_actions(session: dict[str, Any]) -> dict[str, Any]:
     prev_focus = metadata.get("focus") or {}
     prev_sym = _normalize_symbol(str(prev_focus.get("symbol") or ""))
     new_sym = _normalize_symbol(str(new_focus.get("symbol") or ""))
+    payload = action.get("payload") or {}
+    has_exec = bool(str(payload.get("execution_id") or "").strip())
+    prev_exec = str(prev_focus.get("execution_id") or "").strip()
 
     if new_sym and prev_sym and new_sym != prev_sym:
+        if not has_exec and prev_exec:
+            return session
         metadata["focus"] = {k: v for k, v in new_focus.items() if v is not None}
     else:
         metadata["focus"] = {

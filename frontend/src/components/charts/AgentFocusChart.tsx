@@ -1,70 +1,108 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createChart, type IChartApi, type ISeriesApi, type LineData } from 'lightweight-charts'
 
+import { useCandidateChartLive } from '@/hooks/useCandidateChartLive'
+import type { CandidateLiveFeed } from '@/hooks/useMultiSymbolLiveFeeds'
 import { focusTickKey } from '@/hooks/useAgentThreadFocus'
+import { mergeHistoryWithLiveTail } from '@/lib/agentChartLiveLine'
 import type { WatchlistBroker } from '@/lib/watchlistBrokers'
 import type { AgentThreadFocus } from '@/lib/agentThreads'
 import { defaultAccountEnv } from '@/lib/watchlistBrokers'
 import { loadHomeChartHistory } from '@/lib/homeChartHistory'
 import { applyHomeChartViewport } from '@/lib/watchlistCandles'
 import type { MarketStreamStatus } from '@/lib/useControlMarketStream'
-import type { PriceSample } from '@/lib/watchlistChangeColumns'
 import type { WatchlistChartSymbol } from '@/lib/watchlistUniqueSymbols'
-import {
-  mergeLiveTickIntoWatchlistCandles,
-  mergeWatchlistCandleHistory,
-  samplesToWatchlistCandles,
-  type WatchlistSanitizedCandle,
-} from '@/lib/watchlistCandles'
+import type { HomeChartMonitorMarker } from '@/lib/homeChartMonitorMarkers'
+import type { WatchlistSanitizedCandle } from '@/lib/watchlistCandles'
 
 type Props = {
   focus: AgentThreadFocus
-  ltp: number | null
-  streamStatus: MarketStreamStatus
+  ltp?: number | null
+  streamStatus?: MarketStreamStatus
+  monitorMarkers?: HomeChartMonitorMarker[]
+  /** Shared per-symbol feed from workspace — same pipeline as TopStockPicks mini charts */
+  liveFeed?: CandidateLiveFeed | null
 }
 
-const MIN_HISTORY_BARS = 30
+const IDLE_STREAM: MarketStreamStatus = { status: 'idle', label: '—', tone: 'muted' }
 
-export default function AgentFocusChart({ focus, ltp, streamStatus }: Props) {
+export default function AgentFocusChart({
+  focus,
+  ltp: ltpProp = null,
+  streamStatus: streamStatusProp,
+  monitorMarkers = [],
+  liveFeed = null,
+}: Props) {
   const hostRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const lineRef = useRef<ISeriesApi<'Line'> | null>(null)
   const lastPointRef = useRef<LineData | null>(null)
   const lastViewportBarsRef = useRef(0)
   const [candles, setCandles] = useState<WatchlistSanitizedCandle[]>([])
-  const [liveSamples, setLiveSamples] = useState<PriceSample[]>([])
   const [loading, setLoading] = useState(true)
 
   const broker = (focus.broker || 'etoro') as WatchlistBroker
   const accountEnv = focus.account_env || defaultAccountEnv(broker)
-  const tickKey = focusTickKey({ ...focus, broker, account_env: accountEnv })
+
+  const internalLive = useCandidateChartLive({
+    symbol: focus.symbol || '',
+    token: focus.token,
+    exchange: focus.exchange,
+    broker,
+    accountEnv,
+    enabled: !liveFeed && Boolean(focus.symbol),
+  })
+
+  const live = liveFeed ?? {
+    symbol: focus.symbol || '',
+    tickKey: internalLive.tickKey,
+    feedToken: internalLive.feedToken,
+    resolvedExchange: internalLive.resolvedExchange,
+    ltp: internalLive.ltp,
+    streamStatus: internalLive.streamStatus,
+    connected: internalLive.connected,
+    samples: internalLive.samples,
+    resolving: internalLive.resolving,
+    focus,
+  }
+
+  const displayLtp = live.ltp ?? ltpProp
+  const streamStatus = live.streamStatus ?? streamStatusProp ?? IDLE_STREAM
+  const tickKey = live.tickKey || focusTickKey({ ...focus, broker, account_env: accountEnv })
 
   const chartSymbol = useMemo((): WatchlistChartSymbol | null => {
     if (!focus.symbol) return null
+    const token = live.feedToken || focus.token || focus.symbol
     return {
       tickKey,
       watchlistId: 'agent',
       broker,
       accountEnv,
       tradingsymbol: focus.symbol,
-      symboltoken: String(focus.token || focus.symbol),
-      exchange: focus.exchange || (broker === 'etoro' ? 'ETORO' : 'NSE'),
+      symboltoken: String(token),
+      exchange: live.resolvedExchange || focus.exchange || (broker === 'etoro' ? 'ETORO' : 'NSE'),
     }
-  }, [accountEnv, broker, focus.exchange, focus.symbol, focus.token, tickKey])
+  }, [
+    accountEnv,
+    broker,
+    focus.exchange,
+    focus.symbol,
+    focus.token,
+    live.feedToken,
+    live.resolvedExchange,
+    tickKey,
+  ])
 
   useEffect(() => {
-    setLiveSamples([])
     setCandles([])
   }, [tickKey])
 
   useEffect(() => {
-    if (ltp == null || !Number.isFinite(ltp) || ltp <= 0) return
-    setLiveSamples(prev => [...prev, { ts: Date.now(), ltp }].slice(-2000))
-  }, [ltp])
-
-  useEffect(() => {
     if (!chartSymbol) {
       setLoading(false)
+      return undefined
+    }
+    if (broker === 'etoro' && !live.feedToken && live.resolving) {
       return undefined
     }
 
@@ -75,9 +113,7 @@ export default function AgentFocusChart({ focus, ltp, streamStatus }: Props) {
       if (!cancelled && rows.length) setCandles(rows)
     }
 
-    void loadHomeChartHistory(chartSymbol, {
-      onRefresh: applyRows,
-    })
+    void loadHomeChartHistory(chartSymbol, { onRefresh: applyRows })
       .then(async rows => {
         if (cancelled) return
         if (rows.length) {
@@ -94,24 +130,11 @@ export default function AgentFocusChart({ focus, ltp, streamStatus }: Props) {
     return () => {
       cancelled = true
     }
-  }, [chartSymbol])
-
-  const displayCandles = useMemo(() => {
-    const base = candles.length >= MIN_HISTORY_BARS
-      ? candles
-      : mergeWatchlistCandleHistory(
-        samplesToWatchlistCandles(liveSamples),
-        candles,
-      )
-    return mergeLiveTickIntoWatchlistCandles(base, ltp)
-  }, [candles, liveSamples, ltp])
+  }, [broker, chartSymbol, live.feedToken, live.resolving])
 
   const lineData = useMemo(
-    () => displayCandles.map(row => ({
-      time: row.time as LineData['time'],
-      value: row.close,
-    })),
-    [displayCandles],
+    () => mergeHistoryWithLiveTail(candles, live.samples, displayLtp),
+    [candles, displayLtp, live.samples],
   )
 
   useEffect(() => {
@@ -127,7 +150,7 @@ export default function AgentFocusChart({ focus, ltp, streamStatus }: Props) {
         horzLines: { color: '#F1F1F1' },
       },
       rightPriceScale: { borderVisible: false },
-      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
+      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: true },
     })
     chartRef.current = chart
     const line = chart.addLineSeries({ color: '#6295D6', lineWidth: 2 })
@@ -169,6 +192,7 @@ export default function AgentFocusChart({ focus, ltp, streamStatus }: Props) {
 
     if (incremental) {
       line.update(lastPoint)
+      chart?.timeScale().scrollToRealTime()
     } else {
       line.setData(lineData)
       if (lineData.length !== lastViewportBarsRef.current) {
@@ -177,13 +201,18 @@ export default function AgentFocusChart({ focus, ltp, streamStatus }: Props) {
       }
     }
     lastPointRef.current = lastPoint
-  }, [lineData])
+  }, [displayLtp, lineData, live.samples.length])
+
+  useEffect(() => {
+    const line = lineRef.current
+    if (!line) return
+    line.setMarkers(monitorMarkers)
+  }, [monitorMarkers])
 
   const close = focus.close_price != null ? Number(focus.close_price) : null
   const longPct = focus.long_percent != null ? Number(focus.long_percent) : null
   const shortPct = focus.short_percent != null ? Number(focus.short_percent) : null
-  const displayLtp = ltp ?? close
-  const historyThin = !loading && candles.length < MIN_HISTORY_BARS
+  const historyThin = !loading && !lineData.length && candles.length < 30
 
   return (
     <section className="am-trading-chart">
@@ -193,7 +222,7 @@ export default function AgentFocusChart({ focus, ltp, streamStatus }: Props) {
           <span className="am-trading-chart__ltp">{displayLtp.toFixed(2)}</span>
         ) : null}
         <span className={`am-feed-status am-feed-status--${streamStatus.tone}`}>
-          {streamStatus.label}
+          {'resolving' in live && live.resolving ? 'Resolving…' : streamStatus.label}
         </span>
       </div>
       <div className="am-trading-chart__host" ref={hostRef} />

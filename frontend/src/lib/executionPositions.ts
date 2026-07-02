@@ -1,5 +1,26 @@
 const CONTROL_API = '/api/control'
 
+const ETORO_BROKER_CACHE_TTL_MS = 30_000
+const ETORO_BROKER_REFRESH_MIN_MS = 30_000
+
+type EtoroBrokerCacheEntry = {
+  raw: Record<string, unknown>[]
+  fetchedAt: number
+  inFlight: Promise<Record<string, unknown>[] | null> | null
+}
+
+const etoroBrokerCache = new Map<string, EtoroBrokerCacheEntry>()
+
+function normalizeTicker(value: string | null | undefined): string {
+  const text = String(value || '').trim().toUpperCase()
+  if (!text) return ''
+  return text.split('-')[0].split('.')[0]
+}
+
+function etoroCacheKey(accountEnv?: string | null): string {
+  return (accountEnv || 'demo').toLowerCase() === 'live' ? 'live' : 'demo'
+}
+
 export type ExecutionPositionRow = {
   position_id: string | number
   order_id?: string | number | null
@@ -19,6 +40,8 @@ type LoadExecutionPositionsParams = {
   accountEnv?: string | null
   symbol?: string | null
   token?: string | number | null
+  /** Bypass server portfolio cache and read live broker positions. */
+  refreshBroker?: boolean
 }
 
 function normalizeState(state: unknown): string {
@@ -113,22 +136,38 @@ function normalizeLiveRow(row: Record<string, unknown>): ExecutionPositionRow {
   }
 }
 
-function normalizeEtoroRawRow(row: Record<string, unknown>, symbol?: string | null, token?: string | number | null): ExecutionPositionRow | null {
+function normalizeEtoroRawRow(
+  row: Record<string, unknown>,
+  symbol?: string | null,
+  token?: string | number | null,
+  options: { strictToken?: boolean } = {},
+): ExecutionPositionRow | null {
   const positionId = positionIdFromRow(row)
   if (positionId == null) return null
 
   const instrumentId = row.instrumentID ?? row.instrumentId ?? row.instrument_id
-  if (token != null && instrumentId != null && String(instrumentId) !== String(token)) return null
+  const rowSymbol = normalizeTicker(
+    String(row.symbol || row.Symbol || row.instrumentDisplayName || row.displaySymbol || ''),
+  )
+  const focusSymbol = normalizeTicker(symbol)
 
-  const rowSymbol = String(row.symbol || row.Symbol || row.instrumentDisplayName || '').trim().toUpperCase()
-  if (symbol && rowSymbol && rowSymbol !== String(symbol).trim().toUpperCase()) return null
+  if (options.strictToken !== false && token != null && instrumentId != null && String(instrumentId) !== String(token)) {
+    return null
+  }
+  if (focusSymbol && rowSymbol && rowSymbol !== focusSymbol) return null
 
   return {
     position_id: positionId,
     state: 'open',
     remaining_units: unitsFromRow(row),
     instrument_id: instrumentId ?? null,
-    position: row,
+    position: {
+      ...row,
+      openRate: row.openRate ?? row.OpenRate ?? row.open,
+      units: row.units ?? row.Units ?? row.amount,
+      isBuy: row.isBuy ?? row.IsBuy,
+      symbol: rowSymbol || row.symbol || row.Symbol,
+    },
     source: 'etoro',
     closable: true,
   }
@@ -150,10 +189,90 @@ function dedupePositions(rows: ExecutionPositionRow[]): ExecutionPositionRow[] {
 
 export function isOpenExecutionPosition(row: ExecutionPositionRow): boolean {
   const state = normalizeState(row.state || row.position?.state)
-  if (state === 'closed') return false
+  if (state === 'closed' || state === 'cancelled' || state === 'rejected') return false
   const units = unitsFromRow(row)
-  if (units != null && units <= 0 && state === 'closed') return false
+  if (units != null && units <= 0) return false
   return true
+}
+
+function filterEtoroRows(
+  raw: Record<string, unknown>[],
+  symbol?: string | null,
+  token?: string | number | null,
+): ExecutionPositionRow[] {
+  const strict = raw
+    .map(row => normalizeEtoroRawRow(row, symbol, token, { strictToken: true }))
+    .filter((row): row is ExecutionPositionRow => row != null)
+  if (strict.length) return strict
+
+  const bySymbol = raw
+    .map(row => normalizeEtoroRawRow(row, symbol, token, { strictToken: false }))
+    .filter((row): row is ExecutionPositionRow => row != null)
+  if (bySymbol.length) return bySymbol
+
+  return raw
+    .map(row => normalizeEtoroRawRow(row, null, null, { strictToken: false }))
+    .filter((row): row is ExecutionPositionRow => row != null)
+}
+
+async function fetchEtoroBrokerRows(
+  accountEnv?: string | null,
+  refreshBroker = false,
+): Promise<Record<string, unknown>[] | null> {
+  const cacheKey = etoroCacheKey(accountEnv)
+  const now = Date.now()
+  let entry = etoroBrokerCache.get(cacheKey)
+  if (!entry) {
+    entry = { raw: [], fetchedAt: 0, inFlight: null }
+    etoroBrokerCache.set(cacheKey, entry)
+  }
+
+  const cacheFresh = now - entry.fetchedAt < ETORO_BROKER_CACHE_TTL_MS
+  if (!refreshBroker && cacheFresh && entry.raw.length) {
+    return entry.raw
+  }
+
+  const refreshAllowed =
+    refreshBroker && (now - entry.fetchedAt >= ETORO_BROKER_REFRESH_MIN_MS || entry.fetchedAt === 0)
+  if (!refreshAllowed && entry.raw.length) {
+    return entry.raw
+  }
+
+  if (entry.inFlight) {
+    return entry.inFlight
+  }
+
+  entry.inFlight = (async () => {
+    try {
+      const env = cacheKey
+      const params = new URLSearchParams({ account_env: env })
+      if (refreshAllowed) params.set('refresh', 'true')
+      const res = await fetch(`${CONTROL_API}/etoro/positions?${params.toString()}`)
+      const data = await res.json()
+      if (!data.status) return entry!.raw.length ? entry!.raw : null
+      const raw = ((data.raw || data.data || []) as Record<string, unknown>[])
+      entry!.raw = raw
+      entry!.fetchedAt = Date.now()
+      return raw
+    } catch {
+      return entry!.raw.length ? entry!.raw : null
+    } finally {
+      entry!.inFlight = null
+    }
+  })()
+
+  return entry.inFlight
+}
+
+async function loadEtoroBrokerPositions(
+  accountEnv?: string | null,
+  symbol?: string | null,
+  token?: string | number | null,
+  refreshBroker = false,
+): Promise<ExecutionPositionRow[] | null> {
+  const raw = await fetchEtoroBrokerRows(accountEnv, refreshBroker)
+  if (!raw) return null
+  return filterEtoroRows(raw, symbol, token)
 }
 
 export async function loadExecutionPositions({
@@ -163,8 +282,16 @@ export async function loadExecutionPositions({
   accountEnv,
   symbol,
   token,
+  refreshBroker = false,
 }: LoadExecutionPositionsParams): Promise<ExecutionPositionRow[]> {
   if (!executorId) return []
+
+  if ((broker || '').toLowerCase() === 'etoro') {
+    const etoroRows = await loadEtoroBrokerPositions(accountEnv, symbol, token, refreshBroker)
+    if (etoroRows != null) {
+      return dedupePositions(etoroRows).filter(isOpenExecutionPosition)
+    }
+  }
 
   const rows: ExecutionPositionRow[] = []
 
@@ -211,22 +338,6 @@ export async function loadExecutionPositions({
         for (const row of (data.data || []) as Record<string, unknown>[]) {
           if (String(row.executor_id || '') !== executorId) continue
           rows.push(normalizeLiveRow(row))
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  if ((broker || '').toLowerCase() === 'etoro') {
-    try {
-      const env = (accountEnv || 'demo').toLowerCase() === 'live' ? 'live' : 'demo'
-      const res = await fetch(`${CONTROL_API}/etoro/positions?account_env=${encodeURIComponent(env)}`)
-      const data = await res.json()
-      if (data.status) {
-        for (const row of (data.raw || []) as Record<string, unknown>[]) {
-          const normalized = normalizeEtoroRawRow(row, symbol, token)
-          if (normalized) rows.push(normalized)
         }
       }
     } catch {

@@ -50,6 +50,7 @@ class UpdateThreadRequest(BaseModel):
     title: Optional[str] = Field(default=None, max_length=200)
     summary: Optional[str] = None
     status: Optional[str] = None
+    interaction_mode: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
 
 
@@ -109,3 +110,15 @@ def list_agent_thread_messages(thread_id: str, limit: int = 50, before: Optional
         if message.get("role") == "assistant" and message.get("content"):
             message["content"] = strip_ai_action_blocks(strip_ai_summary_blocks(message["content"]))
     return {"status": True, "data": page}
+
+
+@router.get(
+    "/threads/{thread_id}/pnl",
+    operation_id="list_agent_thread_pnl",
+    summary="List logged trade PnL rows for an agent thread",
+)
+def list_agent_thread_pnl(thread_id: str, limit: int = 100):
+    store = get_ai_research_store()
+    _require_agent_thread(store, thread_id)
+    rows = store.list_agent_trade_logs(thread_id, limit=limit)
+    return {"status": True, "data": rows}

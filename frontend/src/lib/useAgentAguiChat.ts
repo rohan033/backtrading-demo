@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 
 import { userTextSurface } from '@/components/agent/A2uiRenderer'
+import { dedupeSurfaces } from '@/lib/agentA2uiHydrate'
 import { isA2uiSurfaceMessage, type A2uiSurfaceMessage } from '@/lib/agentA2uiCatalog'
 
 export type AgentInteractionMode = 'ask' | 'execute'
@@ -104,7 +105,7 @@ export function useAgentAguiChat(
           buffer = parsed.rest
           for (const event of parsed.events) {
             if (isA2uiSurfaceMessage(event)) {
-              setSurfaces(prev => [...prev, event])
+              setSurfaces(prev => dedupeSurfaces([...prev, event]))
             }
             if (event.type === 'RUN_ERROR') {
               setError(String(event.message || 'Agent error'))
@@ -142,7 +143,29 @@ export function useAgentAguiChat(
   )
 
   const resetSurfaces = useCallback((rows: A2uiSurfaceMessage[]) => {
-    setSurfaces(rows)
+    setSurfaces(dedupeSurfaces(rows))
+  }, [])
+
+  const pushAguiEvent = useCallback(
+    (event: Record<string, unknown>) => {
+      if (isA2uiSurfaceMessage(event)) {
+        setSurfaces(prev => dedupeSurfaces([...prev, event]))
+      }
+      if (event.type === 'THREAD_UPDATED') {
+        onThreadUpdated?.({
+          title: typeof event.title === 'string' ? event.title : undefined,
+          metadata: (event.metadata || {}) as Record<string, unknown>,
+        })
+      }
+      if (event.type === 'RUN_ERROR') {
+        setError(String(event.message || 'Agent error'))
+      }
+    },
+    [onThreadUpdated],
+  )
+
+  const appendSurface = useCallback((surface: A2uiSurfaceMessage) => {
+    setSurfaces(prev => dedupeSurfaces([...prev, surface]))
   }, [])
 
   return {
@@ -153,5 +176,7 @@ export function useAgentAguiChat(
     sendMessage,
     stop,
     resetSurfaces,
+    pushAguiEvent,
+    appendSurface,
   }
 }

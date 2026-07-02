@@ -136,6 +136,20 @@ export function samplesToChartPoints(samples: PriceSample[]): Array<{ time: numb
   return deduped
 }
 
+/** Line points that keep time moving even when price is flat (for live mini charts). */
+export function buildFlowingLinePoints(
+  samples: PriceSample[],
+  liveLtp?: number | null,
+): Array<{ time: number; value: number }> {
+  const points = samplesToChartPoints(samples)
+  if (!points.length) {
+    const price = Number(liveLtp)
+    if (!Number.isFinite(price) || price <= 0) return []
+    return [{ time: Math.floor(Date.now() / 1000), value: price }]
+  }
+  return points
+}
+
 /** Line chart points — skip flat runs so an unchanged price is a dot, not a long horizontal line. */
 export function buildWatchlistLinePoints(
   samples: PriceSample[],
