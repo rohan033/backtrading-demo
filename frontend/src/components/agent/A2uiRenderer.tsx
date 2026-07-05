@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 
 import AgentCandidateMiniChart from '@/components/charts/AgentCandidateMiniChart'
 import type {
@@ -304,6 +305,7 @@ function renderComponent(
       const selected = String(props.selected || '')
       const broker = context?.broker || 'etoro'
       const accountEnv = context?.accountEnv || 'demo'
+      const showCharts = props.showCharts !== false && props.hideCharts !== true
       return (
         <div className="am-a2ui-top-picks am-a2ui-top-picks--charts">
           <div className="am-a2ui-top-picks__label">Top 3 candidates — pick one to trade</div>
@@ -332,13 +334,15 @@ function renderComponent(
                       <span className="am-a2ui-top-picks__name">{name}</span>
                     </div>
                   </div>
-                  <AgentCandidateMiniChart
-                    symbol={symbol}
-                    token={pick.token}
-                    exchange={pick.exchange}
-                    broker={broker}
-                    accountEnv={accountEnv}
-                  />
+                  {showCharts ? (
+                    <AgentCandidateMiniChart
+                      symbol={symbol}
+                      token={pick.token}
+                      exchange={pick.exchange}
+                      broker={broker}
+                      accountEnv={accountEnv}
+                    />
+                  ) : null}
                   {recommendation ? (
                     <p className="am-a2ui-top-picks__recommendation">{recommendation}</p>
                   ) : null}
@@ -364,6 +368,9 @@ function renderComponent(
       const execId = props.execution_id ? String(props.execution_id) : null
       const broker = props.broker ? String(props.broker) : null
       const env = props.account_env ? String(props.account_env) : null
+      const strategyHref = execId
+        ? `/trade/strategies/${encodeURIComponent(execId)}`
+        : null
       return (
         <div className="am-a2ui-strategy am-a2ui-strategy--live">
           <div className="am-a2ui-strategy__head">
@@ -408,6 +415,11 @@ function renderComponent(
               </>
             ) : null}
           </dl>
+          {strategyHref ? (
+            <Link to={strategyHref} className="am-a2ui-strategy__link">
+              Open strategy →
+            </Link>
+          ) : null}
         </div>
       )
     }

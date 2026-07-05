@@ -20,6 +20,16 @@ function readParams(): UrlState {
   return out
 }
 
+export function buildShellUrl(patch: UrlState): string {
+  const params = new URLSearchParams(window.location.search)
+  for (const [key, value] of Object.entries(patch)) {
+    if (value == null || value === '') params.delete(key)
+    else params.set(key, value)
+  }
+  const qs = params.toString()
+  return qs ? `${window.location.pathname}?${qs}` : window.location.pathname
+}
+
 export function useUrlState() {
   const [state, setState] = useState<UrlState>(readParams)
 

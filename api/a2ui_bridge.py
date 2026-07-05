@@ -149,6 +149,42 @@ def strategy_setup_surface(action: dict[str, Any], *, message_id: str | None = N
     return component_to_surface("StrategySetupForm", props, message_id=message_id)
 
 
+def strategy_summary_surface(
+    *,
+    symbol: str,
+    execution_id: str,
+    entry_price: float | None = None,
+    status: str = "running",
+    broker: str | None = None,
+    account_env: str | None = None,
+    long_percent: float | None = None,
+    short_percent: float | None = None,
+    capital: float | None = None,
+    confidence_pct: float | None = None,
+    message_id: str | None = None,
+) -> dict[str, Any]:
+    props: dict[str, Any] = {
+        "symbol": symbol,
+        "execution_id": execution_id,
+        "status": status,
+    }
+    if entry_price is not None:
+        props["entry_price"] = entry_price
+    if broker:
+        props["broker"] = broker
+    if account_env:
+        props["account_env"] = account_env
+    if long_percent is not None:
+        props["long_percent"] = long_percent
+    if short_percent is not None:
+        props["short_percent"] = short_percent
+    if capital is not None:
+        props["capital"] = capital
+    if confidence_pct is not None:
+        props["confidence_pct"] = confidence_pct
+    return component_to_surface("StrategySummary", props, message_id=message_id)
+
+
 def insight_cards_surface(summary: dict[str, list[str]], *, message_id: str | None = None) -> dict[str, Any]:
     return component_to_surface(
         "InsightCards",

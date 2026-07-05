@@ -1,23 +1,23 @@
-import type { AgentThread } from '@/lib/agentThreads'
+import type { TradingSession } from '@/lib/tradingSessions'
 import AgentModeSessionList from './AgentModeSessionList'
 
 type Props = {
   open: boolean
   onClose: () => void
-  threads: AgentThread[]
-  activeThreadId: string
+  sessions: TradingSession[]
+  activeSessionId: string
   loading: boolean
   creating: boolean
   listError: string
-  onSelect: (threadId: string) => void
+  onSelect: (sessionId: string) => void
   onCreate: () => void
 }
 
 export default function AgentModeThreadsDrawer({
   open,
   onClose,
-  threads,
-  activeThreadId,
+  sessions,
+  activeSessionId,
   loading,
   creating,
   listError,
@@ -31,16 +31,16 @@ export default function AgentModeThreadsDrawer({
       <aside
         className="am-drawer"
         onClick={event => event.stopPropagation()}
-        aria-label="Threads"
+        aria-label="Sessions"
       >
         <AgentModeSessionList
-          threads={threads}
-          activeThreadId={activeThreadId}
+          sessions={sessions}
+          activeSessionId={activeSessionId}
           loading={loading}
           creating={creating}
           listError={listError}
-          onSelect={threadId => {
-            onSelect(threadId)
+          onSelect={sessionId => {
+            onSelect(sessionId)
             onClose()
           }}
           onCreate={onCreate}

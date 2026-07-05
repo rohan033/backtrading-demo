@@ -1,19 +1,19 @@
 import { formatDbTimestamp } from '../../../lib/datetime'
-import type { AgentThread } from '../../../lib/agentThreads'
+import { sessionLabel, type TradingSession } from '@/lib/tradingSessions'
 
 type Props = {
-  threads: AgentThread[]
-  activeThreadId: string
+  sessions: TradingSession[]
+  activeSessionId: string
   loading: boolean
   creating: boolean
   listError?: string
-  onSelect: (threadId: string) => void
+  onSelect: (sessionId: string) => void
   onCreate: () => void
 }
 
 export default function AgentModeSessionList({
-  threads,
-  activeThreadId,
+  sessions,
+  activeSessionId,
   loading,
   creating,
   listError,
@@ -23,14 +23,14 @@ export default function AgentModeSessionList({
   return (
     <aside className="am-column">
       <div className="am-column-header am-column-header--with-action">
-        <span>Threads</span>
+        <span>Sessions</span>
         <button
           type="button"
           className="am-thread-add"
           onClick={onCreate}
           disabled={creating}
-          aria-label={creating ? 'Opening thread' : 'New thread'}
-          title="New thread"
+          aria-label={creating ? 'Creating session' : 'New session'}
+          title="New session"
         >
           {creating ? '…' : '+'}
         </button>
@@ -38,23 +38,33 @@ export default function AgentModeSessionList({
       <div className="am-column-body am-thread-panel">
         {listError ? <div className="am-thread-list-error">{listError}</div> : null}
         {loading ? (
-          <div className="am-empty-note">Loading threads…</div>
-        ) : threads.length ? (
+          <div className="am-empty-note">Loading sessions…</div>
+        ) : sessions.length ? (
           <table className="am-thread-table">
             <tbody>
-              {threads.map(thread => {
-                const active = thread.thread_id === activeThreadId
+              {sessions.map(session => {
+                const active = session.id === activeSessionId
                 return (
                   <tr
-                    key={thread.thread_id}
+                    key={session.id}
                     className={`am-thread-row${active ? ' am-thread-row--active' : ''}`}
-                    onClick={() => onSelect(thread.thread_id)}
+                    onClick={() => onSelect(session.id)}
                   >
                     <td className="am-thread-row__cell">
-                      <div className="am-thread-row__title">{thread.title}</div>
-                      <div className="am-thread-row__meta">
-                        {formatDbTimestamp(thread.last_message_at || thread.updated_at)}
+                      <div className="am-thread-row__title">
+                        <span className={`am-ts-badge am-ts-badge--${session.state}`}>{session.state}</span>
+                        {sessionLabel(session)}
                       </div>
+                      <div className="am-thread-row__meta">
+                        ${session.max_capital} → ${session.profit_target}
+                        {' · '}
+                        {formatDbTimestamp(session.updated_at)}
+                      </div>
+                      {session.stopped_reason ? (
+                        <div className="am-thread-row__meta am-thread-row__meta--reason">
+                          {session.stopped_reason}
+                        </div>
+                      ) : null}
                     </td>
                   </tr>
                 )
@@ -62,7 +72,7 @@ export default function AgentModeSessionList({
             </tbody>
           </table>
         ) : (
-          <div className="am-empty-note">No threads yet. Tap + to open one.</div>
+          <div className="am-empty-note">No sessions yet. Tap + to start one.</div>
         )}
       </div>
     </aside>

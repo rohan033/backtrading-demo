@@ -34,6 +34,7 @@ from api.workspace_media import router as workspace_media_router
 from api.watchlist_routes import router as watchlist_router
 from api.watchlist_panel_routes import router as watchlist_panel_router
 from api.market_news_routes import router as market_news_router
+from api.trading_session_routes import get_trading_session_store, handle_trading_session_websocket, router as trading_session_router
 from api.news_feed import get_news_feed_hub
 from api.watchlist_feed import get_watchlist_feed_hub, market_preview_uses_shared_hub
 from control_plane.client_mode import normalize_client_mode
@@ -131,6 +132,7 @@ app.include_router(workspace_media_router)
 app.include_router(watchlist_router)
 app.include_router(watchlist_panel_router)
 app.include_router(market_news_router)
+app.include_router(trading_session_router)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 TRADE_FEE = 25  # ₹25 per buy-sell round trip
@@ -265,7 +267,7 @@ class DataPlaneEngineUpdate(BaseModel):
     metadata: Optional[dict] = None
 
 
-ExecutionSourceId = Literal["user", "ai_research", "ai_chatbot_panel", "momentum-trade"]
+ExecutionSourceId = Literal["user", "ai_research", "ai_chatbot_panel", "chart_opportunity_auto", "momentum-trade"]
 InstrumentClass = Literal["equity", "crypto"]
 
 
@@ -2497,6 +2499,11 @@ async def ws_news(ws: WebSocket):
 @app.websocket("/ws/agent/monitor")
 async def ws_agent_monitor(ws: WebSocket):
     await get_agent_monitor_feed_hub().handle(ws)
+
+
+@app.websocket("/ws/control/trading-sessions/{session_id}")
+async def ws_trading_session_events(ws: WebSocket, session_id: str, since_id: int = 0):
+    await handle_trading_session_websocket(ws, session_id, since_id=since_id)
 
 
 @app.websocket("/ws/control/market")

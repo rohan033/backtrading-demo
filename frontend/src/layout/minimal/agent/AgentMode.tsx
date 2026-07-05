@@ -1,133 +1,114 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import {
-  createAgentThread,
-  getAgentThread,
-  listAgentThreads,
-  type AgentThread,
-} from '../../../lib/agentThreads'
+  getTradingSession,
+  listTradingSessions,
+  sessionLabel,
+  type TradingSession,
+} from '@/lib/tradingSessions'
 import { useUrlState } from '../useUrlState'
-import AgentModeActiveWorkspace from './AgentModeActiveWorkspace'
+import AgentModeCreateSession from './AgentModeCreateSession'
 import AgentModeSessionList from './AgentModeSessionList'
+import AgentModeSessionWorkspace from './AgentModeSessionWorkspace'
 import AgentModeThreadsDrawer from './AgentModeThreadsDrawer'
 import './AgentMode.css'
 
 export default function AgentMode() {
   const { state, navigate } = useUrlState()
-  const activeThreadId = state.agent_thread || ''
-  const [threads, setThreads] = useState<AgentThread[]>([])
-  const [activeThread, setActiveThread] = useState<AgentThread | null>(null)
+  const activeSessionId = state.trading_session || ''
+  const [sessions, setSessions] = useState<TradingSession[]>([])
+  const [activeSession, setActiveSession] = useState<TradingSession | null>(null)
   const [loading, setLoading] = useState(true)
-  const [creating, setCreating] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
   const [error, setError] = useState('')
   const [drawerOpen, setDrawerOpen] = useState(false)
 
-  const refreshThreads = useCallback(async () => {
+  const refreshSessions = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const rows = await listAgentThreads()
-      setThreads(rows)
+      const rows = await listTradingSessions()
+      setSessions(rows)
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load threads'
+      const message = err instanceof Error ? err.message : 'Failed to load sessions'
       setError(message === 'Not Found'
-        ? 'Agent threads API is unavailable — restart the control plane (make dev).'
+        ? 'Trading sessions API is unavailable — restart the control plane (make dev).'
         : message)
-      setThreads([])
-      if (activeThreadId) {
-        navigate({ tab: 'agent', agent_thread: '' }, { replace: true })
+      setSessions([])
+      if (activeSessionId) {
+        navigate({ tab: 'agent', trading_session: '' }, { replace: true })
       }
     } finally {
       setLoading(false)
     }
-  }, [activeThreadId, navigate])
+  }, [activeSessionId, navigate])
 
-  const refreshActiveThread = useCallback(async () => {
-    if (!activeThreadId) return
+  const refreshActiveSession = useCallback(async () => {
+    if (!activeSessionId) return
     try {
-      const thread = await getAgentThread(activeThreadId)
-      setActiveThread(thread)
-      setThreads(prev => {
-        const next = prev.filter(item => item.thread_id !== thread.thread_id)
-        return [thread, ...next]
+      const session = await getTradingSession(activeSessionId)
+      setActiveSession(session)
+      setSessions(prev => {
+        const next = prev.filter(item => item.id !== session.id)
+        return [session, ...next]
       })
     } catch {
-      // keep stale thread until next full refresh
+      // keep stale
     }
-  }, [activeThreadId])
+  }, [activeSessionId])
 
   useEffect(() => {
-    void refreshThreads()
-  }, [refreshThreads])
+    void refreshSessions()
+  }, [refreshSessions])
 
   useEffect(() => {
-    if (!activeThreadId) {
-      setActiveThread(null)
+    if (!activeSessionId) {
+      setActiveSession(null)
       return
     }
     if (loading) return
-    const match = threads.find(thread => thread.thread_id === activeThreadId)
+    const match = sessions.find(s => s.id === activeSessionId)
     if (match) {
-      setActiveThread(match)
+      setActiveSession(match)
       return
     }
-    void refreshActiveThread()
-  }, [activeThreadId, loading, refreshActiveThread, threads])
+    void refreshActiveSession()
+  }, [activeSessionId, loading, refreshActiveSession, sessions])
 
-  const selectThread = useCallback((threadId: string) => {
-    navigate({ tab: 'agent', agent_thread: threadId })
+  const selectSession = useCallback((sessionId: string) => {
+    navigate({ tab: 'agent', trading_session: sessionId })
   }, [navigate])
 
-  const createThread = useCallback(async () => {
-    setCreating(true)
-    setError('')
-    try {
-      const thread = await createAgentThread(`Thread ${threads.length + 1}`)
-      await refreshThreads()
-      navigate({ tab: 'agent', agent_thread: thread.thread_id })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to open thread')
-    } finally {
-      setCreating(false)
-    }
-  }, [navigate, refreshThreads, threads.length])
+  const handleCreated = useCallback((sessionId: string) => {
+    void refreshSessions()
+    navigate({ tab: 'agent', trading_session: sessionId })
+  }, [navigate, refreshSessions])
 
-  const handleRunFinished = useCallback(() => {
-    void refreshActiveThread()
-  }, [refreshActiveThread])
-
-  const handleThreadPatch = useCallback((patch: { title?: string; metadata?: Record<string, unknown> }) => {
-    setActiveThread(prev => {
-      if (!prev) return prev
-      return {
-        ...prev,
-        title: patch.title ?? prev.title,
-        metadata: patch.metadata ? { ...prev.metadata, ...patch.metadata } : prev.metadata,
-      }
+  const handleSessionUpdate = useCallback((session: TradingSession) => {
+    setActiveSession(session)
+    setSessions(prev => {
+      const next = prev.filter(row => row.id !== session.id)
+      return [session, ...next]
     })
-    setThreads(prev => prev.map(row => {
-      if (row.thread_id !== activeThreadId) return row
-      return {
-        ...row,
-        title: patch.title ?? row.title,
-        metadata: patch.metadata ? { ...row.metadata, ...patch.metadata } : row.metadata,
-      }
-    }))
-    void refreshActiveThread()
-  }, [activeThreadId, refreshActiveThread])
+  }, [])
 
-  if (!activeThreadId) {
+  if (!activeSessionId) {
     return (
       <div className="am-root">
+        <AgentModeCreateSession
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onCreated={handleCreated}
+        />
         <div className="am-grid am-grid--threads-only">
           <AgentModeSessionList
-            threads={threads}
-            activeThreadId={activeThreadId}
+            sessions={sessions}
+            activeSessionId={activeSessionId}
             loading={loading}
-            creating={creating}
+            creating={createOpen}
             listError={error}
-            onSelect={selectThread}
-            onCreate={() => { void createThread() }}
+            onSelect={selectSession}
+            onCreate={() => setCreateOpen(true)}
           />
         </div>
       </div>
@@ -136,43 +117,48 @@ export default function AgentMode() {
 
   return (
     <div className="am-root">
+      <AgentModeCreateSession
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={handleCreated}
+      />
       <header className="am-workspace-header">
         <div className="am-workspace-header__actions">
           <button type="button" className="am-thread-menu-btn" onClick={() => setDrawerOpen(true)}>
-            Threads
+            Sessions
           </button>
           <button
             type="button"
             className="am-thread-add"
-            onClick={() => { void createThread() }}
-            disabled={creating}
-            aria-label={creating ? 'Opening thread' : 'New thread'}
-            title="New thread"
+            onClick={() => setCreateOpen(true)}
+            aria-label="New session"
+            title="New session"
           >
-            {creating ? '…' : '+'}
+            +
           </button>
         </div>
-        <span className="am-workspace-title">{activeThread?.title || 'Thread'}</span>
+        <span className="am-workspace-title">
+          {activeSession ? sessionLabel(activeSession) : 'Session'}
+        </span>
       </header>
-      {activeThread ? (
-        <AgentModeActiveWorkspace
-          thread={activeThread}
-          onRunFinished={handleRunFinished}
-          onThreadPatch={handleThreadPatch}
+      {activeSession ? (
+        <AgentModeSessionWorkspace
+          sessionId={activeSession.id}
+          onSessionUpdate={handleSessionUpdate}
         />
       ) : (
-        <div className="am-chat-empty">Loading thread…</div>
+        <div className="am-chat-empty">Loading session…</div>
       )}
       <AgentModeThreadsDrawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
-        threads={threads}
-        activeThreadId={activeThreadId}
+        sessions={sessions}
+        activeSessionId={activeSessionId}
         loading={loading}
-        creating={creating}
+        creating={createOpen}
         listError={error}
-        onSelect={selectThread}
-        onCreate={() => { void createThread() }}
+        onSelect={selectSession}
+        onCreate={() => setCreateOpen(true)}
       />
     </div>
   )
