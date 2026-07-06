@@ -1,3 +1,5 @@
+import { safeSetItem } from './safeStorage'
+
 export const WATCHLIST_CHANGE_COLUMN_STORAGE_KEY = 'watchlist-change-columns-v1'
 
 /** Rolling lookback windows computed from locally tracked LTP samples. */
@@ -41,7 +43,7 @@ export function loadVisibleChangeColumns(): WatchlistChangeWindowId[] {
 }
 
 export function saveVisibleChangeColumns(columns: WatchlistChangeWindowId[]): void {
-  localStorage.setItem(WATCHLIST_CHANGE_COLUMN_STORAGE_KEY, JSON.stringify(columns))
+  safeSetItem(WATCHLIST_CHANGE_COLUMN_STORAGE_KEY, JSON.stringify(columns))
 }
 
 /** Minimum card width so every column fits without clipping. */

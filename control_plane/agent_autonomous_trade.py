@@ -18,9 +18,9 @@ EXECUTION_SOURCE_AI_RESEARCH = "ai_research"
 
 def autonomous_min_confidence() -> float:
     try:
-        return float(os.getenv("AGENT_AUTONOMOUS_MIN_CONFIDENCE", "70"))
+        return float(os.getenv("AGENT_AUTONOMOUS_MIN_CONFIDENCE", "50"))
     except ValueError:
-        return 70.0
+        return 50.0
 
 
 def extract_autonomous_entries(text: str) -> list[dict[str, Any]]:

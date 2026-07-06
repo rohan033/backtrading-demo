@@ -42,6 +42,8 @@ type LoadExecutionPositionsParams = {
   token?: string | number | null
   /** Bypass server portfolio cache and read live broker positions. */
   refreshBroker?: boolean
+  /** Skip client-side broker refresh throttle (e.g. 15s momentum poll). */
+  forceBrokerRefresh?: boolean
 }
 
 function normalizeState(state: unknown): string {
@@ -218,6 +220,7 @@ function filterEtoroRows(
 async function fetchEtoroBrokerRows(
   accountEnv?: string | null,
   refreshBroker = false,
+  forceBrokerRefresh = false,
 ): Promise<Record<string, unknown>[] | null> {
   const cacheKey = etoroCacheKey(accountEnv)
   const now = Date.now()
@@ -233,7 +236,8 @@ async function fetchEtoroBrokerRows(
   }
 
   const refreshAllowed =
-    refreshBroker && (now - entry.fetchedAt >= ETORO_BROKER_REFRESH_MIN_MS || entry.fetchedAt === 0)
+    refreshBroker
+    && (forceBrokerRefresh || now - entry.fetchedAt >= ETORO_BROKER_REFRESH_MIN_MS || entry.fetchedAt === 0)
   if (!refreshAllowed && entry.raw.length) {
     return entry.raw
   }
@@ -269,8 +273,9 @@ async function loadEtoroBrokerPositions(
   symbol?: string | null,
   token?: string | number | null,
   refreshBroker = false,
+  forceBrokerRefresh = false,
 ): Promise<ExecutionPositionRow[] | null> {
-  const raw = await fetchEtoroBrokerRows(accountEnv, refreshBroker)
+  const raw = await fetchEtoroBrokerRows(accountEnv, refreshBroker, forceBrokerRefresh)
   if (!raw) return null
   return filterEtoroRows(raw, symbol, token)
 }
@@ -283,11 +288,18 @@ export async function loadExecutionPositions({
   symbol,
   token,
   refreshBroker = false,
+  forceBrokerRefresh = false,
 }: LoadExecutionPositionsParams): Promise<ExecutionPositionRow[]> {
   if (!executorId) return []
 
   if ((broker || '').toLowerCase() === 'etoro') {
-    const etoroRows = await loadEtoroBrokerPositions(accountEnv, symbol, token, refreshBroker)
+    const etoroRows = await loadEtoroBrokerPositions(
+      accountEnv,
+      symbol,
+      token,
+      refreshBroker,
+      forceBrokerRefresh,
+    )
     if (etoroRows != null) {
       return dedupePositions(etoroRows).filter(isOpenExecutionPosition)
     }

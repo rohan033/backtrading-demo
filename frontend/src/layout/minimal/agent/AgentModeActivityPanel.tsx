@@ -73,6 +73,7 @@ export default function AgentModeActivityPanel({
   const [deploying, setDeploying] = useState(false)
   const [deployError, setDeployError] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
+  const pinnedToBottomRef = useRef(true)
 
   const { surfaces, sending, error, sendMessage, stop, appendSurface, resetSurfaces } = chat
 
@@ -93,8 +94,20 @@ export default function AgentModeActivityPanel({
 
   useEffect(() => {
     const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    const nearBottom = distanceFromBottom < 80
+    if (pinnedToBottomRef.current || nearBottom) {
+      el.scrollTop = el.scrollHeight
+      pinnedToBottomRef.current = true
+    }
   }, [chatSurfaces, sending])
+
+  const handleActivityScroll = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    pinnedToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+  }, [])
 
   const handleBrokerSelect = (nextBroker: WatchlistBroker) => {
     const nextEnv = defaultAccountEnv(nextBroker)
@@ -199,7 +212,7 @@ export default function AgentModeActivityPanel({
       <div className="am-column-header am-column-header--center">
         {variant === 'chat' ? 'Conversation' : 'Agent activity'}
       </div>
-      <div className="am-activity-stream" ref={scrollRef}>
+      <div className="am-activity-stream" ref={scrollRef} onScroll={handleActivityScroll}>
         {chatSurfaces.length ? (
           chatSurfaces.map(surface => (
             <A2uiRenderer

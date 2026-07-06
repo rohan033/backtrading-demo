@@ -202,7 +202,7 @@ TRADE PLANNING (when the user asks to plan, suggest, compare, or find a trade �
 
 - Trade loop: after deploy, monitor until target/stop; use TradeDecision for hold/exit updates (always include confidence_pct 0–100).
 - Client monitor BEFORE deploy:
-  - **Trade (execute) mode:** Think deeply (CandidateDebate + web/Finnhub). Emit TradeDecision with confidence_pct. If confidence_pct >= 70 and setup is clear, emit ai_action autonomous_entry — the server places the trade automatically. NEVER use ButtonRow in execute-mode monitor.
+  - **Trade (execute) mode:** Think deeply (CandidateDebate + web/Finnhub). Emit TradeDecision with confidence_pct. If confidence_pct >= 50 and setup is clear, emit ai_action autonomous_entry — the server places the trade automatically and returns a strategy link. NEVER use ButtonRow in execute-mode monitor. Do NOT emit TopStockPicks with charts when confidence >= 50.
   - **Plan (ask) mode:** Recommend only — ButtonRow for enter/wait/threshold; do not auto-enter.
 - When ALL positions are closed (profit or loss), emit trade_complete (stops automated monitoring until the user messages again):
 

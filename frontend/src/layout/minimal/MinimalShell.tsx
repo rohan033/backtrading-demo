@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import './MinimalShell.css'
 import CompanyNewsPanel from '../../components/watchlist/CompanyNewsPanel'
+import { safeSetItem } from '../../lib/safeStorage'
 import MarketNewsPanel from '../../components/watchlist/MarketNewsPanel'
 import { useWatchlistStream } from '../../context/WatchlistStreamContext'
 import {
@@ -16,19 +17,20 @@ import Home from './Home'
 import AgentMode from './agent/AgentMode'
 import Earnings from './Earnings'
 import Portfolio from './Portfolio'
+import MomentumSidebarPanel from './MomentumSidebarPanel'
 import EarningsMonitorBar from './EarningsMonitorBar'
 import MarketClockBar from './MarketClockBar'
 import NewsNotificationsBar from './NewsNotificationsBar'
-import { useUrlState } from './useUrlState'
+import { useUrlState, buildShellUrl } from './useUrlState'
 import { useWatchlistEarnings } from '../../hooks/useWatchlistEarnings'
 import type { WatchlistEarningsRef } from '../../lib/marketResearch'
 
 /* ─── types ─────────────────────────────────────────────── */
 type MainTab = 'home' | 'watch-trade' | 'orders' | 'strategies' | 'earnings' | 'agent'
-type NewsTab = 'watchlist' | 'new' | 'news' | 'market'
+type NewsTab = 'watchlist' | 'momentum' | 'new' | 'news' | 'market'
 
 const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'strategies', 'earnings', 'agent']
-const NEWS_TABS: NewsTab[] = ['watchlist', 'news', 'market', 'new']
+const NEWS_TABS: NewsTab[] = ['watchlist', 'momentum', 'news', 'market', 'new']
 const LEFT_COLLAPSED_KEY = 'minimal-shell-left-collapsed'
 const RIGHT_WIDTH_KEY = 'minimal-shell-right-width'
 const RIGHT_WIDTH_MIN = 260
@@ -81,19 +83,39 @@ function CollapseBtn({
 function Pill({
   active,
   onClick,
+  href,
   children,
   wide,
 }: {
   active: boolean
   onClick?: () => void
+  href?: string
   children: React.ReactNode
   wide?: boolean
 }) {
+  const className = `ms-pill ${active ? 'ms-pill--active' : 'ms-pill--idle'} ${wide ? 'ms-pill--wide' : ''}`
+
+  if (href) {
+    return (
+      <a
+        href={href}
+        className={className}
+        onClick={(e) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
+          e.preventDefault()
+          onClick?.()
+        }}
+      >
+        {children}
+      </a>
+    )
+  }
+
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`ms-pill ${active ? 'ms-pill--active' : 'ms-pill--idle'} ${wide ? 'ms-pill--wide' : ''}`}
+      className={className}
     >
       {children}
     </button>
@@ -150,22 +172,22 @@ function MainPanel({
     <main className="ms-main">
       <div className="ms-header ms-header--main">
         <div className="ms-header-tabs">
-          <Pill active={tab === 'home'} onClick={() => setTab('home')}>
+          <Pill active={tab === 'home'} href={buildShellUrl({ tab: 'home' })} onClick={() => setTab('home')}>
             {'\u00a0Home\u00a0'}
           </Pill>
-          <Pill active={tab === 'watch-trade'} onClick={() => setTab('watch-trade')}>
+          <Pill active={tab === 'watch-trade'} href={buildShellUrl({ tab: 'watch-trade' })} onClick={() => setTab('watch-trade')}>
             {'\u00a0Watch\u00a0&\u00a0Trade\u00a0'}
           </Pill>
-          <Pill active={tab === 'orders'} onClick={() => setTab('orders')}>
+          <Pill active={tab === 'orders'} href={buildShellUrl({ tab: 'orders' })} onClick={() => setTab('orders')}>
             {'\u00a0Portfolio\u00a0'}
           </Pill>
-          <Pill active={tab === 'strategies'} onClick={() => setTab('strategies')}>
+          <Pill active={tab === 'strategies'} href={buildShellUrl({ tab: 'strategies' })} onClick={() => setTab('strategies')}>
             {'\u00a0Strategies\u00a0'}
           </Pill>
-          <Pill active={tab === 'earnings'} onClick={() => setTab('earnings')}>
+          <Pill active={tab === 'earnings'} href={buildShellUrl({ tab: 'earnings' })} onClick={() => setTab('earnings')}>
             {'\u00a0Earnings\u00a0'}
           </Pill>
-          <Pill active={tab === 'agent'} onClick={() => setTab('agent')}>
+          <Pill active={tab === 'agent'} href={buildShellUrl({ tab: 'agent' })} onClick={() => setTab('agent')}>
             {'\u00a0Agent\u00a0'}
           </Pill>
         </div>
@@ -454,16 +476,19 @@ function SideDrawer({
         onMouseDown={onResizeStart}
       />
       <div className="ms-header ms-header--left">
-        <Pill active={tab === 'watchlist'} onClick={() => setTab('watchlist')}>
+        <Pill active={tab === 'watchlist'} href={buildShellUrl({ news: 'watchlist' })} onClick={() => setTab('watchlist')}>
           {'\u00a0Watchlist\u00a0'}
         </Pill>
-        <Pill active={tab === 'news'} onClick={() => setTab('news')}>
+        <Pill active={tab === 'momentum'} href={buildShellUrl({ news: 'momentum' })} onClick={() => setTab('momentum')}>
+          {'\u00a0Momentum\u00a0'}
+        </Pill>
+        <Pill active={tab === 'news'} href={buildShellUrl({ news: 'news' })} onClick={() => setTab('news')}>
           {'\u00a0News\u00a0'}
         </Pill>
-        <Pill active={tab === 'market'} onClick={() => setTab('market')}>
+        <Pill active={tab === 'market'} href={buildShellUrl({ news: 'market' })} onClick={() => setTab('market')}>
           {'\u00a0Market News\u00a0'}
         </Pill>
-        <Pill active={tab === 'new'} onClick={() => setTab('new')}>
+        <Pill active={tab === 'new'} href={buildShellUrl({ news: 'new' })} onClick={() => setTab('new')}>
           {'\u00a0News Updates\u00a0'}
         </Pill>
       </div>
@@ -483,6 +508,8 @@ function SideDrawer({
             filterText={search}
             onSelectSymbol={onSelectWatchlistSymbol}
           />
+        ) : tab === 'momentum' ? (
+          <MomentumSidebarPanel ticks={ticks} filterText={search} />
         ) : tab === 'new' ? (
           <NewNewsPanel
             groups={newsGroups}
@@ -520,7 +547,7 @@ export default function MinimalShell() {
   const [rightCollapsed, setRightCollapsed] = useState(() => loadStoredBool(LEFT_COLLAPSED_KEY))
   const handleOpenNewsPanel = () => {
     setRightCollapsed(false)
-    localStorage.setItem(LEFT_COLLAPSED_KEY, 'false')
+    safeSetItem(LEFT_COLLAPSED_KEY, 'false')
     setNewsTab('new')
   }
   const { groups: newsGroups, clearNotifications } = useNewsNotifications()
@@ -589,7 +616,7 @@ export default function MinimalShell() {
       if (!active) return
       const next = Math.min(RIGHT_WIDTH_MAX, Math.max(RIGHT_WIDTH_MIN, active.startWidth + moveEvent.clientX - active.startX))
       setRightWidth(next)
-      localStorage.setItem(RIGHT_WIDTH_KEY, String(next))
+      safeSetItem(RIGHT_WIDTH_KEY, String(next))
     }
 
     const handleUp = () => {
@@ -605,7 +632,7 @@ export default function MinimalShell() {
   const toggleRightCollapsed = () => {
     setRightCollapsed(prev => {
       const next = !prev
-      localStorage.setItem(LEFT_COLLAPSED_KEY, String(next))
+      safeSetItem(LEFT_COLLAPSED_KEY, String(next))
       return next
     })
   }

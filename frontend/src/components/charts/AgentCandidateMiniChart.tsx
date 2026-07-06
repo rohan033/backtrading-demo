@@ -59,7 +59,12 @@ export default function AgentCandidateMiniChart({
 
   useEffect(() => {
     let cancelled = false
-    if (!live.feedToken && broker === 'etoro') return undefined
+    if (!symbol.trim()) return undefined
+    if (broker === 'etoro' && !live.feedToken && live.resolving) return undefined
+    if (broker === 'etoro' && !live.feedToken) return undefined
+
+    const instrumentToken = live.feedToken || (broker === 'angel' ? symbol : null)
+    if (!instrumentToken) return undefined
 
     const chartSymbol: WatchlistChartSymbol = {
       tickKey: live.tickKey,
@@ -67,11 +72,11 @@ export default function AgentCandidateMiniChart({
       broker,
       accountEnv: env,
       tradingsymbol: symbol,
-      symboltoken: String(live.feedToken || symbol),
-      exchange: live.resolvedExchange,
+      symboltoken: String(instrumentToken),
+      exchange: live.resolvedExchange || exchange || (broker === 'etoro' ? 'ETORO' : 'NSE'),
     }
 
-    void loadHomeChartHistory(chartSymbol)
+    void loadHomeChartHistory(chartSymbol, { force: !candles.length })
       .then(rows => {
         if (!cancelled && rows.length) {
           setCandles(rows)
@@ -85,7 +90,7 @@ export default function AgentCandidateMiniChart({
     return () => {
       cancelled = true
     }
-  }, [broker, env, live.feedToken, live.resolvedExchange, live.tickKey, symbol])
+  }, [broker, candles.length, env, exchange, live.feedToken, live.resolving, live.resolvedExchange, live.tickKey, symbol])
 
   const lineData = useMemo(
     () => mergeHistoryWithLiveTail(candles, live.samples, live.ltp),

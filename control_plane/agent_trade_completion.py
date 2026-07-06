@@ -14,6 +14,12 @@ log = logging.getLogger("backtrading")
 
 TRADE_COMPLETE_TYPES = frozenset({"trade_complete", "trade_completed", "session_complete"})
 EXIT_STRATEGY_TYPES = frozenset({"exit_strategy", "stop_strategy", "close_position"})
+UPDATE_ORDER_TYPES = frozenset({
+    "update_order_prices",
+    "update_prices",
+    "adjust_targets",
+    "update_strategy_prices",
+})
 
 
 def extract_exit_actions(text: str) -> list[dict[str, Any]]:
@@ -32,6 +38,106 @@ def extract_exit_actions(text: str) -> list[dict[str, Any]]:
         body["title"] = action.get("title") or body.get("title")
         actions.append(body)
     return actions
+
+
+    return actions
+
+
+def extract_update_order_actions(text: str) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    for _, payload in iter_fenced_json_blocks(text):
+        if not isinstance(payload, dict):
+            continue
+        action = payload.get("ai_action")
+        if not isinstance(action, dict):
+            continue
+        action_type = str(action.get("type") or "").lower()
+        if action_type not in UPDATE_ORDER_TYPES:
+            continue
+        body = dict(action.get("payload") or {})
+        body["type"] = action_type
+        body["title"] = action.get("title") or body.get("title")
+        actions.append(body)
+    return actions
+
+
+async def execute_update_order_actions(thread_id: str, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from api.ai_research_routes import get_ai_research_store
+    from control_plane.engine_registry import EngineRegistry
+
+    if not actions:
+        return []
+
+    store = get_ai_research_store()
+    session = store.get_session(thread_id) or {}
+    focus = (session.get("metadata") or {}).get("focus") or {}
+    registry = EngineRegistry()
+    results: list[dict[str, Any]] = []
+
+    for payload in actions:
+        execution_id = str(payload.get("execution_id") or focus.get("execution_id") or "").strip()
+        if not execution_id:
+            continue
+
+        engine = registry.get_engine(execution_id)
+        if not engine:
+            continue
+
+        metadata = dict(engine.get("metadata") or {})
+        executor_payload = dict(metadata.get("executor_payload") or {})
+        execution_config = dict(metadata.get("execution_config") or {})
+
+        if payload.get("close_price") is not None:
+            try:
+                price = float(payload["close_price"])
+                executor_payload["close_price"] = price
+                execution_config["close_price"] = price
+            except (TypeError, ValueError):
+                pass
+
+        for field in ("long_percent", "short_percent", "initial_threshold", "max_available_capital"):
+            if payload.get(field) is not None:
+                try:
+                    value = float(payload[field])
+                    executor_payload[field] = value
+                    execution_config[field] = value
+                except (TypeError, ValueError):
+                    pass
+
+        metadata["executor_payload"] = executor_payload
+        metadata["execution_config"] = execution_config
+        registry.update_engine(execution_id, {"metadata": metadata})
+
+        thread_metadata = dict(session.get("metadata") or {})
+        thread_focus = dict(thread_metadata.get("focus") or {})
+        if payload.get("close_price") is not None:
+            try:
+                thread_focus["close_price"] = float(payload["close_price"])
+            except (TypeError, ValueError):
+                pass
+        for field in ("long_percent", "short_percent", "initial_threshold", "max_available_capital"):
+            if payload.get(field) is not None:
+                try:
+                    thread_focus[field] = float(payload[field])
+                except (TypeError, ValueError):
+                    pass
+        thread_metadata["focus"] = thread_focus
+        store.update_session(thread_id, {"metadata": thread_metadata})
+
+        results.append({
+            "execution_id": execution_id,
+            "status": "updated",
+            "reason": payload.get("reason"),
+            "close_price": thread_focus.get("close_price"),
+        })
+        log.info(
+            "[AGENT_MONITOR] updated prices execution=%s thread=%s reason=%s",
+            execution_id,
+            thread_id,
+            payload.get("reason"),
+        )
+
+    return results
 
 
 async def execute_exit_actions(thread_id: str, actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -183,16 +289,17 @@ def mark_monitor_completed(thread_id: str, *, reason: str = "trade_complete") ->
 
 
 async def process_assistant_monitor_actions(thread_id: str, assistant_text: str) -> list[dict[str, Any]]:
-    """Exit, enter, and complete trades declared by the autonomous monitor agent."""
+    """Exit, enter, update prices, and complete trades declared by the autonomous monitor agent."""
     from control_plane.agent_autonomous_trade import (
         execute_autonomous_entries,
         extract_autonomous_entries,
     )
 
     exit_results = await execute_exit_actions(thread_id, extract_exit_actions(assistant_text))
+    update_results = await execute_update_order_actions(thread_id, extract_update_order_actions(assistant_text))
     entry_results = await execute_autonomous_entries(thread_id, extract_autonomous_entries(assistant_text))
     completions = extract_trade_completions(assistant_text)
-    if not completions and not exit_results and not entry_results:
+    if not completions and not exit_results and not entry_results and not update_results:
         return []
 
     logged: list[dict[str, Any]] = []
@@ -200,7 +307,32 @@ async def process_assistant_monitor_actions(thread_id: str, assistant_text: str)
         logged.append(record_trade_log(thread_id, payload, source="agent"))
     if completions:
         await complete_agent_monitoring(thread_id, reason="trade_complete")
-    return [*exit_results, *entry_results, *logged]
+
+    strategy_surfaces: list[dict[str, Any]] = []
+    for entry in entry_results:
+        if entry.get("status") != "entered":
+            continue
+        from api.a2ui_bridge import strategy_summary_surface
+
+        strategy_surfaces.append(strategy_summary_surface(
+            symbol=str(entry.get("symbol") or ""),
+            execution_id=str(entry.get("execution_id") or ""),
+            entry_price=entry.get("entry_price"),
+            status="running",
+            confidence_pct=entry.get("confidence_pct"),
+        ))
+
+    if strategy_surfaces:
+        try:
+            from api.agent_monitor_feed import get_agent_monitor_feed_hub
+
+            hub = get_agent_monitor_feed_hub()
+            for surface in strategy_surfaces:
+                await hub.broadcast(thread_id, surface)
+        except Exception:
+            log.debug("[AGENT_MONITOR] strategy link broadcast skipped", exc_info=True)
+
+    return [*exit_results, *update_results, *entry_results, *logged]
 
 
 async def process_assistant_trade_completions(thread_id: str, assistant_text: str) -> list[dict[str, Any]]:

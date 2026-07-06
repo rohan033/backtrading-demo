@@ -433,8 +433,11 @@ export default function WatchlistPage() {
   const handleToggleSymbolMomentumLive = useCallback((watchlistId: string, symboltoken: string) => {
     // Persist before notify — syncMomentumState reloads from localStorage on that event,
     // so saving inside a setState updater can race and revert the toggle on first click.
-    const next = toggleMomentumLiveSymbolKey(loadMomentumLiveSymbolKeys(), watchlistId, symboltoken)
-    setMomentumLiveSymbolKeys(next)
+    const { keys, saved } = toggleMomentumLiveSymbolKey(loadMomentumLiveSymbolKeys(), watchlistId, symboltoken)
+    setMomentumLiveSymbolKeys(keys)
+    if (!saved) {
+      console.warn('[Momentum] could not persist live/demo toggle after storage prune')
+    }
     notifyMomentumStateChanged()
   }, [])
 

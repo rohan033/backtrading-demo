@@ -2,6 +2,7 @@ import {
   WATCHLIST_CHANGE_WINDOWS,
   type WatchlistChangeWindowId,
 } from './watchlistChangeColumns'
+import { safeSetItem } from './safeStorage'
 import type { WatchlistBroker } from './watchlistBrokers'
 import { watchlistTickKey, type WatchlistSymbol } from './watchlists'
 
@@ -37,7 +38,7 @@ export function loadWatchlistAutoSortConfig(): WatchlistAutoSortConfig {
 }
 
 export function saveWatchlistAutoSortConfig(config: WatchlistAutoSortConfig): void {
-  localStorage.setItem(WATCHLIST_AUTO_SORT_STORAGE_KEY, JSON.stringify(config))
+  safeSetItem(WATCHLIST_AUTO_SORT_STORAGE_KEY, JSON.stringify(config))
 }
 
 export type WindowChangesLookup = Record<

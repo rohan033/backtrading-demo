@@ -4,6 +4,7 @@ import {
   type PriceSample,
   type WatchlistChangeWindowId,
 } from './watchlistChangeColumns'
+import { safeSetItem } from './safeStorage'
 
 export const WATCHLIST_MOMENTUM_STORAGE_KEY = 'watchlist-momentum-v3'
 
@@ -91,7 +92,7 @@ export function loadMomentumConfig(): MomentumConfig {
 }
 
 export function saveMomentumConfig(config: MomentumConfig): void {
-  localStorage.setItem(WATCHLIST_MOMENTUM_STORAGE_KEY, JSON.stringify(config))
+  safeSetItem(WATCHLIST_MOMENTUM_STORAGE_KEY, JSON.stringify(config))
 }
 
 export function shortTermVelocityPct(samples: PriceSample[], now = Date.now()): number | null {

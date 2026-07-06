@@ -14,15 +14,12 @@ import {
   type MomentumConfig,
   type MomentumSignal,
 } from '../lib/watchlistMomentum'
-import {
-  createAndStartMomentumStrategy,
-  type MomentumSymbolContext,
-} from '../lib/watchlistMomentumStrategy'
-import type { WatchlistWindowChanges } from './useWatchlistPriceHistory'
-import type { PriceSample } from '../lib/watchlistChangeColumns'
 import type { Watchlist, WatchlistSymbol, WatchlistTick } from '../lib/watchlists'
 import { watchlistTickKey } from '../lib/watchlists'
 import { momentumSymbolKey } from '../lib/watchlistMomentumState'
+import type { ArmedMomentumEntry } from '../lib/momentumQueue'
+import type { WatchlistWindowChanges } from './useWatchlistPriceHistory'
+import type { PriceSample } from '../lib/watchlistChangeColumns'
 
 export type WatchlistSymbolRef = {
   tickKey: string
@@ -40,8 +37,8 @@ export type WatchlistSymbolRef = {
 
 /**
  * Builds the index of symbols to scan for momentum:
- *  - the FIRST symbol of every momentum-enabled watchlist, and
- *  - any individual rows the user armed via the per-row momentum button.
+ *  - every symbol in a momentum-enabled watchlist, and
+ *  - any individually armed rows (session queue or localStorage).
  * orderedSymbols provides the display order (drag-reordered); falls back to watchlist.symbols.
  */
 export function buildMomentumSymbolIndex(
@@ -51,14 +48,19 @@ export function buildMomentumSymbolIndex(
   momentumSymbolKeys: Set<string>,
   momentumNoTpSymbolKeys: Set<string>,
   momentumLiveSymbolKeys: Set<string>,
+  queueArmed?: ArmedMomentumEntry[] | null,
 ): Map<string, WatchlistSymbolRef> {
   const index = new Map<string, WatchlistSymbolRef>()
+  const armedByTickKey = new Map(
+    (queueArmed ?? []).map(entry => [entry.tickKey, entry]),
+  )
+
   for (const watchlist of watchlists) {
     const broker = (watchlist.broker || 'angel') as WatchlistBroker
     const accountEnv = watchlist.account_env || defaultAccountEnv(broker)
     const symbols = orderedSymbols[watchlist.id] ?? watchlist.symbols
 
-    const add = (symbol: WatchlistSymbol, noTakeProfit: boolean) => {
+    const add = (symbol: WatchlistSymbol, noTakeProfit: boolean, tradeEnv?: 'live' | 'demo') => {
       const tickKey = watchlistTickKey(broker, accountEnv, symbol.symboltoken)
       if (index.has(tickKey)) return
       const key = momentumSymbolKey(watchlist.id, symbol.symboltoken)
@@ -71,14 +73,29 @@ export function buildMomentumSymbolIndex(
         token: symbol.symboltoken,
         exchange: symbol.exchange,
         noTakeProfit,
-        tradeEnv: momentumLiveSymbolKeys.has(key) ? 'live' : 'demo',
+        tradeEnv: tradeEnv ?? (momentumLiveSymbolKeys.has(key) ? 'live' : 'demo'),
       })
     }
 
-    // First symbol of a momentum-enabled watchlist (standard 5% TP)
-    if (momentumWatchlistIds.has(watchlist.id) && symbols[0]) {
-      add(symbols[0], false)
+    // Session queue only — skip persisted watchlist-wide momentum.
+    if (queueArmed != null) {
+      for (const symbol of symbols) {
+        const tickKey = watchlistTickKey(broker, accountEnv, symbol.symboltoken)
+        const armed = armedByTickKey.get(tickKey)
+        if (armed) {
+          add(symbol, armed.noTakeProfit, armed.tradeEnv)
+        }
+      }
+      continue
     }
+
+    // Legacy: whole watchlist momentum (persistent toggle).
+    if (momentumWatchlistIds.has(watchlist.id)) {
+      for (const symbol of symbols) {
+        add(symbol, false)
+      }
+    }
+
     // Individually armed rows — no-TP arming takes precedence over standard.
     for (const symbol of symbols) {
       const key = momentumSymbolKey(watchlist.id, symbol.symboltoken)
@@ -103,17 +120,32 @@ function maybeBrowserNotification(title: string, body: string) {
   }
 }
 
-export type MomentumTradeCallback = (params: {
+export type MomentumSignalCallback = (params: {
+  tickKey: string
   watchlistId: string
   symboltoken: string
   tradingsymbol: string
-  exchange: string
   broker: string
-  executionId: string
-  entryPrice: number
-  accountEnv: 'live' | 'demo'
+  exchange: string
+  token: string
+  tradeEnv: 'live' | 'demo'
   noTakeProfit: boolean
+  closePrice: number
+  signal: MomentumSignal
+  autoDemo: boolean
 }) => void
+
+export type MomentumWatchingCallback = (entries: Array<{
+  id: string
+  tickKey: string
+  watchlistId: string
+  symboltoken: string
+  tradingsymbol: string
+  broker: string
+  tradeEnv: 'live' | 'demo'
+  noTakeProfit: boolean
+  currentPrice: number | null
+}>) => void
 
 export function useWatchlistMomentumAlerts({
   watchlists,
@@ -127,7 +159,9 @@ export function useWatchlistMomentumAlerts({
   historyRef,
   enabled,
   config,
-  onMomentumTrade,
+  onMomentumSignal,
+  onWatchingUpdate,
+  queueArmed,
 }: {
   watchlists: Watchlist[]
   momentumWatchlistIds: Set<string>
@@ -140,7 +174,10 @@ export function useWatchlistMomentumAlerts({
   historyRef: RefObject<Record<string, PriceSample[]>>
   enabled: boolean
   config: MomentumConfig
-  onMomentumTrade?: MomentumTradeCallback
+  onMomentumSignal?: MomentumSignalCallback
+  onWatchingUpdate?: MomentumWatchingCallback
+  /** Session queue arms from minimal shell — when set, replaces localStorage symbol keys. */
+  queueArmed?: ArmedMomentumEntry[] | null
 }) {
   const symbolIndex = useMemo(
     () => buildMomentumSymbolIndex(
@@ -150,6 +187,7 @@ export function useWatchlistMomentumAlerts({
       momentumSymbolKeys,
       momentumNoTpSymbolKeys,
       momentumLiveSymbolKeys,
+      queueArmed,
     ),
     [
       watchlists,
@@ -158,10 +196,11 @@ export function useWatchlistMomentumAlerts({
       momentumSymbolKeys,
       momentumNoTpSymbolKeys,
       momentumLiveSymbolKeys,
+      queueArmed,
     ],
   )
   const alertCooldownRef = useRef<Record<string, number>>({})
-  const deployingRef = useRef<Set<string>>(new Set())
+  const signalCooldownRef = useRef<Record<string, number>>({})
 
   // Keep live data in refs so the scan interval never needs to be recreated
   // when ticks/windowChanges update (fixes interval being torn down every tick)
@@ -170,59 +209,27 @@ export function useWatchlistMomentumAlerts({
   useEffect(() => { ticksRef.current = ticks }, [ticks])
   useEffect(() => { windowChangesRef.current = windowChanges }, [windowChanges])
 
-  const onMomentumTradeRef = useRef(onMomentumTrade)
-  useEffect(() => { onMomentumTradeRef.current = onMomentumTrade }, [onMomentumTrade])
+  const onMomentumSignalRef = useRef(onMomentumSignal)
+  useEffect(() => { onMomentumSignalRef.current = onMomentumSignal }, [onMomentumSignal])
 
-  const deployStrategy = useCallback(
-    async (
-      ctx: MomentumSymbolContext & { watchlistId?: string },
-      accountEnv: 'live' | 'demo',
-      signal?: MomentumSignal,
-    ) => {
-      const busyKey = `${ctx.token}:${accountEnv}`
-      if (deployingRef.current.has(busyKey)) return null
-      deployingRef.current.add(busyKey)
-      try {
-        const executionId = await createAndStartMomentumStrategy(ctx, accountEnv, config)
-        const bracketLabel = ctx.noTakeProfit ? 'no TP (let it run) / 1% SL' : '5% TP / 1% SL'
-        showPlatformToast({
-          variant: 'success',
-          title: accountEnv === 'live' ? 'Live strategy started' : 'Demo strategy started',
-          message: `${ctx.tradingsymbol} · ${bracketLabel} · ${executionId}`,
-          duration: 8000,
-        })
-        // Record the order in the momentum trades log (symbol stays in its list)
-        if (ctx.watchlistId) {
-          onMomentumTradeRef.current?.({
-            watchlistId: ctx.watchlistId,
-            symboltoken: ctx.token,
-            tradingsymbol: ctx.tradingsymbol,
-            exchange: ctx.exchange,
-            broker: ctx.broker,
-            executionId,
-            entryPrice: ctx.closePrice,
-            accountEnv,
-            noTakeProfit: Boolean(ctx.noTakeProfit),
-          })
-        }
-        return executionId
-      } catch (error) {
-        showPlatformToast({
-          variant: 'error',
-          title: accountEnv === 'live' ? 'Live deploy failed' : 'Demo deploy failed',
-          message: error instanceof Error ? error.message : 'Could not start strategy',
-          duration: 10000,
-        })
-        if (signal) {
-          console.warn('[Momentum] deploy failed', ctx, error)
-        }
-        return null
-      } finally {
-        deployingRef.current.delete(busyKey)
-      }
-    },
-    [config],
-  )
+  const onWatchingUpdateRef = useRef(onWatchingUpdate)
+  useEffect(() => { onWatchingUpdateRef.current = onWatchingUpdate }, [onWatchingUpdate])
+
+  useEffect(() => {
+    onWatchingUpdateRef.current?.(
+      [...symbolIndex.entries()].map(([tickKey, symbol]) => ({
+        id: tickKey,
+        tickKey,
+        watchlistId: symbol.watchlistId,
+        symboltoken: symbol.token,
+        tradingsymbol: symbol.tradingsymbol,
+        broker: symbol.broker,
+        tradeEnv: symbol.tradeEnv,
+        noTakeProfit: symbol.noTakeProfit,
+        currentPrice: ticks[tickKey]?.ltp ?? null,
+      })),
+    )
+  }, [symbolIndex, ticks])
 
   // Keep latest config in a ref too so the closure never goes stale
   const configRef = useRef(config)
@@ -289,58 +296,46 @@ export function useWatchlistMomentumAlerts({
         }
         alertCooldownRef.current[alertKey] = now
 
-        const tradeEnv = symbol.tradeEnv
-        const bracketLabel = symbol.noTakeProfit ? 'no TP / 1% SL' : '5% TP / 1% SL'
-        const ctx: MomentumSymbolContext & { watchlistId: string } = {
-          broker: symbol.broker,
-          tradingsymbol: symbol.tradingsymbol,
-          token: symbol.token,
-          exchange: symbol.exchange,
-          closePrice: tick.ltp,
-          watchlistId: symbol.watchlistId,
-          noTakeProfit: symbol.noTakeProfit,
-        }
-
-        const message = formatMomentumToastMessage(symbol.tradingsymbol, signal, symbol.broker)
-        const shouldAutoDeploy = tradeEnv === 'live' || cfg.autoDemo
-
-        if (shouldAutoDeploy) {
-          showPlatformToast({
-            variant: tradeEnv === 'live' ? 'warning' : 'default',
-            title: 'Fast momentum',
-            message: `${message} · Auto-deploying on ${tradeEnv.toUpperCase()} (${bracketLabel})`,
-            duration: tradeEnv === 'live' ? 15000 : 8000,
-            highlightTitle: true,
-          })
-          maybeBrowserNotification(
-            `Momentum · ${symbol.tradingsymbol}`,
-            `${signal.headline} · deploying on ${tradeEnv}`,
+        const signalKey = momentumCooldownKey(tickKey, 'signal')
+        if (isCooldownActive(signalCooldownRef.current, signalKey, cfg.cooldownMs, now)) {
+          console.info(
+            `[Momentum] ${symbol.tradingsymbol} signal cooldown active`,
           )
-          void deployStrategy(ctx, tradeEnv, signal)
-        } else {
+          continue
+        }
+        signalCooldownRef.current[signalKey] = now
+
+        const tradeEnv = symbol.tradeEnv
+        const message = formatMomentumToastMessage(symbol.tradingsymbol, signal, symbol.broker)
+
+        maybeBrowserNotification(
+          `Momentum · ${symbol.tradingsymbol}`,
+          `${signal.headline} · ${tradeEnv === 'live' ? 'approve to deploy' : 'deploying'}`,
+        )
+
+        onMomentumSignalRef.current?.({
+          tickKey,
+          watchlistId: symbol.watchlistId,
+          symboltoken: symbol.token,
+          tradingsymbol: symbol.tradingsymbol,
+          broker: symbol.broker,
+          exchange: symbol.exchange,
+          token: symbol.token,
+          tradeEnv,
+          noTakeProfit: symbol.noTakeProfit,
+          closePrice: tick.ltp,
+          signal,
+          autoDemo: cfg.autoDemo,
+        })
+
+        if (tradeEnv === 'demo' && !cfg.autoDemo) {
           showPlatformToast({
             variant: 'warning',
             title: 'Fast momentum',
-            message: `${message} · Deploy on ${tradeEnv.toUpperCase()} (${bracketLabel})?`,
-            duration: 30000,
+            message,
+            duration: 30_000,
             highlightTitle: true,
-            actions: {
-              label: `Deploy ${tradeEnv}`,
-              variant: tradeEnv === 'live' ? 'destructive' : 'default',
-              onClick: () => {
-                const latestTick = ticksRef.current[tickKey]
-                void deployStrategy(
-                  { ...ctx, closePrice: latestTick?.ltp ?? ctx.closePrice },
-                  tradeEnv,
-                  signal,
-                )
-              },
-            },
           })
-          maybeBrowserNotification(
-            `Momentum · ${symbol.tradingsymbol}`,
-            `${signal.headline} · tap to deploy on ${tradeEnv}`,
-          )
         }
       }
     }
@@ -360,7 +355,7 @@ export function useWatchlistMomentumAlerts({
     }
   // ticks and windowChanges deliberately excluded — live data is read via refs
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.enabled, config.scanEveryMs, deployStrategy, enabled, historyRef, symbolIndex])
+  }, [config.enabled, config.scanEveryMs, enabled, historyRef, symbolIndex])
 
   return {
     monitoredSymbols: useMemo(

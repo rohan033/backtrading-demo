@@ -8,6 +8,12 @@ import type { HomeIndexSymbol } from './homeIndices'
 import { fetchMarketNews } from './marketNews'
 import type { LinkedExecution } from '@/hooks/useAgentThreadExecutions'
 import {
+  fetchEtoroOrders,
+  fetchEtoroPositions,
+  flattenEtoroOrders,
+} from './etoro-account-data'
+import { fetchPortfolio } from './portfolio-cache'
+import {
   percentChangeFromHistory,
   type PriceSample,
 } from './watchlistChangeColumns'
@@ -47,6 +53,13 @@ export type ClientMonitorContext = {
   news: Array<{ headline: string; source?: string; datetime?: number; url?: string }>
   market_headlines: Array<{ headline: string; source?: string; datetime?: number; url?: string }>
   positions: Array<Record<string, unknown>>
+  /** Always populated for eToro threads — portfolio, positions, and orders */
+  etoro_account?: {
+    account_env: string
+    portfolio: Array<Record<string, unknown>>
+    positions: Array<Record<string, unknown>>
+    orders: Array<Record<string, unknown>>
+  }
 }
 
 type WatchTargetInput = {
@@ -201,7 +214,9 @@ export async function buildAgentClientMonitorContext({
     }
   })
 
-  const [companyNewsGroups, marketNews, liveNews, positionGroups] = await Promise.all([
+  const accountEnvName = String(focus.account_env || 'demo').toLowerCase()
+
+  const [companyNewsGroups, marketNews, liveNews, positionGroups, etoroAccount] = await Promise.all([
     Promise.all(
       candidateRows
         .map(row => row.symbol)
@@ -230,6 +245,20 @@ export async function buildAgentClientMonitorContext({
         }))
       }),
     ),
+    (async () => {
+      const env = accountEnvName === 'live' ? 'live' : 'demo'
+      const [portfolioRes, positionsRes, ordersRes] = await Promise.all([
+        fetchPortfolio('etoro', env, { refresh: true }).catch(() => ({ status: false, data: [] })),
+        fetchEtoroPositions(env, { refresh: true }).catch(() => ({ status: false, data: [] })),
+        fetchEtoroOrders(env).catch(() => ({ status: false, data: undefined })),
+      ])
+      return {
+        account_env: env,
+        portfolio: Array.isArray(portfolioRes.data) ? portfolioRes.data : [],
+        positions: Array.isArray(positionsRes.data) ? positionsRes.data : [],
+        orders: flattenEtoroOrders(ordersRes.data),
+      }
+    })(),
   ])
 
   const symbolUpperSet = new Set(
@@ -281,5 +310,6 @@ export async function buildAgentClientMonitorContext({
     news,
     market_headlines: marketHeadlines,
     positions: positionGroups.flat(),
+    etoro_account: etoroAccount,
   }
 }

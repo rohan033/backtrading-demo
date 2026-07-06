@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
+import AgentCandidateMiniChart from '@/components/charts/AgentCandidateMiniChart'
 import AgentFocusChart from '@/components/charts/AgentFocusChart'
 import { useAgentThreadExecutions } from '@/hooks/useAgentThreadExecutions'
 import type { AgentThread } from '@/lib/agentThreads'
@@ -74,6 +75,35 @@ export default function AgentModeTradingPanel({
     symbolTabsProp,
   ])
 
+  const compareCharts = useMemo(() => {
+    const picks = candidatePicks?.slice(0, 3) ?? []
+    if (picks.length >= 2) {
+      return picks.map(pick => {
+        const sym = pick.symbol.toUpperCase()
+        const root = pick.symbol.split('-')[0].toUpperCase()
+        const feed = feedsBySymbol[sym] ?? feedsBySymbol[root]
+        return { pick, feed }
+      })
+    }
+    if (symbolTabs.length >= 2 && !focus?.execution_id) {
+      return symbolTabs.slice(0, 3).map(tab => {
+        const sym = tab.focus.symbol?.toUpperCase() || ''
+        const root = tab.focus.symbol?.split('-')[0].toUpperCase() || ''
+        const feed = feedsBySymbol[sym] ?? feedsBySymbol[root]
+        return {
+          pick: {
+            symbol: tab.focus.symbol || tab.label,
+            token: tab.focus.token,
+            exchange: tab.focus.exchange,
+            name: tab.label,
+          },
+          feed,
+        }
+      })
+    }
+    return []
+  }, [candidatePicks, feedsBySymbol, focus?.execution_id, symbolTabs])
+
   const [activeTabId, setActiveTabId] = useState(() => symbolTabs[0]?.id || '')
 
   useEffect(() => {
@@ -126,7 +156,25 @@ export default function AgentModeTradingPanel({
 
   return (
     <section className="am-trading-panel">
-      {symbolTabs.length > 1 ? (
+      {compareCharts.length >= 2 ? (
+        <div className="am-trading-charts-grid">
+          {compareCharts.map(({ pick, feed }) => (
+            <div key={pick.symbol} className="am-trading-charts-grid__cell">
+              <div className="am-trading-charts-grid__label">{pick.symbol.split('-')[0]}</div>
+              <AgentCandidateMiniChart
+                symbol={pick.symbol}
+                token={pick.token ?? feed?.feedToken}
+                exchange={pick.exchange ?? feed?.resolvedExchange}
+                broker={broker as 'etoro' | 'angel'}
+                accountEnv={accountEnv as 'live' | 'demo'}
+                liveFeed={feed ?? null}
+                height={120}
+              />
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {symbolTabs.length > 1 && compareCharts.length < 2 ? (
         <div className="am-trading-panel__tabs">
           <MinimalTabPills
             mode="state"
@@ -139,7 +187,7 @@ export default function AgentModeTradingPanel({
           />
         </div>
       ) : null}
-      {activeFocus?.symbol ? (
+      {activeFocus?.symbol && compareCharts.length < 2 ? (
         <div className="am-trading-stack">
           <AgentFocusChart
             focus={activeFocus}
@@ -170,6 +218,27 @@ export default function AgentModeTradingPanel({
           <AgentTradePnlTable
             threadId={thread.thread_id}
             symbolFilter={activeFocus.symbol}
+            refreshKey={pnlRefreshKey}
+          />
+        </div>
+      ) : null}
+      {compareCharts.length >= 2 && activeFocus?.symbol ? (
+        <div className="am-trading-stack am-trading-stack--compact">
+          <AgentPositionsTable
+            executions={executions}
+            focusSymbol={activeFocus.symbol}
+            symbolFilter={null}
+            broker={activeFocus.broker}
+            accountEnv={activeFocus.account_env}
+            token={activeFocus.token}
+            livePrice={activeLtp}
+            pollMs={60_000}
+            refreshKey={pnlRefreshKey}
+            monitorActive={monitorUserEnabled}
+          />
+          <AgentTradePnlTable
+            threadId={thread.thread_id}
+            symbolFilter={null}
             refreshKey={pnlRefreshKey}
           />
         </div>

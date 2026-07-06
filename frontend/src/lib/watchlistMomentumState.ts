@@ -1,11 +1,9 @@
 /**
  * Client-side state for per-watchlist momentum trading preferences.
  * All data lives in localStorage — no backend changes needed.
- *
- *  - Which watchlists are "momentum trade" watchlists (only their first symbol is scanned)
- *  - Per-watchlist symbol order overrides (drag-to-reorder)
- *  - Archived symbols (removed after a momentum strategy is auto-deployed)
  */
+
+import { safeSetItem } from './safeStorage'
 
 const MOMENTUM_WL_IDS_KEY = 'wl-momentum-ids-v1'
 const MOMENTUM_SYMBOL_KEYS_KEY = 'wl-momentum-symbols-v1'
@@ -57,7 +55,7 @@ export function loadMomentumWatchlistIds(): Set<string> {
 }
 
 export function saveMomentumWatchlistIds(ids: Set<string>): void {
-  localStorage.setItem(MOMENTUM_WL_IDS_KEY, JSON.stringify([...ids]))
+  safeSetItem(MOMENTUM_WL_IDS_KEY, JSON.stringify([...ids]))
 }
 
 /** Toggles the momentum-trade flag for a watchlist and returns the new set. */
@@ -91,7 +89,7 @@ export function loadMomentumSymbolKeys(): Set<string> {
 }
 
 export function saveMomentumSymbolKeys(keys: Set<string>): void {
-  localStorage.setItem(MOMENTUM_SYMBOL_KEYS_KEY, JSON.stringify([...keys]))
+  safeSetItem(MOMENTUM_SYMBOL_KEYS_KEY, JSON.stringify([...keys]))
 }
 
 /** Toggles momentum arming for one symbol and returns the new set. */
@@ -124,7 +122,7 @@ export function loadMomentumNoTpSymbolKeys(): Set<string> {
 }
 
 export function saveMomentumNoTpSymbolKeys(keys: Set<string>): void {
-  localStorage.setItem(MOMENTUM_NOTP_SYMBOL_KEYS_KEY, JSON.stringify([...keys]))
+  safeSetItem(MOMENTUM_NOTP_SYMBOL_KEYS_KEY, JSON.stringify([...keys]))
 }
 
 export type MomentumSymbolMode = 'normal' | 'no-tp'
@@ -176,16 +174,70 @@ export function loadMomentumLiveSymbolKeys(): Set<string> {
   }
 }
 
-export function saveMomentumLiveSymbolKeys(keys: Set<string>): void {
-  localStorage.setItem(MOMENTUM_LIVE_SYMBOL_KEYS_KEY, JSON.stringify([...keys]))
+export function saveMomentumLiveSymbolKeys(keys: Set<string>): boolean {
+  return safeSetItem(MOMENTUM_LIVE_SYMBOL_KEYS_KEY, JSON.stringify([...keys]))
 }
 
-/** Toggles live deploy for one symbol and returns the new set. */
+/** Collect momentum symbol keys for every row in the given watchlists. */
+export function collectWatchlistSymbolKeys(
+  watchlists: Array<{ id: string; symbols: Array<{ symboltoken: string }> }>,
+): string[] {
+  const keys: string[] = []
+  for (const wl of watchlists) {
+    for (const sym of wl.symbols) {
+      keys.push(momentumSymbolKey(wl.id, sym.symboltoken))
+    }
+  }
+  return keys
+}
+
+/** Set demo or live deploy target for all symbols in the given watchlists. */
+export function setAllWatchlistDeployEnv(
+  watchlists: Array<{ id: string; symbols: Array<{ symboltoken: string }> }>,
+  env: 'live' | 'demo',
+): { keys: Set<string>; saved: boolean; symbolCount: number } {
+  const next = new Set(loadMomentumLiveSymbolKeys())
+  const keys = collectWatchlistSymbolKeys(watchlists)
+  for (const key of keys) {
+    if (env === 'live') next.add(key)
+    else next.delete(key)
+  }
+  const saved = saveMomentumLiveSymbolKeys(next)
+  return { keys: next, saved, symbolCount: keys.length }
+}
+
+/** Set demo or live deploy target for every symbol in one watchlist. */
+export function setWatchlistDeployEnv(
+  watchlist: { id: string; symbols: Array<{ symboltoken: string }> },
+  env: 'live' | 'demo',
+): { keys: Set<string>; saved: boolean; symbolCount: number } {
+  const next = new Set(loadMomentumLiveSymbolKeys())
+  for (const sym of watchlist.symbols) {
+    const key = momentumSymbolKey(watchlist.id, sym.symboltoken)
+    if (env === 'live') next.add(key)
+    else next.delete(key)
+  }
+  const saved = saveMomentumLiveSymbolKeys(next)
+  return { keys: next, saved, symbolCount: watchlist.symbols.length }
+}
+
+/** Whether every symbol in the watchlist is set to live deploy. */
+export function watchlistDeployEnv(
+  watchlist: { id: string; symbols: Array<{ symboltoken: string }> },
+  liveKeys: Set<string>,
+): 'live' | 'demo' {
+  if (!watchlist.symbols.length) return 'demo'
+  const allLive = watchlist.symbols.every(sym =>
+    liveKeys.has(momentumSymbolKey(watchlist.id, sym.symboltoken)),
+  )
+  return allLive ? 'live' : 'demo'
+}
+
 export function toggleMomentumLiveSymbolKey(
   current: Set<string>,
   watchlistId: string,
   symboltoken: string,
-): Set<string> {
+): { keys: Set<string>; saved: boolean } {
   const key = momentumSymbolKey(watchlistId, symboltoken)
   const next = new Set(current)
   if (next.has(key)) {
@@ -193,8 +245,8 @@ export function toggleMomentumLiveSymbolKey(
   } else {
     next.add(key)
   }
-  saveMomentumLiveSymbolKeys(next)
-  return next
+  const saved = saveMomentumLiveSymbolKeys(next)
+  return { keys: next, saved }
 }
 
 // ── Symbol order overrides ────────────────────────────────────────────────────
@@ -209,7 +261,7 @@ export function loadSymbolOrder(watchlistId: string): string[] | null {
 }
 
 export function saveSymbolOrder(watchlistId: string, tokens: string[]): void {
-  localStorage.setItem(`${SYMBOL_ORDER_KEY_PREFIX}${watchlistId}`, JSON.stringify(tokens))
+  safeSetItem(`${SYMBOL_ORDER_KEY_PREFIX}${watchlistId}`, JSON.stringify(tokens))
 }
 
 export function clearSymbolOrder(watchlistId: string): void {
@@ -264,7 +316,7 @@ export function loadArchivedSymbols(): ArchivedMomentumSymbol[] {
 export function archiveSymbol(sym: ArchivedMomentumSymbol): ArchivedMomentumSymbol[] {
   const existing = loadArchivedSymbols()
   const next = [sym, ...existing].slice(0, 200)
-  localStorage.setItem(ARCHIVED_KEY, JSON.stringify(next))
+  safeSetItem(ARCHIVED_KEY, JSON.stringify(next))
   return next
 }
 
@@ -276,7 +328,7 @@ export function removeArchivedSymbol(
   const next = existing.filter(
     s => !(s.symboltoken === symboltoken && s.watchlistId === watchlistId),
   )
-  localStorage.setItem(ARCHIVED_KEY, JSON.stringify(next))
+  safeSetItem(ARCHIVED_KEY, JSON.stringify(next))
   return next
 }
 
@@ -317,13 +369,13 @@ export function loadMomentumTrades(): MomentumTrade[] {
 export function recordMomentumTrade(trade: MomentumTrade): MomentumTrade[] {
   const existing = loadMomentumTrades()
   const next = [trade, ...existing].slice(0, 200)
-  localStorage.setItem(MOMENTUM_TRADES_KEY, JSON.stringify(next))
+  safeSetItem(MOMENTUM_TRADES_KEY, JSON.stringify(next))
   return next
 }
 
 export function removeMomentumTrade(id: string): MomentumTrade[] {
   const next = loadMomentumTrades().filter(trade => trade.id !== id)
-  localStorage.setItem(MOMENTUM_TRADES_KEY, JSON.stringify(next))
+  safeSetItem(MOMENTUM_TRADES_KEY, JSON.stringify(next))
   return next
 }
 

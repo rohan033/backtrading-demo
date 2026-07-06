@@ -40,7 +40,33 @@ import {
 import { createAndStartMomentumStrategy } from '../../lib/watchlistMomentumStrategy'
 import { DEFAULT_MOMENTUM_CONFIG, type MomentumConfig } from '../../lib/watchlistMomentum'
 import { createQuickStrategy, loadQuickStrategySchedule } from '../../lib/quickStrategy'
+import { safeSetItem } from '../../lib/safeStorage'
 import { useUrlState } from './useUrlState'
+import { WatchAndTradeMomentumTrigger } from '../../components/watchlist/WatchAndTradeMomentumSettings'
+import WatchAndTradeColumnPicker from '../../components/watchlist/WatchAndTradeColumnPicker'
+import WatchAndTradeAutoSort from '../../components/watchlist/WatchAndTradeAutoSort'
+import MomentumConfigDrawer from './MomentumConfigDrawer'
+import { buildMomentumSymbolIndex } from '../../hooks/useWatchlistMomentumAlerts'
+import {
+  loadWatchlistAutoSortConfig,
+  sortSymbolsByWindowChange,
+  type WatchlistAutoSortConfig,
+} from '../../lib/watchlistAutoSort'
+import {
+  loadVisibleChangeColumns,
+  saveVisibleChangeColumns,
+  type WatchlistChangeWindowId,
+} from '../../lib/watchlistChangeColumns'
+import {
+  applySymbolOrder,
+  loadSymbolOrder,
+  momentumSymbolKey,
+  notifyMomentumStateChanged,
+  collectWatchlistSymbolKeys,
+  saveSymbolOrder,
+  toggleMomentumWatchlistId,
+  watchlistDeployEnv,
+} from '../../lib/watchlistMomentumState'
 
 /* ═══════════════════════════════════════════════════════════════
    Types
@@ -49,7 +75,7 @@ type Sym = {
   id: string; symboltoken: string; ticker: string; name: string; exchange: string; price: string
   c1m: string; c1mUp: boolean
   c5m: string; c5mUp: boolean
-  chg: string; chgUp: boolean
+  chg: string; chgUp: boolean; chgNum: number | null
   tickKey: string; ltp: number | null
   logo35x35?: string | null; logo50x50?: string | null; logo150x150?: string | null
   assetClass?: string | null
@@ -120,7 +146,24 @@ function loadColumnMap(): Record<string, 0|1> {
 }
 
 function saveColumnMap(map: Record<string, 0|1>) {
-  localStorage.setItem(COLUMN_STORAGE_KEY, JSON.stringify(map))
+  safeSetItem(COLUMN_STORAGE_KEY, JSON.stringify(map))
+}
+
+function changePillClass(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return 'wt-change-pill wt-change-pill--none'
+  const abs = Math.abs(value)
+  const dir = value >= 0 ? 'up' : 'down'
+  if (abs >= 3) return `wt-change-pill wt-change-pill--strong wt-change-pill--${dir}`
+  if (abs >= 1.5) return `wt-change-pill wt-change-pill--mid wt-change-pill--${dir}`
+  if (abs >= 0.5) return `wt-change-pill wt-change-pill--mild wt-change-pill--${dir}`
+  if (abs === 0) return 'wt-change-pill wt-change-pill--flat'
+  return `wt-change-pill wt-change-pill--${dir}`
+}
+
+function formatChangePill(value: number | null | undefined): string {
+  if (value == null || Number.isNaN(value)) return '—'
+  const sign = value > 0 ? '+' : ''
+  return `${sign}${value.toFixed(2)}%`
 }
 
 function toMomentumConfig(cfg: MomentumCfg): MomentumConfig {
@@ -418,6 +461,12 @@ function PanelTabs({ panels, activeId, onSelect, onAdd, onRename, onDelete }: {
 function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
   isDragging, dropPos, onDragStart, onDragOver, onDrop, onDragEnd,
   onSearchSymbol, onAddSymbol, onRemoveSymbol, onBrokerChange, onDeleteWatchlist,
+  visibleChangeColumns, autoSortEnabled,
+  onQueueWatchlistMomentum,
+  armedByTickKey, momentumLiveSymbolKeys,
+  onToggleSymbolMomentum, onToggleSymbolMomentumNoTp, onToggleSymbolMomentumLive,
+  watchlistDeployEnvValue, onSetWatchlistDeployEnv,
+  onSymbolsReordered,
 }: {
   watchlist: Watchlist; selectedSymbolId: string|null
   onSelectSymbol: (id: string) => void
@@ -431,6 +480,17 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
   onRemoveSymbol: (wlId: string, symboltoken: string) => void
   onBrokerChange: (wlId: string, broker: WatchlistBroker, accountEnv: string) => void
   onDeleteWatchlist: (wlId: string) => void
+  visibleChangeColumns: WatchlistChangeWindowId[]
+  autoSortEnabled: boolean
+  onQueueWatchlistMomentum: (wlId: string) => void
+  armedByTickKey: Map<string, { noTakeProfit: boolean; tradeEnv: 'live' | 'demo' }>
+  momentumLiveSymbolKeys: Set<string>
+  onToggleSymbolMomentum: (wlId: string, symboltoken: string) => void
+  onToggleSymbolMomentumNoTp: (wlId: string, symboltoken: string) => void
+  onToggleSymbolMomentumLive: (wlId: string, symboltoken: string) => void
+  watchlistDeployEnvValue: 'live' | 'demo'
+  onSetWatchlistDeployEnv: (wlId: string, env: 'live' | 'demo') => void
+  onSymbolsReordered: (wlId: string, tokens: string[]) => void
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const [adding, setAdding] = useState(false)
@@ -438,6 +498,8 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
   const [results, setResults] = useState<SearchHit[]>([])
   const [searching, setSearching] = useState(false)
   const [error, setError] = useState('')
+  const [dragSymToken, setDragSymToken] = useState<string | null>(null)
+  const [dragOverToken, setDragOverToken] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
   const openSearch = () => { setAdding(true); setQuery(''); setResults([]); setError(''); setTimeout(()=>inputRef.current?.focus(),0) }
@@ -455,6 +517,42 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
       setSearching(false)
     }
   }
+
+  const handleSymDragStart = (symboltoken: string) => {
+    if (autoSortEnabled) return
+    setDragSymToken(symboltoken)
+  }
+  const handleSymDragOver = (e: React.DragEvent, symboltoken: string) => {
+    if (autoSortEnabled || !dragSymToken || dragSymToken === symboltoken) return
+    e.preventDefault()
+    e.stopPropagation()
+    setDragOverToken(symboltoken)
+  }
+  const handleSymDrop = (e: React.DragEvent, targetToken: string) => {
+    if (autoSortEnabled || !dragSymToken) return
+    e.preventDefault()
+    e.stopPropagation()
+    const tokens = watchlist.symbols.map(s => s.symboltoken)
+    const from = tokens.indexOf(dragSymToken)
+    const to = tokens.indexOf(targetToken)
+    if (from < 0 || to < 0) {
+      setDragSymToken(null)
+      setDragOverToken(null)
+      return
+    }
+    const next = [...tokens]
+    next.splice(from, 1)
+    next.splice(to, 0, dragSymToken)
+    onSymbolsReordered(watchlist.id, next)
+    setDragSymToken(null)
+    setDragOverToken(null)
+  }
+  const handleSymDragEnd = () => {
+    setDragSymToken(null)
+    setDragOverToken(null)
+  }
+
+  const changeWindows = WATCHLIST_CHANGE_WINDOWS.filter(w => visibleChangeColumns.includes(w.id))
 
   return (
     <div
@@ -478,6 +576,35 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
           </button>
           <span className="wt-wl-name">{watchlist.name}</span>
           <span className="wt-wl-count">{watchlist.symbols.length}</span>
+          <button
+            type="button"
+            className="wt-wl-momentum-btn"
+            title="Queue all symbols for momentum scan"
+            onClick={e => {
+              e.stopPropagation()
+              onQueueWatchlistMomentum(watchlist.id)
+            }}
+          >
+            <span aria-hidden="true">⚡</span>
+          </button>
+          <div className="wt-wl-env-toggle" onClick={e => e.stopPropagation()}>
+            <button
+              type="button"
+              className={`wt-wl-env-btn${watchlistDeployEnvValue === 'demo' ? ' wt-wl-env-btn--active' : ''}`}
+              title="All symbols in this watchlist deploy on demo"
+              onClick={() => onSetWatchlistDeployEnv(watchlist.id, 'demo')}
+            >
+              Demo
+            </button>
+            <button
+              type="button"
+              className={`wt-wl-env-btn${watchlistDeployEnvValue === 'live' ? ' wt-wl-env-btn--active wt-wl-env-btn--live' : ''}`}
+              title="All symbols in this watchlist deploy on live"
+              onClick={() => onSetWatchlistDeployEnv(watchlist.id, 'live')}
+            >
+              Live
+            </button>
+          </div>
         </div>
         <div className="wt-wl-header-right">
           {/* broker pill toggle */}
@@ -532,11 +659,13 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
       )}
 
       {!collapsed && (
+        <div className="wt-sym-table-wrap">
         <table className="wt-sym-table">
           <colgroup>
             <col className="wt-col-sym"/>
-            <col className="wt-col-c1m"/>
-            <col className="wt-col-c5m"/>
+            {changeWindows.map(window => (
+              <col key={window.id} className="wt-col-c1m"/>
+            ))}
             <col className="wt-col-chg"/>
             <col className="wt-col-price"/>
             <col className="wt-col-actions"/>
@@ -544,46 +673,108 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
           <thead>
             <tr className="wt-sym-thead-row">
               <th className="wt-sym-th">Symbol</th>
-              <th className="wt-sym-th wt-th-right">1m</th>
-              <th className="wt-sym-th wt-th-right">5m</th>
+              {changeWindows.map(window => (
+                <th key={window.id} className="wt-sym-th wt-th-right">{window.label}</th>
+              ))}
               <th className="wt-sym-th wt-th-right">Chg%</th>
               <th className="wt-sym-th wt-th-right">Price</th>
               <th className="wt-sym-th wt-th-right"></th>
             </tr>
           </thead>
           <tbody>
-            {watchlist.symbols.map(sym => (
+            {watchlist.symbols.map((sym, rowIndex) => {
+              const armedEntry = armedByTickKey.get(sym.tickKey)
+              const armed = armedEntry != null && !armedEntry.noTakeProfit
+              const armedNoTp = armedEntry?.noTakeProfit === true
+              const armedLive = armedEntry?.tradeEnv === 'live'
+              const isQueued = armed || armedNoTp
+              const rowClass = [
+                selectedSymbolId === sym.id ? 'wt-sym-row--selected' : '',
+                armed ? 'wt-sym-row--momentum' : '',
+                armedNoTp ? 'wt-sym-row--momentum-notp' : '',
+                armedLive ? 'wt-sym-row--momentum-live' : '',
+                isQueued ? 'wt-sym-row--momentum-candidate' : '',
+                dragOverToken === sym.symboltoken ? 'wt-sym-row--drag-over' : '',
+                armed || armedNoTp || armedLive ? 'wt-sym-row--armed' : '',
+              ].filter(Boolean).join(' ')
+              return (
               <tr key={sym.id}
-                className={`wt-sym-row ${selectedSymbolId===sym.id?'wt-sym-row--selected':''}`}
+                className={`wt-sym-row ${rowClass}`}
+                draggable={!autoSortEnabled}
+                onDragStart={() => handleSymDragStart(sym.symboltoken)}
+                onDragOver={e => handleSymDragOver(e, sym.symboltoken)}
+                onDrop={e => handleSymDrop(e, sym.symboltoken)}
+                onDragEnd={handleSymDragEnd}
                 onClick={()=>onSelectSymbol(sym.id)}>
                 <td className="wt-sym-td wt-sym-td--sym">
+                  <div className="wt-sym-cell-sym">
+                  {!autoSortEnabled ? (
+                    <span className="wt-sym-drag-handle">⠿</span>
+                  ) : null}
+                  {isQueued ? (
+                    <span className="wt-candidate-star" title="In momentum queue">★</span>
+                  ) : null}
                   <span className="wt-sym-icon"><SymbolLogo sym={sym} size="small" /></span>
-                  <div>
+                  <div className="wt-sym-name-block">
                     <div className="wt-sym-ticker">{sym.ticker}</div>
                     <div className="wt-sym-name-small">{sym.name}</div>
                   </div>
+                  </div>
                 </td>
-                <td className={`wt-sym-td wt-td-num ${sym.c1mUp?'wt-up':'wt-down'}`}>{sym.c1m}</td>
-                <td className={`wt-sym-td wt-td-num ${sym.c5mUp?'wt-up':'wt-down'}`}>{sym.c5m}</td>
-                <td className={`wt-sym-td wt-td-num ${sym.chgUp?'wt-up':'wt-down'}`}>{sym.chg}</td>
+                {changeWindows.map(window => {
+                  const value = sym.changes[window.id]
+                  return (
+                    <td key={window.id} className="wt-sym-td wt-td-num">
+                      <span className={changePillClass(value)}>{formatChangePill(value)}</span>
+                    </td>
+                  )
+                })}
+                <td className="wt-sym-td wt-td-num">
+                  <span className={changePillClass(sym.chgNum)}>{sym.chg}</span>
+                </td>
                 <td className="wt-sym-td wt-td-num wt-price-cell">{sym.price}</td>
                 <td className="wt-sym-td wt-td-action">
-                  <button
-                    type="button"
-                    className="wt-row-delete-btn"
-                    title={`Remove ${sym.ticker}`}
-                    onClick={e => {
-                      e.stopPropagation()
-                      onRemoveSymbol(watchlist.id, sym.symboltoken)
-                    }}
-                  >
-                    ×
-                  </button>
+                  <div className="wt-sym-actions" onClick={e => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      className={`wt-row-env-btn${armedLive ? ' wt-row-env-btn--live' : ' wt-row-env-btn--demo'}`}
+                      title={armedLive ? 'Live — click for demo' : 'Demo — click for live'}
+                      onClick={() => onToggleSymbolMomentumLive(watchlist.id, sym.symboltoken)}
+                    >
+                      {armedLive ? 'L' : 'D'}
+                    </button>
+                    <button
+                      type="button"
+                      className={`wt-arm-btn${armed ? ' wt-arm-btn--on' : ''}`}
+                      title={armed ? 'In queue (TP) — click to remove' : 'Queue momentum scan (5% TP)'}
+                      onClick={() => onToggleSymbolMomentum(watchlist.id, sym.symboltoken)}
+                    >
+                      ⚡
+                    </button>
+                    <button
+                      type="button"
+                      className={`wt-arm-btn wt-arm-btn--notp${armedNoTp ? ' wt-arm-btn--notp-on' : ''}`}
+                      title={armedNoTp ? 'In queue (no TP) — click to remove' : 'Queue momentum scan (no TP)'}
+                      onClick={() => onToggleSymbolMomentumNoTp(watchlist.id, sym.symboltoken)}
+                    >
+                      ∞
+                    </button>
+                    <button
+                      type="button"
+                      className="wt-row-delete-btn"
+                      title={`Remove ${sym.ticker}`}
+                      onClick={() => onRemoveSymbol(watchlist.id, sym.symboltoken)}
+                    >
+                      ×
+                    </button>
+                  </div>
                 </td>
               </tr>
-            ))}
+              )
+            })}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   )
@@ -599,6 +790,11 @@ function WatchlistColumn({ colIdx, watchlists, selectedSymbolId, onSelectSymbol,
   onDragStart, onCardDragOver, onCardDrop, onDragEnd,
   onColDragOver, onColDrop,
   onSearchSymbol, onAddSymbol, onRemoveSymbol, onBrokerChange, onDeleteWatchlist,
+  visibleChangeColumns, autoSortEnabled,
+  armedByTickKey, momentumLiveSymbolKeys,
+  onQueueWatchlistMomentum, onToggleSymbolMomentum, onToggleSymbolMomentumNoTp, onToggleSymbolMomentumLive,
+  onSetWatchlistDeployEnv, backendWatchlistsForEnv,
+  onSymbolsReordered,
 }: {
   colIdx: 0|1
   watchlists: Watchlist[]
@@ -617,6 +813,17 @@ function WatchlistColumn({ colIdx, watchlists, selectedSymbolId, onSelectSymbol,
   onRemoveSymbol: (wlId:string, symboltoken:string) => void
   onBrokerChange: (wlId:string, broker:WatchlistBroker, accountEnv:string) => void
   onDeleteWatchlist: (wlId:string) => void
+  visibleChangeColumns: WatchlistChangeWindowId[]
+  autoSortEnabled: boolean
+  armedByTickKey: Map<string, { noTakeProfit: boolean; tradeEnv: 'live' | 'demo' }>
+  momentumLiveSymbolKeys: Set<string>
+  onQueueWatchlistMomentum: (wlId: string) => void
+  onToggleSymbolMomentum: (wlId: string, symboltoken: string) => void
+  onToggleSymbolMomentumNoTp: (wlId: string, symboltoken: string) => void
+  onToggleSymbolMomentumLive: (wlId: string, symboltoken: string) => void
+  onSetWatchlistDeployEnv: (wlId: string, env: 'live' | 'demo') => void
+  backendWatchlistsForEnv: BackendWatchlist[]
+  onSymbolsReordered: (wlId: string, tokens: string[]) => void
 }) {
   return (
     <div
@@ -628,6 +835,10 @@ function WatchlistColumn({ colIdx, watchlists, selectedSymbolId, onSelectSymbol,
         const isDragging = dragSrc?.col === colIdx && dragSrc.idx === idx
         const isTarget = dropTgt && typeof dropTgt.idx === 'number' && dropTgt.col === colIdx && dropTgt.idx === idx
         const dropPos = isTarget ? (dropTgt as {pos:'before'|'after'}).pos : null
+        const backendWl = backendWatchlistsForEnv.find(item => item.id === wl.id)
+        const wlDeployEnv = backendWl
+          ? watchlistDeployEnv(backendWl, momentumLiveSymbolKeys)
+          : 'demo'
         return (
           <WatchlistCard
             key={wl.id}
@@ -645,6 +856,17 @@ function WatchlistColumn({ colIdx, watchlists, selectedSymbolId, onSelectSymbol,
             onRemoveSymbol={onRemoveSymbol}
             onBrokerChange={onBrokerChange}
             onDeleteWatchlist={onDeleteWatchlist}
+            visibleChangeColumns={visibleChangeColumns}
+            autoSortEnabled={autoSortEnabled}
+            onQueueWatchlistMomentum={onQueueWatchlistMomentum}
+            armedByTickKey={armedByTickKey}
+            momentumLiveSymbolKeys={momentumLiveSymbolKeys}
+            onToggleSymbolMomentum={onToggleSymbolMomentum}
+            onToggleSymbolMomentumNoTp={onToggleSymbolMomentumNoTp}
+            onToggleSymbolMomentumLive={onToggleSymbolMomentumLive}
+            watchlistDeployEnvValue={wlDeployEnv}
+            onSetWatchlistDeployEnv={onSetWatchlistDeployEnv}
+            onSymbolsReordered={onSymbolsReordered}
           />
         )
       })}
@@ -1223,11 +1445,38 @@ export default function WatchAndTrade() {
     ticks,
     windowChanges,
     historyRef,
+    momentum,
+    momentumConfig,
+    setMomentumConfig,
+    setSymbolDeployEnv,
+    setAllDeployEnv,
+    setWatchlistDeployEnv,
+    armMomentumSymbol,
+    armMomentumSymbols,
+    momentumArmed,
   } = useWatchlistStream()
+  const momentumLiveSymbolKeys = momentum.liveSymbolKeys
+  const armedByTickKey = useMemo(
+    () => new Map(
+      momentumArmed.map(entry => [
+        entry.tickKey,
+        { noTakeProfit: entry.noTakeProfit, tradeEnv: entry.tradeEnv },
+      ]),
+    ),
+    [momentumArmed],
+  )
   const [backendPanels, setBackendPanels] = useState<BackendPanel[]>([])
   const [panelsReady, setPanelsReady] = useState(false)
   const [error, setError] = useState('')
   const [columnMap, setColumnMap] = useState<Record<string, 0|1>>(() => loadColumnMap())
+  const [visibleChangeColumns, setVisibleChangeColumns] = useState<WatchlistChangeWindowId[]>(
+    () => loadVisibleChangeColumns(),
+  )
+  const [autoSortConfig, setAutoSortConfig] = useState<WatchlistAutoSortConfig>(
+    () => loadWatchlistAutoSortConfig(),
+  )
+  const [symbolOrders, setSymbolOrders] = useState<Record<string, string[]>>({})
+  const [momentumConfigOpen, setMomentumConfigOpen] = useState(false)
   const [dragSrc, setDragSrc] = useState<DragSrc|null>(null)
   const [dropTgt, setDropTgt] = useState<DropTgt|null>(null)
   const [detailWidth, setDetailWidth] = useState(600)
@@ -1249,6 +1498,109 @@ export default function WatchAndTrade() {
   useEffect(() => {
     void loadPanels()
   }, [loadPanels])
+
+  useEffect(() => {
+    if (!watchlistsReady) return
+    const orders: Record<string, string[]> = {}
+    for (const wl of backendWatchlists) {
+      const order = loadSymbolOrder(wl.id)
+      if (order) orders[wl.id] = order
+    }
+    setSymbolOrders(orders)
+  }, [watchlistsReady, backendWatchlists])
+
+  const handleVisibleChangeColumns = useCallback((next: WatchlistChangeWindowId[]) => {
+    setVisibleChangeColumns(next)
+    saveVisibleChangeColumns(next)
+  }, [])
+
+  const handleQueueWatchlistMomentum = useCallback((watchlistId: string) => {
+    const wl = backendWatchlists.find(item => item.id === watchlistId)
+    if (!wl || wl.symbols.length === 0) return
+
+    // Clear any legacy persisted watchlist-momentum flag (one-shot queue only).
+    if (momentum.watchlistIds.has(watchlistId)) {
+      toggleMomentumWatchlistId(momentum.watchlistIds, watchlistId)
+      notifyMomentumStateChanged()
+    }
+
+    const entries = wl.symbols.map(symbol => {
+      const tickKey = watchlistTickKey(wl.broker, wl.account_env, symbol.symboltoken)
+      const key = momentumSymbolKey(watchlistId, symbol.symboltoken)
+      return {
+        tickKey,
+        watchlistId,
+        symboltoken: symbol.symboltoken,
+        tradingsymbol: symbol.tradingsymbol,
+        broker: wl.broker,
+        tradeEnv: (momentumLiveSymbolKeys.has(key) ? 'live' : 'demo') as 'live' | 'demo',
+        noTakeProfit: false,
+      }
+    })
+    armMomentumSymbols(entries)
+  }, [backendWatchlists, momentum.watchlistIds, momentumLiveSymbolKeys, armMomentumSymbols])
+
+  const handleToggleSymbolMomentum = useCallback((watchlistId: string, symboltoken: string) => {
+    const wl = backendWatchlists.find(item => item.id === watchlistId)
+    if (!wl) return
+    const symbol = wl.symbols.find(item => item.symboltoken === symboltoken)
+    if (!symbol) return
+    const tickKey = watchlistTickKey(wl.broker, wl.account_env, symboltoken)
+    const key = momentumSymbolKey(watchlistId, symboltoken)
+    armMomentumSymbol({
+      tickKey,
+      watchlistId,
+      symboltoken,
+      tradingsymbol: symbol.tradingsymbol,
+      broker: wl.broker,
+      tradeEnv: momentumLiveSymbolKeys.has(key) ? 'live' : 'demo',
+      noTakeProfit: false,
+    })
+  }, [backendWatchlists, momentumLiveSymbolKeys, armMomentumSymbol])
+
+  const handleToggleSymbolMomentumNoTp = useCallback((watchlistId: string, symboltoken: string) => {
+    const wl = backendWatchlists.find(item => item.id === watchlistId)
+    if (!wl) return
+    const symbol = wl.symbols.find(item => item.symboltoken === symboltoken)
+    if (!symbol) return
+    const tickKey = watchlistTickKey(wl.broker, wl.account_env, symboltoken)
+    const key = momentumSymbolKey(watchlistId, symboltoken)
+    armMomentumSymbol({
+      tickKey,
+      watchlistId,
+      symboltoken,
+      tradingsymbol: symbol.tradingsymbol,
+      broker: wl.broker,
+      tradeEnv: momentumLiveSymbolKeys.has(key) ? 'live' : 'demo',
+      noTakeProfit: true,
+    })
+  }, [backendWatchlists, momentumLiveSymbolKeys, armMomentumSymbol])
+
+  const handleToggleSymbolMomentumLive = useCallback((watchlistId: string, symboltoken: string) => {
+    const key = momentumSymbolKey(watchlistId, symboltoken)
+    const isLive = momentumLiveSymbolKeys.has(key)
+    setSymbolDeployEnv(watchlistId, symboltoken, isLive ? 'demo' : 'live')
+  }, [momentumLiveSymbolKeys, setSymbolDeployEnv])
+
+  const handleSetAllDeployEnv = useCallback((env: 'demo' | 'live') => {
+    setAllDeployEnv(env)
+  }, [setAllDeployEnv])
+
+  const globalDeployEnv = useMemo(() => {
+    const keys = collectWatchlistSymbolKeys(backendWatchlists)
+    if (!keys.length) return { allDemo: true, allLive: false, mixed: false }
+    const liveCount = keys.filter(key => momentumLiveSymbolKeys.has(key)).length
+    return {
+      allDemo: liveCount === 0,
+      allLive: liveCount === keys.length,
+      mixed: liveCount > 0 && liveCount < keys.length,
+    }
+  }, [backendWatchlists, momentumLiveSymbolKeys])
+
+  const handleSymbolsReordered = useCallback((watchlistId: string, tokens: string[]) => {
+    saveSymbolOrder(watchlistId, tokens)
+    setSymbolOrders(prev => ({ ...prev, [watchlistId]: tokens }))
+  }, [])
 
   const patchWatchlist = (updated: BackendWatchlist) => {
     setWatchlists(prev => prev.map(wl => wl.id === updated.id ? updated : wl))
@@ -1276,6 +1628,7 @@ export default function WatchAndTrade() {
       c5mUp: (c5m ?? 0) >= 0,
       chg: formatWindowChangePct(dayChange),
       chgUp: (dayChange ?? 0) >= 0,
+      chgNum: dayChange ?? null,
       tickKey,
       ltp: tick?.ltp ?? null,
       logo35x35: symbol.logo35x35,
@@ -1285,6 +1638,50 @@ export default function WatchAndTrade() {
       changes: changes ?? {},
     }
   }, [ticks, windowChanges])
+
+  const orderedBackendSymbols = useMemo(() => {
+    return Object.fromEntries(
+      backendWatchlists.map(wl => {
+        let symbols = [...wl.symbols]
+        symbols = applySymbolOrder(symbols, symbolOrders[wl.id] ?? loadSymbolOrder(wl.id))
+        if (autoSortConfig.enabled) {
+          symbols = sortSymbolsByWindowChange(
+            symbols,
+            wl.broker,
+            wl.account_env,
+            windowChanges,
+            autoSortConfig.column,
+          )
+        }
+        return [wl.id, symbols]
+      }),
+    )
+  }, [backendWatchlists, symbolOrders, autoSortConfig, windowChanges])
+
+  const monitoredSymbols = useMemo(() => {
+    const allOrdered = Object.fromEntries(
+      backendWatchlists.map(wl => [wl.id, orderedBackendSymbols[wl.id] ?? wl.symbols]),
+    )
+    const index = buildMomentumSymbolIndex(
+      backendWatchlists,
+      new Set(),
+      allOrdered,
+      new Set(),
+      new Set(),
+      momentumLiveSymbolKeys,
+      momentumArmed,
+    )
+    return [...index.values()].map(symbol => ({
+      symbol: symbol.tradingsymbol,
+      tradeEnv: symbol.tradeEnv,
+      noTakeProfit: symbol.noTakeProfit,
+    }))
+  }, [
+    backendWatchlists,
+    orderedBackendSymbols,
+    momentumLiveSymbolKeys,
+    momentumArmed,
+  ])
 
   const panels = useMemo<Panel[]>(() => {
     return backendPanels
@@ -1303,12 +1700,12 @@ export default function WatchAndTrade() {
               name: wl.name,
               broker: wl.broker,
               accountEnv: wl.account_env,
-              symbols: wl.symbols.map(symbol => toDisplaySymbol(wl, symbol)),
+              symbols: (orderedBackendSymbols[wl.id] ?? wl.symbols).map(symbol => toDisplaySymbol(wl, symbol)),
             })
           })
         return { id: panel.id, name: panel.name, cols }
       })
-  }, [backendPanels, backendWatchlists, columnMap, toDisplaySymbol])
+  }, [backendPanels, backendWatchlists, columnMap, orderedBackendSymbols, toDisplaySymbol])
 
   const activePanel = panels.find(p => p.id === state.panel_id) ?? panels[0] ?? null
   const activePanelId = activePanel?.id ?? ''
@@ -1569,6 +1966,47 @@ export default function WatchAndTrade() {
         onDelete={handleDeletePanel}
       />
 
+      <div className="wt-toolbar-wrap">
+        <div className="wt-toolbar">
+          <WatchAndTradeMomentumTrigger
+            config={momentumConfig}
+            open={momentumConfigOpen}
+            onOpenChange={setMomentumConfigOpen}
+          />
+          <span className="wt-toolbar-divider" aria-hidden="true" />
+          <div className="wt-global-env" title="Deploy environment for all watchlist symbols">
+            <button
+              type="button"
+              className={`wt-global-env__btn${globalDeployEnv.allDemo ? ' wt-global-env__btn--active' : ''}${globalDeployEnv.mixed ? ' wt-global-env__btn--partial' : ''}`}
+              onClick={() => handleSetAllDeployEnv('demo')}
+            >
+              All Demo
+            </button>
+            <button
+              type="button"
+              className={`wt-global-env__btn${globalDeployEnv.allLive ? ' wt-global-env__btn--active wt-global-env__btn--live' : ''}${globalDeployEnv.mixed ? ' wt-global-env__btn--partial' : ''}`}
+              onClick={() => handleSetAllDeployEnv('live')}
+            >
+              All Live
+            </button>
+          </div>
+          <span className="wt-toolbar-divider" aria-hidden="true" />
+          <WatchAndTradeAutoSort config={autoSortConfig} onChange={setAutoSortConfig} />
+          <WatchAndTradeColumnPicker
+            visibleColumns={visibleChangeColumns}
+            onChange={handleVisibleChangeColumns}
+          />
+        </div>
+      </div>
+
+      <MomentumConfigDrawer
+        open={momentumConfigOpen}
+        onClose={() => setMomentumConfigOpen(false)}
+        config={momentumConfig}
+        onChange={setMomentumConfig}
+        monitoredSymbols={monitoredSymbols}
+      />
+
       <div className="wt-body">
         <div className="wt-wl-grid-wrap">
           {error ? <div className="wt-status wt-status--error">{error}</div> : null}
@@ -1606,6 +2044,17 @@ export default function WatchAndTrade() {
                     onRemoveSymbol={handleRemoveSymbol}
                     onBrokerChange={handleBrokerChange}
                     onDeleteWatchlist={handleDeleteWatchlist}
+                    visibleChangeColumns={visibleChangeColumns}
+                    autoSortEnabled={autoSortConfig.enabled}
+                    armedByTickKey={armedByTickKey}
+                    momentumLiveSymbolKeys={momentumLiveSymbolKeys}
+                    onQueueWatchlistMomentum={handleQueueWatchlistMomentum}
+                    onToggleSymbolMomentum={handleToggleSymbolMomentum}
+                    onToggleSymbolMomentumNoTp={handleToggleSymbolMomentumNoTp}
+                    onToggleSymbolMomentumLive={handleToggleSymbolMomentumLive}
+                    onSetWatchlistDeployEnv={setWatchlistDeployEnv}
+                    backendWatchlistsForEnv={backendWatchlists}
+                    onSymbolsReordered={handleSymbolsReordered}
                   />
                 ))}
               </div>

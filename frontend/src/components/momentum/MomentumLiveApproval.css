@@ -1,0 +1,121 @@
+.mom-approval-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(2px);
+}
+
+.mom-approval {
+  width: min(360px, 100%);
+  border: 1.5px solid var(--ms-border, #303030);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.mom-approval__head {
+  padding: 12px 14px;
+  border-bottom: 1px solid #ECECEC;
+  background: #FFF8E6;
+}
+
+.mom-approval__head strong {
+  display: block;
+  font-size: 13px;
+  color: var(--ms-text, #202020);
+}
+
+.mom-approval__head span {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: #666;
+}
+
+.mom-approval__head em {
+  font-style: normal;
+  font-weight: 800;
+  color: var(--ms-text, #202020);
+}
+
+.mom-approval__body {
+  padding: 12px 14px;
+}
+
+.mom-approval__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 11px;
+}
+
+.mom-approval__row span:first-child {
+  color: #666;
+}
+
+.mom-approval__row strong {
+  color: var(--ms-text, #202020);
+}
+
+.mom-approval__env {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.mom-approval__env--live {
+  background: #F8DEDE;
+  color: #A61F1F;
+}
+
+.mom-approval__signal {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #F8F8F8;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #444;
+}
+
+.mom-approval__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid #ECECEC;
+}
+
+.mom-approval__cancel,
+.mom-approval__approve {
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mom-approval__cancel {
+  border: 1.5px solid #D0D0D0;
+  background: #fff;
+  color: #666;
+}
+
+.mom-approval__approve {
+  border: 1.5px solid #126B3A;
+  background: #2A8A4A;
+  color: #fff;
+}
+
+.mom-approval__approve:hover {
+  filter: brightness(1.05);
+}

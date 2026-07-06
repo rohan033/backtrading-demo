@@ -12,7 +12,6 @@ import {
   X,
 } from 'lucide-react'
 
-import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 type Variant = 'default' | 'success' | 'error' | 'warning'
@@ -47,24 +46,24 @@ export interface ToasterRef {
 }
 
 const variantStyles: Record<Variant, string> = {
-  default: 'bg-card border-border text-text-primary',
-  success: 'bg-card border-green/50',
-  error: 'bg-card border-red/50',
-  warning: 'bg-card border-amber-500/50',
+  default: 'bg-white border-[#D0D0D0] text-[#1A1A1A]',
+  success: 'bg-white border-[#8FD4A8] text-[#1A1A1A]',
+  error: 'bg-white border-[#E8A0A0] text-[#1A1A1A]',
+  warning: 'bg-white border-[#E6C76B] text-[#1A1A1A]',
 }
 
 const titleColor: Record<Variant, string> = {
-  default: 'text-text-primary',
-  success: 'text-green',
-  error: 'text-red',
-  warning: 'text-amber-400',
+  default: 'text-[#1A1A1A]',
+  success: 'text-[#126B3A]',
+  error: 'text-[#A61F1F]',
+  warning: 'text-[#7A5A00]',
 }
 
 const iconColor: Record<Variant, string> = {
-  default: 'text-text-secondary',
-  success: 'text-green',
-  error: 'text-red',
-  warning: 'text-amber-400',
+  default: 'text-[#404040]',
+  success: 'text-[#126B3A]',
+  error: 'text-[#A61F1F]',
+  warning: 'text-[#8A6A00]',
 }
 
 const variantIcons: Record<Variant, React.ComponentType<{ className?: string }>> = {
@@ -106,17 +105,17 @@ const Toaster = forwardRef<ToasterRef, { defaultPosition?: Position }>(
               exit="exit"
               transition={{ duration: 0.3, ease: 'easeOut' }}
               className={cn(
-                'flex w-full max-w-xs items-start justify-between gap-2 rounded-xl border p-3 shadow-md',
+                'flex w-full max-w-sm items-start justify-between gap-2 rounded-lg border-[1.5px] p-3 shadow-md',
                 variantStyles[variant],
               )}
             >
               <div className="flex min-w-0 items-start gap-2">
                 <Icon className={cn('mt-0.5 h-4 w-4 flex-shrink-0', iconColor[variant])} />
-                <div className="min-w-0 space-y-0.5">
+                <div className="min-w-0 space-y-1">
                   {title ? (
                     <h3
                       className={cn(
-                        'text-xs font-medium leading-none',
+                        'text-xs font-bold leading-tight',
                         titleColor[variant],
                         highlightTitle && titleColor.success,
                       )}
@@ -124,24 +123,22 @@ const Toaster = forwardRef<ToasterRef, { defaultPosition?: Position }>(
                       {title}
                     </h3>
                   ) : null}
-                  <p className="text-xs text-text-secondary">{message}</p>
+                  <p className="text-xs leading-snug text-[#404040]">{message}</p>
                 </div>
               </div>
 
               <div className="flex shrink-0 items-center gap-2">
                 {actions ? (
-                  <Button
-                    variant={actions.variant || 'outline'}
-                    size="sm"
+                  <button
+                    type="button"
                     onClick={() => {
                       actions.onClick()
                       sonnerToast.dismiss(toastId)
                     }}
-                    className="h-7 cursor-pointer gap-1 px-2 text-xs"
+                    className="h-7 cursor-pointer rounded-md border-[1.5px] border-[#D0D0D0] bg-white px-2 text-xs font-bold text-[#1A1A1A] hover:bg-[#F5F5F5]"
                   >
-                    {actions.icon ? <actions.icon className="h-3.5 w-3.5" /> : null}
                     {actions.label}
-                  </Button>
+                  </button>
                 ) : null}
 
                 <button
@@ -150,10 +147,10 @@ const Toaster = forwardRef<ToasterRef, { defaultPosition?: Position }>(
                     sonnerToast.dismiss(toastId)
                     onDismiss?.()
                   }}
-                  className="rounded-full p-1 transition-colors hover:bg-secondary focus:outline-none"
+                  className="rounded-full p-1 text-[#606060] transition-colors hover:bg-[#F0F0F0] focus:outline-none"
                   aria-label="Dismiss notification"
                 >
-                  <X className="h-3 w-3 text-text-secondary" />
+                  <X className="h-3 w-3" />
                 </button>
               </div>
             </motion.div>

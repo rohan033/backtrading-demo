@@ -9,7 +9,7 @@ import './minimal/minimal-theme.css'
 /** Wireframe-inspired three-panel layout with pastel zone colors. */
 export default function MinimalAppShell() {
   return (
-    <WatchlistStreamProvider>
+    <WatchlistStreamProvider sessionQueueOnly>
       <WatchlistDockProvider>
         <div className="minimal-shell flex h-screen overflow-hidden">
           <LeftOrdersDrawer />

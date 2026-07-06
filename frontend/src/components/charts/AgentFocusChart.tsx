@@ -72,14 +72,17 @@ export default function AgentFocusChart({
 
   const chartSymbol = useMemo((): WatchlistChartSymbol | null => {
     if (!focus.symbol) return null
-    const token = live.feedToken || focus.token || focus.symbol
+    const instrumentToken = live.feedToken || focus.token
+    if (broker === 'etoro' && !instrumentToken) return null
+    const token = String(instrumentToken || (broker === 'angel' ? focus.symbol : ''))
+    if (!token) return null
     return {
       tickKey,
       watchlistId: 'agent',
       broker,
       accountEnv,
       tradingsymbol: focus.symbol,
-      symboltoken: String(token),
+      symboltoken: token,
       exchange: live.resolvedExchange || focus.exchange || (broker === 'etoro' ? 'ETORO' : 'NSE'),
     }
   }, [
