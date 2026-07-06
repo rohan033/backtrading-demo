@@ -3,7 +3,6 @@ import { useCallback, useEffect, useState } from 'react'
 import {
   getTradingSession,
   listTradingSessions,
-  sessionLabel,
   type TradingSession,
 } from '@/lib/tradingSessions'
 import { useUrlState } from '../useUrlState'
@@ -122,29 +121,12 @@ export default function AgentMode() {
         onClose={() => setCreateOpen(false)}
         onCreated={handleCreated}
       />
-      <header className="am-workspace-header">
-        <div className="am-workspace-header__actions">
-          <button type="button" className="am-thread-menu-btn" onClick={() => setDrawerOpen(true)}>
-            Sessions
-          </button>
-          <button
-            type="button"
-            className="am-thread-add"
-            onClick={() => setCreateOpen(true)}
-            aria-label="New session"
-            title="New session"
-          >
-            +
-          </button>
-        </div>
-        <span className="am-workspace-title">
-          {activeSession ? sessionLabel(activeSession) : 'Session'}
-        </span>
-      </header>
       {activeSession ? (
         <AgentModeSessionWorkspace
           sessionId={activeSession.id}
           onSessionUpdate={handleSessionUpdate}
+          onOpenSessions={() => setDrawerOpen(true)}
+          onCreateSession={() => setCreateOpen(true)}
         />
       ) : (
         <div className="am-chat-empty">Loading session…</div>

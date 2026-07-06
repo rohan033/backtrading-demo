@@ -2,16 +2,16 @@ import { useMemo } from 'react'
 
 import { Loader2 } from 'lucide-react'
 
-import { A2uiRenderer } from '@/components/agent/A2uiRenderer'
 import type { AgentTurn } from '@/hooks/useTradingSessionEvents'
 import type { TradingSessionEvent } from '@/lib/tradingSessions'
-import { surfaceFromSessionEvent } from '@/lib/tradingSessionSurfaces'
+import { statusEvents } from './TradingSessionStatusDrawer'
 import type { ToolCallStatus } from '@/lib/tool-call-display'
 
 type Props = {
   events: TradingSessionEvent[]
   turns: AgentTurn[]
   agentRunning: boolean
+  onOpenStatusDrawer?: () => void
 }
 
 const AGENT_INLINE_TYPES = new Set([
@@ -27,77 +27,6 @@ function normalizeToolStatus(raw: unknown): ToolCallStatus {
   if (s.includes('fail') || s === 'error') return 'failed'
   if (s.includes('complete') || s === 'success' || s === 'done') return 'completed'
   return 'running'
-}
-
-function EventRow({ event }: { event: TradingSessionEvent }) {
-  const p = event.payload || {}
-  const a2uiSurface = surfaceFromSessionEvent(event)
-
-  if (a2uiSurface && (event.event_type === 'agent_a2ui_surface' || event.event_type === 'agent_picks')) {
-    if (a2uiSurface.components.some(c => c.component === 'TopStockPicks')) {
-      return null
-    }
-    return (
-      <div className="am-ts-event am-ts-event--a2ui">
-        <A2uiRenderer surface={a2uiSurface} />
-      </div>
-    )
-  }
-
-  if (event.event_type === 'state_entered') {
-    const from = p.from_state ? `${String(p.from_state)} → ` : ''
-    return (
-      <div className="am-ts-event am-ts-event--state">
-        <span className="am-ts-event__label">State</span>
-        <span>{from}{String(p.state)}</span>
-        {p.reason ? <span className="am-ts-event__meta">{String(p.reason)}</span> : null}
-      </div>
-    )
-  }
-
-  if (event.event_type === 'symbol_resolved') {
-    return (
-      <div className="am-ts-event am-ts-event--ok">
-        <span className="am-ts-event__label">Symbol</span>
-        <span>{String(p.symbol)} · {String(p.token)} · {String(p.exchange)}</span>
-      </div>
-    )
-  }
-
-  if (event.event_type === 'top_pick_selected') {
-    return (
-      <div className="am-ts-event am-ts-event--ok">
-        <span className="am-ts-event__label">Top pick</span>
-        <span>{String(p.symbol)}</span>
-        {p.recommendation ? <span className="am-ts-event__meta">{String(p.recommendation)}</span> : null}
-      </div>
-    )
-  }
-
-  if (event.event_type === 'session_stopped' || event.event_type === 'agent_explore_failed') {
-    return (
-      <div className="am-ts-event am-ts-event--stop">
-        <span className="am-ts-event__label">{event.event_type === 'session_stopped' ? 'Stopped' : 'Failed'}</span>
-        <span>{String(p.stopped_reason || p.reason || '')}</span>
-      </div>
-    )
-  }
-
-  if (event.event_type === 'session_created' || event.event_type === 'agent_explore_started') {
-    return (
-      <div className="am-ts-event">
-        <span className="am-ts-event__label">{event.event_type === 'session_created' ? 'Created' : 'Explore'}</span>
-        <span>Session started</span>
-      </div>
-    )
-  }
-
-  return (
-    <div className="am-ts-event">
-      <span className="am-ts-event__label">{event.event_type}</span>
-      <span className="am-ts-event__meta">{JSON.stringify(p).slice(0, 120)}</span>
-    </div>
-  )
 }
 
 function SessionToolCallRow({
@@ -184,6 +113,7 @@ export default function TradingSessionActivityFeed({
   events,
   turns,
   agentRunning,
+  onOpenStatusDrawer,
 }: Props) {
   const turnByRunId = useMemo(() => {
     const map = new Map<string, AgentTurn>()
@@ -191,39 +121,41 @@ export default function TradingSessionActivityFeed({
     return map
   }, [turns])
 
+  const statusCount = useMemo(() => statusEvents(events).length, [events])
   const renderedRuns = new Set<string>()
+  const hasAgentActivity = turns.length > 0 || agentRunning
 
   return (
     <div className="am-ts-feed">
       <div className="am-ts-feed__toolbar">
-        <span className="am-ts-feed__title">Activity</span>
+        <span className="am-ts-feed__title">Agent</span>
+        {onOpenStatusDrawer ? (
+          <button
+            type="button"
+            className="am-ts-log-btn"
+            onClick={onOpenStatusDrawer}
+            title="Session status log"
+          >
+            Log{statusCount ? ` · ${statusCount}` : ''}
+          </button>
+        ) : null}
       </div>
       <div className="am-ts-feed__body">
-        {!events.length && !agentRunning ? (
-          <div className="am-empty-note">No activity yet.</div>
+        {!hasAgentActivity && !agentRunning ? (
+          <div className="am-empty-note">Waiting for agent activity…</div>
         ) : null}
         {events.map(event => {
-          if (AGENT_INLINE_TYPES.has(event.event_type)) {
-            if (event.event_type === 'agent_run_started') {
-              const runId = String(event.payload?.run_id || event.payload?.runId || '')
-              if (renderedRuns.has(runId)) return null
-              renderedRuns.add(runId)
-              const turn = turnByRunId.get(runId)
-              if (!turn) return null
-              const running = agentRunning && !turn.finished
-              return <AgentTurnBlock key={`turn-${runId}`} turn={turn} running={running} />
-            }
-            return null
+          if (!AGENT_INLINE_TYPES.has(event.event_type)) return null
+          if (event.event_type === 'agent_run_started') {
+            const runId = String(event.payload?.run_id || event.payload?.runId || '')
+            if (renderedRuns.has(runId)) return null
+            renderedRuns.add(runId)
+            const turn = turnByRunId.get(runId)
+            if (!turn) return null
+            const running = agentRunning && !turn.finished
+            return <AgentTurnBlock key={`turn-${runId}`} turn={turn} running={running} />
           }
-          if (event.event_type === 'agent_picks') return null
-          if (
-            event.event_type === 'agent_a2ui_surface'
-            && Array.isArray(event.payload?.components)
-            && event.payload.components.some((c: { component?: string }) => c.component === 'TopStockPicks')
-          ) {
-            return null
-          }
-          return <EventRow key={event.id} event={event} />
+          return null
         })}
         {agentRunning && turns.every(t => t.finished) ? (
           <div className="am-ts-turn">

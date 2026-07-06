@@ -1,5 +1,5 @@
 import { formatDbTimestamp } from '../../../lib/datetime'
-import { sessionLabel, type TradingSession } from '@/lib/tradingSessions'
+import { displayStoppedReason, sessionLabel, type TradingSession } from '@/lib/tradingSessions'
 
 type Props = {
   sessions: TradingSession[]
@@ -44,6 +44,7 @@ export default function AgentModeSessionList({
             <tbody>
               {sessions.map(session => {
                 const active = session.id === activeSessionId
+                const stoppedNote = displayStoppedReason(session.stopped_reason)
                 return (
                   <tr
                     key={session.id}
@@ -60,9 +61,9 @@ export default function AgentModeSessionList({
                         {' · '}
                         {formatDbTimestamp(session.updated_at)}
                       </div>
-                      {session.stopped_reason ? (
+                      {stoppedNote ? (
                         <div className="am-thread-row__meta am-thread-row__meta--reason">
-                          {session.stopped_reason}
+                          {stoppedNote}
                         </div>
                       ) : null}
                     </td>

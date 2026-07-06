@@ -13,6 +13,8 @@ export type TradingSession = {
   broker: string
   account_env: string
   max_capital: number
+  /** Actual capital deployed — populated from portfolio/orders once trades exist. */
+  actual_capital_used?: number | null
   profit_target: number
   symbol?: string | null
   token?: string | null
@@ -125,4 +127,21 @@ export function sessionLabel(session: TradingSession): string {
   if (session.symbol) return session.symbol
   if (session.state === 'explore') return 'Discovering…'
   return 'No symbol'
+}
+
+/** Hide internal phase-gate messages from user-facing UI. */
+export function displayStoppedReason(reason: string | null | undefined): string | null {
+  if (!reason) return null
+  const text = reason.trim()
+  if (!text) return null
+  if (text.startsWith('Phase 1:') || text.includes('not implemented in Phase 1')) return null
+  return text
+}
+
+export function displayStateReason(reason: string | null | undefined): string | null {
+  if (!reason) return null
+  const text = reason.trim()
+  if (!text) return null
+  if (text.toLowerCase() === 'session created') return null
+  return displayStoppedReason(text)
 }
