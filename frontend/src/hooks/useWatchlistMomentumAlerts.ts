@@ -226,6 +226,23 @@ export function useWatchlistMomentumAlerts({
         broker: symbol.broker,
         tradeEnv: symbol.tradeEnv,
         noTakeProfit: symbol.noTakeProfit,
+        currentPrice: ticksRef.current[tickKey]?.ltp ?? null,
+      })),
+    )
+  }, [symbolIndex])
+
+  useEffect(() => {
+    if (symbolIndex.size === 0) return
+    onWatchingUpdateRef.current?.(
+      [...symbolIndex.entries()].map(([tickKey, symbol]) => ({
+        id: tickKey,
+        tickKey,
+        watchlistId: symbol.watchlistId,
+        symboltoken: symbol.token,
+        tradingsymbol: symbol.tradingsymbol,
+        broker: symbol.broker,
+        tradeEnv: symbol.tradeEnv,
+        noTakeProfit: symbol.noTakeProfit,
         currentPrice: ticks[tickKey]?.ltp ?? null,
       })),
     )

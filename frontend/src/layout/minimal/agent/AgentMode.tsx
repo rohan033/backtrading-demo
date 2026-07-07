@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import {
+  deleteTradingSession,
   getTradingSession,
   listTradingSessions,
+  sessionLabel,
   type TradingSession,
 } from '@/lib/tradingSessions'
 import { useUrlState } from '../useUrlState'
@@ -21,6 +23,7 @@ export default function AgentMode() {
   const [createOpen, setCreateOpen] = useState(false)
   const [error, setError] = useState('')
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [deletingId, setDeletingId] = useState('')
 
   const refreshSessions = useCallback(async () => {
     setLoading(true)
@@ -78,9 +81,11 @@ export default function AgentMode() {
     navigate({ tab: 'agent', trading_session: sessionId })
   }, [navigate])
 
-  const handleCreated = useCallback((sessionId: string) => {
+  const handleCreated = useCallback((session: TradingSession) => {
+    setActiveSession(session)
+    setSessions(prev => [session, ...prev.filter(row => row.id !== session.id)])
+    navigate({ tab: 'agent', trading_session: session.id })
     void refreshSessions()
-    navigate({ tab: 'agent', trading_session: sessionId })
   }, [navigate, refreshSessions])
 
   const handleSessionUpdate = useCallback((session: TradingSession) => {
@@ -90,6 +95,29 @@ export default function AgentMode() {
       return [session, ...next]
     })
   }, [])
+
+  const handleDeleteSession = useCallback(async (sessionId: string) => {
+    const target = sessions.find(row => row.id === sessionId)
+    const label = target ? sessionLabel(target) : 'this session'
+    if (!window.confirm(`Delete ${label}? This cannot be undone.`)) return
+
+    setDeletingId(sessionId)
+    setError('')
+    try {
+      await deleteTradingSession(sessionId)
+      setSessions(prev => prev.filter(row => row.id !== sessionId))
+      if (activeSessionId === sessionId) {
+        setActiveSession(null)
+        navigate({ tab: 'agent', trading_session: '' }, { replace: true })
+      } else if (activeSession?.id === sessionId) {
+        setActiveSession(null)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete session')
+    } finally {
+      setDeletingId('')
+    }
+  }, [activeSession?.id, activeSessionId, navigate, sessions])
 
   if (!activeSessionId) {
     return (
@@ -108,6 +136,8 @@ export default function AgentMode() {
             listError={error}
             onSelect={selectSession}
             onCreate={() => setCreateOpen(true)}
+            onDelete={handleDeleteSession}
+            deletingId={deletingId}
           />
         </div>
       </div>
@@ -121,16 +151,19 @@ export default function AgentMode() {
         onClose={() => setCreateOpen(false)}
         onCreated={handleCreated}
       />
-      {activeSession ? (
+      {activeSessionId && activeSession?.id === activeSessionId ? (
         <AgentModeSessionWorkspace
-          sessionId={activeSession.id}
+          key={activeSessionId}
+          sessionId={activeSessionId}
           onSessionUpdate={handleSessionUpdate}
           onOpenSessions={() => setDrawerOpen(true)}
           onCreateSession={() => setCreateOpen(true)}
+          onDelete={() => { void handleDeleteSession(activeSessionId) }}
+          deleting={deletingId === activeSessionId}
         />
-      ) : (
+      ) : activeSessionId ? (
         <div className="am-chat-empty">Loading session…</div>
-      )}
+      ) : null}
       <AgentModeThreadsDrawer
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
@@ -141,6 +174,8 @@ export default function AgentMode() {
         listError={error}
         onSelect={selectSession}
         onCreate={() => setCreateOpen(true)}
+        onDelete={handleDeleteSession}
+        deletingId={deletingId}
       />
     </div>
   )

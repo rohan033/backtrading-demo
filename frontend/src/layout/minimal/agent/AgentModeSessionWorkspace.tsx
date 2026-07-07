@@ -3,8 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTradingSessionEvents } from '@/hooks/useTradingSessionEvents'
 import {
   getTradingSession,
-  SESSION_PIPELINE,
+  pipelineProgress,
   stopTradingSession,
+  displayStoppedReason,
   type TradingSession,
   type TradingSessionState,
 } from '@/lib/tradingSessions'
@@ -21,11 +22,8 @@ type Props = {
   onSessionUpdate: (session: TradingSession) => void
   onOpenSessions?: () => void
   onCreateSession?: () => void
-}
-
-function stateStepIndex(state: TradingSessionState): number {
-  const idx = SESSION_PIPELINE.indexOf(state)
-  return idx >= 0 ? idx : 0
+  onDelete?: () => void
+  deleting?: boolean
 }
 
 function pickSymbolMatch(pick: A2uiStockPick, symbol: string): boolean {
@@ -39,6 +37,8 @@ export default function AgentModeSessionWorkspace({
   onSessionUpdate,
   onOpenSessions,
   onCreateSession,
+  onDelete,
+  deleting = false,
 }: Props) {
   const [session, setSession] = useState<TradingSession | null>(null)
   const [stopping, setStopping] = useState(false)
@@ -46,8 +46,15 @@ export default function AgentModeSessionWorkspace({
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
   const [statusDrawerOpen, setStatusDrawerOpen] = useState(false)
 
-  const { events, turns, connected, polling, agentRunning } = useTradingSessionEvents(sessionId)
+  const { events, turns, connected, polling, agentRunning } = useTradingSessionEvents(sessionId, session?.state)
   const picks = useMemo(() => latestSessionPicks(events), [events])
+
+  const deployInfo = useMemo(() => {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      if (events[i].event_type === 'deploy_complete') return events[i].payload
+    }
+    return null
+  }, [events])
 
   const refreshSession = useCallback(async () => {
     try {
@@ -61,8 +68,12 @@ export default function AgentModeSessionWorkspace({
   }, [onSessionUpdate, sessionId])
 
   useEffect(() => {
+    setSession(null)
+    setSelectedSymbol(null)
+    setStatusDrawerOpen(false)
+    setLoadError('')
     void refreshSession()
-  }, [refreshSession])
+  }, [sessionId, refreshSession])
 
   useEffect(() => {
     if (!events.length) return
@@ -94,7 +105,7 @@ export default function AgentModeSessionWorkspace({
     } satisfies A2uiStockPick
   }, [picks, selectedSymbol, session?.exchange, session?.symbol, session?.token])
 
-  const showFocusPanel = Boolean(picks?.length || activePick?.symbol)
+  const showFocusPanel = Boolean(picks?.length || activePick?.symbol || session?.symbol)
 
   const handleStop = useCallback(async () => {
     setStopping(true)
@@ -116,9 +127,11 @@ export default function AgentModeSessionWorkspace({
   }
 
   const s = session!
-  const stepIdx = stateStepIndex(s.state)
+  const { currentIdx, furthestIdx } = pipelineProgress(s.state, s.state_log)
+  const stoppedReason = displayStoppedReason(s.stopped_reason)
   const pnlPct = s.profit_target > 0 ? Math.min(100, (s.total_pnl / s.profit_target) * 100) : 0
   const symbolLabel = s.symbol?.split('-')[0] || (agentRunning ? 'Discovering…' : 'No symbol')
+  const capitalUsed = s.actual_capital_used ?? (typeof deployInfo?.capital_used === 'number' ? deployInfo.capital_used : null)
 
   return (
     <div className="am-ts-workspace">
@@ -153,10 +166,10 @@ export default function AgentModeSessionWorkspace({
               <span className="am-ts-stat__label">Req cap</span>
               <span className="am-ts-stat__val">${s.max_capital.toLocaleString()}</span>
             </span>
-            {s.actual_capital_used != null && s.actual_capital_used > 0 ? (
-              <span className="am-ts-stat" title="Capital deployed per portfolio/orders">
+            {capitalUsed != null && capitalUsed > 0 ? (
+              <span className="am-ts-stat" title="Capital deployed">
                 <span className="am-ts-stat__label">Used</span>
-                <span className="am-ts-stat__val">${s.actual_capital_used.toLocaleString()}</span>
+                <span className="am-ts-stat__val">${capitalUsed.toLocaleString()}</span>
               </span>
             ) : null}
             <span className="am-ts-stat">
@@ -178,6 +191,9 @@ export default function AgentModeSessionWorkspace({
             </span>
             <span className="am-ts-pill">{s.account_env === 'live' ? 'Live' : 'Demo'}</span>
             <span className="am-ts-pill">{s.broker}</span>
+            {s.engine_id ? (
+              <span className="am-ts-pill" title="Monitor execution">{s.engine_id.slice(0, 12)}…</span>
+            ) : null}
             <button
               type="button"
               className="am-ts-stop"
@@ -186,14 +202,29 @@ export default function AgentModeSessionWorkspace({
             >
               {stopping ? '…' : 'Stop'}
             </button>
+            {onDelete ? (
+              <button
+                type="button"
+                className="am-ts-delete"
+                disabled={deleting}
+                onClick={onDelete}
+                title="Delete session"
+              >
+                {deleting ? '…' : 'Delete'}
+              </button>
+            ) : null}
           </div>
         </div>
 
         <div className="am-ts-header__row am-ts-header__row--sub">
           <SessionPipelineFlow
             state={s.state}
-            stepIdx={stepIdx}
+            currentIdx={currentIdx}
+            furthestIdx={furthestIdx}
           />
+          {stoppedReason ? (
+            <p className="am-ts-stopped-reason" title="Why this session stopped">{stoppedReason}</p>
+          ) : null}
         </div>
       </header>
 
@@ -202,6 +233,7 @@ export default function AgentModeSessionWorkspace({
           events={events}
           turns={turns}
           agentRunning={agentRunning}
+          sessionStopped={s.state === 'stopped'}
           onOpenStatusDrawer={() => setStatusDrawerOpen(true)}
         />
         {showFocusPanel ? (

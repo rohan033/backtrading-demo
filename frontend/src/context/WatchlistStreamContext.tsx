@@ -50,6 +50,8 @@ import {
   type WatchlistTick,
 } from '../lib/watchlists'
 
+const EMPTY_STRING_SET: ReadonlySet<string> = new Set<string>()
+
 function loadMomentumLookup(): MomentumLookup {
   return {
     watchlistIds: loadMomentumWatchlistIds(),
@@ -177,9 +179,9 @@ function WatchlistStreamInner({
 
   useWatchlistMomentumAlerts({
     watchlists,
-    momentumWatchlistIds: sessionQueueOnly ? new Set() : momentum.watchlistIds,
-    momentumSymbolKeys: sessionQueueOnly ? new Set() : momentum.symbolKeys,
-    momentumNoTpSymbolKeys: sessionQueueOnly ? new Set() : momentum.noTpSymbolKeys,
+    momentumWatchlistIds: sessionQueueOnly ? EMPTY_STRING_SET : momentum.watchlistIds,
+    momentumSymbolKeys: sessionQueueOnly ? EMPTY_STRING_SET : momentum.symbolKeys,
+    momentumNoTpSymbolKeys: sessionQueueOnly ? EMPTY_STRING_SET : momentum.noTpSymbolKeys,
     momentumLiveSymbolKeys: momentum.liveSymbolKeys,
     orderedSymbols,
     ticks,

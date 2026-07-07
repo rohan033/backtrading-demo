@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from control_plane.trading_session_agent_common import cancel_all_session_tasks, cancel_session_agent_run
 from control_plane.trading_session_explore import cancel_explore_agent, schedule_explore_agent
 from control_plane.trading_session_handlers import (
     HANDLERS,
@@ -10,6 +11,9 @@ from control_plane.trading_session_handlers import (
     Transition,
     is_terminal,
 )
+from control_plane.trading_session_monitor import schedule_monitor_loop
+from control_plane.trading_session_research import schedule_research_agent
+from control_plane.trading_session_strategy import schedule_strategy_agent
 from control_plane.trading_session_store import TradingSessionStore
 
 log = logging.getLogger("backtrading")
@@ -24,7 +28,11 @@ class TradingSessionEngine:
     def _handler_ctx(self) -> HandlerContext:
         return HandlerContext(
             store=self.store,
+            engine=self,
             schedule_explore_agent=lambda sid: schedule_explore_agent(sid, self.store, self),
+            schedule_research_agent=lambda sid: schedule_research_agent(sid, self.store, self),
+            schedule_strategy_agent=lambda sid: schedule_strategy_agent(sid, self.store, self),
+            schedule_monitor_loop=lambda sid: schedule_monitor_loop(sid, self.store, self),
         )
 
     async def create_session(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -84,8 +92,16 @@ class TradingSessionEngine:
             await self._apply_transition(session_id, transition)
         return self.get_session_detail(session_id)
 
-    async def stop_session(self, session_id: str, reason: str = "Stopped by user") -> dict[str, Any] | None:
-        cancel_explore_agent(session_id)
+    async def stop_session(
+        self,
+        session_id: str,
+        reason: str = "Stopped by user",
+        *,
+        skip_task_cancel: bool = False,
+    ) -> dict[str, Any] | None:
+        await cancel_session_agent_run(session_id)
+        cancel_explore_agent(session_id, skip_current=skip_task_cancel)
+        cancel_all_session_tasks(session_id, skip_current=skip_task_cancel)
         session = self.store.get_session(session_id)
         if not session:
             return None
@@ -101,6 +117,15 @@ class TradingSessionEngine:
             patch={"stopped_reason": reason},
         )
         return self.get_session_detail(session_id)
+
+    async def delete_session(self, session_id: str) -> bool:
+        await cancel_session_agent_run(session_id)
+        cancel_explore_agent(session_id)
+        cancel_all_session_tasks(session_id)
+        session = self.store.get_session(session_id)
+        if not session:
+            return False
+        return self.store.delete_session(session_id)
 
     async def transition_session(
         self,

@@ -2,16 +2,25 @@ import { useMemo } from 'react'
 
 import { Loader2 } from 'lucide-react'
 
+import { A2uiRenderer } from '@/components/agent/A2uiRenderer'
 import type { AgentTurn } from '@/hooks/useTradingSessionEvents'
 import type { TradingSessionEvent } from '@/lib/tradingSessions'
+import { sessionA2uiSurfaces } from '@/lib/tradingSessionSurfaces'
 import { statusEvents } from './TradingSessionStatusDrawer'
-import type { ToolCallStatus } from '@/lib/tool-call-display'
+import { formatSessionToolLabel, normalizeToolStatus, summarizeToolDetail, type ToolCallStatus } from '@/lib/tool-call-display'
 
 type Props = {
   events: TradingSessionEvent[]
   turns: AgentTurn[]
   agentRunning: boolean
+  sessionStopped?: boolean
   onOpenStatusDrawer?: () => void
+}
+
+function effectiveToolStatus(raw: string | undefined, inactive: boolean): ToolCallStatus {
+  const status = normalizeToolStatus(raw)
+  if (inactive && status === 'running') return 'failed'
+  return status
 }
 
 const AGENT_INLINE_TYPES = new Set([
@@ -22,20 +31,13 @@ const AGENT_INLINE_TYPES = new Set([
   'agent_text',
 ])
 
-function normalizeToolStatus(raw: unknown): ToolCallStatus {
-  const s = String(raw || 'running').toLowerCase()
-  if (s.includes('fail') || s === 'error') return 'failed'
-  if (s.includes('complete') || s === 'success' || s === 'done') return 'completed'
-  return 'running'
-}
-
 function SessionToolCallRow({
   label,
   status,
   detail,
 }: {
   label: string
-  status: ToolCallStatus
+  status: ReturnType<typeof normalizeToolStatus>
   detail?: string
 }) {
   return (
@@ -57,7 +59,15 @@ function SessionToolCallRow({
   )
 }
 
-function AgentTurnBlock({ turn, running }: { turn: AgentTurn; running: boolean }) {
+function AgentTurnBlock({
+  turn,
+  running,
+  sessionStopped,
+}: {
+  turn: AgentTurn
+  running: boolean
+  sessionStopped: boolean
+}) {
   const fullThinking = useMemo(() => {
     const fromThinking = turn.thinking.map(e => String(e.payload?.message || '')).join('')
     const fromText = turn.texts.map(e => String(e.payload?.text || '')).join('\n')
@@ -65,6 +75,7 @@ function AgentTurnBlock({ turn, running }: { turn: AgentTurn; running: boolean }
   }, [turn.thinking, turn.texts])
 
   const thinkingPreview = fullThinking.slice(0, 80)
+  const turnInactive = sessionStopped || Boolean(turn.finished)
 
   return (
     <div className="am-ts-turn">
@@ -80,16 +91,22 @@ function AgentTurnBlock({ turn, running }: { turn: AgentTurn; running: boolean }
           <summary>
             Tool calls ({turn.tools.length})
             <span className="am-ts-collapsible__preview">
-              {String(turn.tools[turn.tools.length - 1]?.payload?.tool_name || '')}
+              {formatSessionToolLabel(
+                String(turn.tools[turn.tools.length - 1]?.payload?.tool_name || 'tool'),
+                String(turn.tools[turn.tools.length - 1]?.payload?.tool_source || ''),
+              )}
             </span>
           </summary>
           <div className="am-ts-collapsible__body">
             {turn.tools.map(tool => (
               <SessionToolCallRow
                 key={tool.id}
-                label={String(tool.payload?.tool_name || 'tool')}
-                status={normalizeToolStatus(tool.payload?.tool_status)}
-                detail={String(tool.payload?.detail || '')}
+                label={formatSessionToolLabel(
+                  String(tool.payload?.tool_name || 'tool'),
+                  String(tool.payload?.tool_source || ''),
+                )}
+                status={effectiveToolStatus(String(tool.payload?.tool_status), turnInactive)}
+                detail={summarizeToolDetail(tool.payload as Record<string, unknown>)}
               />
             ))}
           </div>
@@ -113,6 +130,7 @@ export default function TradingSessionActivityFeed({
   events,
   turns,
   agentRunning,
+  sessionStopped = false,
   onOpenStatusDrawer,
 }: Props) {
   const turnByRunId = useMemo(() => {
@@ -122,6 +140,12 @@ export default function TradingSessionActivityFeed({
   }, [turns])
 
   const statusCount = useMemo(() => statusEvents(events).length, [events])
+  const insightSurfaces = useMemo(
+    () => sessionA2uiSurfaces(events).filter(
+      surface => !surface.components.some(c => c.component === 'TopStockPicks'),
+    ),
+    [events],
+  )
   const renderedRuns = new Set<string>()
   const hasAgentActivity = turns.length > 0 || agentRunning
 
@@ -141,9 +165,14 @@ export default function TradingSessionActivityFeed({
         ) : null}
       </div>
       <div className="am-ts-feed__body">
-        {!hasAgentActivity && !agentRunning ? (
+        {!hasAgentActivity && !agentRunning && !insightSurfaces.length ? (
           <div className="am-empty-note">Waiting for agent activity…</div>
         ) : null}
+        {insightSurfaces.map(surface => (
+          <div key={surface.messageId} className="am-ts-surface">
+            <A2uiRenderer surface={surface} />
+          </div>
+        ))}
         {events.map(event => {
           if (!AGENT_INLINE_TYPES.has(event.event_type)) return null
           if (event.event_type === 'agent_run_started') {
@@ -153,7 +182,7 @@ export default function TradingSessionActivityFeed({
             const turn = turnByRunId.get(runId)
             if (!turn) return null
             const running = agentRunning && !turn.finished
-            return <AgentTurnBlock key={`turn-${runId}`} turn={turn} running={running} />
+            return <AgentTurnBlock key={`turn-${runId}`} turn={turn} running={running} sessionStopped={sessionStopped} />
           }
           return null
         })}

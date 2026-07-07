@@ -50,6 +50,8 @@ from api.cursor_sdk_bridge import (
 
 log = logging.getLogger("backtrading.cursor_agent")
 
+VALID_INTERACTION_MODES = frozenset({"ask", "execute"})
+
 STRATEGY_AGENT_HINT = """You are the in-repo assistant for a backtrading / live-strategy platform.
 
 Help the user with:
@@ -98,7 +100,13 @@ You may inspect the repo, use tools, and interact with the control plane when th
 
 Prefer minimal, safe diffs and explain consequential actions before destructive control-plane operations."""
 
-VALID_INTERACTION_MODES = frozenset({"ask", "execute"})
+TRADING_SESSION_EXTERNAL_HINT = """Autonomous trading session agent (market research & execution).
+
+- Prefer MCP trading tools (search_instruments, get_company_news, get_recommendation_trends, get_historical_candles, portfolio/position tools) and web search for live market facts — not stale repo code.
+- BEFORE any final A2UI output: fetch get_historical_candles, compute recent $/% moves, and double-check every thesis against that data — do not contradict visible price action (e.g. calling a selloff when candles show a spike).
+- Emit trader-facing UI via fenced JSON a2ui / ai_action blocks only (no markdown prose).
+- Explore phase MUST end with a ```json fence containing TopStockPicks (3 ranked symbols with token + exchange from search_instruments).
+- Tool progress is logged elsewhere — do not narrate tools in chat."""
 
 WEB_SEARCH_TOOL_NAMES = frozenset({
     "websearch",
@@ -299,6 +307,7 @@ class CursorAgentService:
         interaction_mode: str = "ask",
         web_search_enabled: bool = True,
         research_session_id: Optional[str] = None,
+        trading_session: bool = False,
         ws: WebSocket | None = None,
         cancel_event: asyncio.Event | None = None,
         active_run: dict[str, Any] | None = None,
@@ -348,6 +357,7 @@ class CursorAgentService:
             interaction_mode=mode,
             web_search_enabled=web_search_enabled,
             research_session_id=research_session_id,
+            trading_session=trading_session,
         )
         media_paths: list[str] = []
 
@@ -407,6 +417,7 @@ class CursorAgentService:
                     event,
                     interaction_mode=mode,
                     web_search_enabled=web_search_enabled,
+                    trading_session=trading_session,
                 )
                 if blocked:
                     yield {
@@ -662,14 +673,25 @@ def _wrap_prompt(
     interaction_mode: str = "ask",
     web_search_enabled: bool = True,
     research_session_id: Optional[str] = None,
+    trading_session: bool = False,
 ) -> str:
     parts: list[str] = []
-    if new_agent:
+    if trading_session:
+        parts.append(TRADING_SESSION_EXTERNAL_HINT)
+        parts.append(
+            "Trading session A2UI output (required): end each phase with fenced ```json blocks. "
+            "Explore: CandidateDebate + TopStockPicks (exactly 3 picks)."
+        )
+    elif new_agent:
         parts.append(STRATEGY_AGENT_HINT)
     parts.append(WEB_SEARCH_ENABLED_HINT if web_search_enabled else WEB_SEARCH_DISABLED_HINT)
     if interaction_mode == "execute":
         parts.append(EXECUTE_MODE_HINT)
-        if research_session_id:
+        if trading_session:
+            parts.append(
+                "Trading session execute mode: full tool access. Prefer MCP + web for live market data."
+            )
+        elif research_session_id:
             parts.append(
                 f'Active AI Research session ({research_session_id}): '
                 'every new execution MUST use source_id "ai_research" and '
@@ -780,10 +802,12 @@ def _tool_call_blocked(
     *,
     interaction_mode: str,
     web_search_enabled: bool,
+    trading_session: bool = False,
 ) -> tuple[bool, str]:
     normalized = _normalize_tool_name(payload)
     blob = _tool_call_text(payload)
     _ = web_search_enabled
+    _ = trading_session
 
     if (
         normalized in SHELL_TOOL_NAMES

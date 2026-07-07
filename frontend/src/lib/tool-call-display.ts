@@ -2,6 +2,7 @@ export type ToolCallStatus = 'running' | 'completed' | 'failed'
 
 type ToolCallFields = {
   tool_name?: string
+  tool_source?: string
   tool_status?: string
   args?: string
   input?: string
@@ -12,6 +13,26 @@ type ToolCallFields = {
   content?: string
 }
 
+const MCP_TOOL_NAMES = new Set([
+  'create_strategy', 'get_strategies', 'get_strategy', 'get_strategy_duplicate_template',
+  'start_strategy', 'stop_strategy', 'unschedule_strategy', 'unschedule_all_strategies',
+  'stop_all_strategies', 'get_engines', 'get_engine', 'get_engine_logs',
+  'search_instruments', 'search_scrip', 'get_portfolio', 'get_etoro_positions',
+  'get_etoro_orders', 'get_account_portfolio', 'get_historical_candles',
+  'get_company_news', 'get_market_news', 'get_recommendation_trends', 'get_insider_transactions',
+  'get_control_events', 'get_control_trades', 'get_control_orders',
+  'get_event_sessions', 'get_event_session_events',
+  'get_research_sessions', 'get_research_session', 'get_research_messages',
+  'get_default_strategy_schedule', 'get_trading_day_options',
+])
+
+const WEB_TOOL_NAMES = new Set(['websearch', 'web_search', 'webfetch', 'web_fetch'])
+
+const REPO_TOOL_NAMES = new Set([
+  'read', 'grep', 'glob', 'glob_file_search', 'codebase_search', 'semanticsearch',
+  'list_dir', 'read_file', 'readfile',
+])
+
 export function normalizeToolStatus(raw?: string): ToolCallStatus {
   const status = (raw || 'running').toLowerCase()
   if (['completed', 'complete', 'success', 'succeeded', 'done'].includes(status)) {
@@ -21,6 +42,35 @@ export function normalizeToolStatus(raw?: string): ToolCallStatus {
     return 'failed'
   }
   return 'running'
+}
+
+function normalizeToolName(rawName: string): string {
+  return rawName.split('/').pop()?.trim().toLowerCase().replace(/-/g, '_') || 'tool'
+}
+
+export function classifyToolSource(toolName: string, explicit?: string): 'mcp' | 'web' | 'repo' | 'tool' {
+  if (explicit === 'mcp' || explicit === 'web' || explicit === 'repo' || explicit === 'tool') {
+    return explicit
+  }
+  const normalized = normalizeToolName(toolName)
+  if (WEB_TOOL_NAMES.has(normalized)) return 'web'
+  if (MCP_TOOL_NAMES.has(normalized) || normalized.startsWith('get_') || normalized.startsWith('search_')) {
+    return 'mcp'
+  }
+  if (REPO_TOOL_NAMES.has(normalized)) return 'repo'
+  return 'tool'
+}
+
+const SOURCE_PREFIX: Record<'mcp' | 'web' | 'repo' | 'tool', string> = {
+  mcp: 'MCP',
+  web: 'Web',
+  repo: 'Repo',
+  tool: 'Tool',
+}
+
+export function formatSessionToolLabel(toolName: string, toolSource?: string): string {
+  const source = classifyToolSource(toolName, toolSource)
+  return `${SOURCE_PREFIX[source]} · ${formatToolLabel(toolName)}`
 }
 
 export function formatToolLabel(rawName: string): string {
@@ -48,6 +98,10 @@ export function formatToolLabel(rawName: string): string {
     get_etoro_orders: 'Get eToro orders',
     get_account_portfolio: 'Get account portfolio',
     get_historical_candles: 'Get historical candles',
+    get_company_news: 'Company news',
+    get_market_news: 'Market news',
+    get_recommendation_trends: 'Analyst trends',
+    get_insider_transactions: 'Insider transactions',
     get_control_events: 'Get events',
     get_control_trades: 'Get trades',
     get_control_orders: 'Get orders',
@@ -58,6 +112,12 @@ export function formatToolLabel(rawName: string): string {
     get_research_messages: 'Get research messages',
     get_default_strategy_schedule: 'Default schedule',
     get_trading_day_options: 'Trading day options',
+    read: 'Read file',
+    grep: 'Search code',
+    glob: 'Find files',
+    list_dir: 'List directory',
+    read_file: 'Read file',
+    codebase_search: 'Code search',
   }
   if (mcpLabels[normalized]) return mcpLabels[normalized]
   const stripped = base

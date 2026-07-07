@@ -9,6 +9,8 @@ type Props = {
   listError?: string
   onSelect: (sessionId: string) => void
   onCreate: () => void
+  onDelete?: (sessionId: string) => void
+  deletingId?: string
 }
 
 export default function AgentModeSessionList({
@@ -19,6 +21,8 @@ export default function AgentModeSessionList({
   listError,
   onSelect,
   onCreate,
+  onDelete,
+  deletingId,
 }: Props) {
   return (
     <aside className="am-column">
@@ -55,6 +59,21 @@ export default function AgentModeSessionList({
                       <div className="am-thread-row__title">
                         <span className={`am-ts-badge am-ts-badge--${session.state}`}>{session.state}</span>
                         {sessionLabel(session)}
+                        {onDelete ? (
+                          <button
+                            type="button"
+                            className="am-thread-delete"
+                            aria-label={`Delete session ${sessionLabel(session)}`}
+                            title="Delete session"
+                            disabled={deletingId === session.id}
+                            onClick={event => {
+                              event.stopPropagation()
+                              onDelete(session.id)
+                            }}
+                          >
+                            {deletingId === session.id ? '…' : '×'}
+                          </button>
+                        ) : null}
                       </div>
                       <div className="am-thread-row__meta">
                         ${session.max_capital} → ${session.profit_target}

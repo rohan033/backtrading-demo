@@ -3,18 +3,23 @@ import { SESSION_PIPELINE } from '@/lib/tradingSessions'
 
 type Props = {
   state: TradingSessionState
-  stepIdx: number
+  currentIdx: number
+  furthestIdx: number
 }
 
-export default function SessionPipelineFlow({ state, stepIdx }: Props) {
+export default function SessionPipelineFlow({ state, currentIdx, furthestIdx }: Props) {
+  const isStopped = state === 'stopped'
+
   return (
     <details className="am-ts-flow" open>
       <summary className="am-ts-flow__summary" aria-label="Toggle session pipeline">
         <span className="am-ts-flow__summary-compact">
           <span className="am-ts-flow__dots" aria-hidden>
             {SESSION_PIPELINE.map((step, idx) => {
-              const done = idx < stepIdx
-              const current = idx === stepIdx
+              const done = isStopped ? idx <= furthestIdx : idx < currentIdx
+              const current = isStopped
+                ? (idx === SESSION_PIPELINE.length - 1)
+                : (idx === currentIdx)
               return (
                 <span
                   key={step}
@@ -34,9 +39,11 @@ export default function SessionPipelineFlow({ state, stepIdx }: Props) {
       <div className="am-ts-flow__panel">
         <ol className="am-ts-flow__track" aria-label="Session pipeline">
           {SESSION_PIPELINE.map((step, idx) => {
-            const done = idx < stepIdx
-            const current = idx === stepIdx
-            const pending = idx > stepIdx
+            const done = isStopped ? idx <= furthestIdx : idx < currentIdx
+            const current = isStopped
+              ? (idx === SESSION_PIPELINE.length - 1)
+              : (idx === currentIdx)
+            const pending = !done && !current
             return (
               <li
                 key={step}

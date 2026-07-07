@@ -55,13 +55,21 @@ export function groupEventsIntoTurns(events: TradingSessionEvent[]): AgentTurn[]
   return turns
 }
 
-export function useTradingSessionEvents(sessionId: string | null) {
+export function useTradingSessionEvents(
+  sessionId: string | null,
+  sessionState?: TradingSessionState | null,
+) {
   const [events, setEvents] = useState<TradingSessionEvent[]>([])
   const [connected, setConnected] = useState(false)
   const [polling, setPolling] = useState(false)
   const lastEventIdRef = useRef(0)
   const wsRef = useRef<WebSocket | null>(null)
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const activeSessionIdRef = useRef<string | null>(sessionId)
+
+  useEffect(() => {
+    activeSessionIdRef.current = sessionId
+  }, [sessionId])
 
   const appendEvents = useCallback((incoming: TradingSessionEvent[]) => {
     if (!incoming.length) return
@@ -91,8 +99,10 @@ export function useTradingSessionEvents(sessionId: string | null) {
     stopPoll()
     setPolling(true)
     const tick = async () => {
+      if (activeSessionIdRef.current !== id) return
       try {
         const rows = await pollTradingSessionEvents(id, lastEventIdRef.current)
+        if (activeSessionIdRef.current !== id) return
         appendEvents(rows)
       } catch {
         // keep polling
@@ -122,6 +132,7 @@ export function useTradingSessionEvents(sessionId: string | null) {
     }
 
     ws.onmessage = (msg) => {
+      if (activeSessionIdRef.current !== sessionId) return
       try {
         const data = JSON.parse(String(msg.data))
         if (data.type === 'event' && data.event) {
@@ -149,11 +160,12 @@ export function useTradingSessionEvents(sessionId: string | null) {
   }, [sessionId, appendEvents, startPoll, stopPoll])
 
   const agentRunning = useMemo(() => {
+    if (sessionState === 'stopped') return false
     const turns = groupEventsIntoTurns(events)
     const last = turns[turns.length - 1]
     if (!last) return false
     return !last.finished
-  }, [events])
+  }, [events, sessionState])
 
   const currentState = useMemo((): TradingSessionState | null => {
     let state: TradingSessionState | null = null

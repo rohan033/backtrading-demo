@@ -244,6 +244,7 @@ export function MomentumDeployProvider({
     setQueueMap(prev => {
       const next: Record<string, MomentumQueueEntry> = { ...prev }
       const incomingIds = new Set(entries.map(e => e.id))
+      let changed = false
 
       for (const entry of entries) {
         const existing = next[entry.id]
@@ -251,11 +252,23 @@ export function MomentumDeployProvider({
           existing && !['watching', 'triggered'].includes(existing.status)
             ? existing.status
             : 'watching'
-        next[entry.id] = {
+        const currentPrice = entry.currentPrice ?? existing?.currentPrice ?? null
+        const candidate: MomentumQueueEntry = {
           ...entry,
           status: keepStatus,
-          currentPrice: entry.currentPrice ?? existing?.currentPrice ?? null,
+          currentPrice,
           updatedAt: Date.now(),
+        }
+        if (
+          !existing
+          || existing.status !== candidate.status
+          || existing.currentPrice !== candidate.currentPrice
+          || existing.tradingsymbol !== candidate.tradingsymbol
+          || existing.tradeEnv !== candidate.tradeEnv
+          || existing.noTakeProfit !== candidate.noTakeProfit
+        ) {
+          next[entry.id] = candidate
+          changed = true
         }
       }
 
@@ -266,9 +279,11 @@ export function MomentumDeployProvider({
           && !armedMapRef.current[id]
         ) {
           delete next[id]
+          changed = true
         }
       }
 
+      if (!changed) return prev
       notifyMomentumQueueChanged()
       return next
     })

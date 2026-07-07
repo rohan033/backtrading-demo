@@ -11,6 +11,8 @@ type Props = {
   listError: string
   onSelect: (sessionId: string) => void
   onCreate: () => void
+  onDelete?: (sessionId: string) => void
+  deletingId?: string
 }
 
 export default function AgentModeThreadsDrawer({
@@ -23,6 +25,8 @@ export default function AgentModeThreadsDrawer({
   listError,
   onSelect,
   onCreate,
+  onDelete,
+  deletingId,
 }: Props) {
   if (!open) return null
 
@@ -44,6 +48,8 @@ export default function AgentModeThreadsDrawer({
             onClose()
           }}
           onCreate={onCreate}
+          onDelete={onDelete}
+          deletingId={deletingId}
         />
       </aside>
     </div>

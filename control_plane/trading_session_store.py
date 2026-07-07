@@ -372,3 +372,28 @@ class TradingSessionStore:
         if not row or row["max_id"] is None:
             return 0
         return int(row["max_id"])
+
+    def delete_session(self, session_id: str) -> bool:
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT id FROM trading_sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return False
+        conn.execute(
+            "DELETE FROM trading_session_events WHERE session_id = ?",
+            (session_id,),
+        )
+        conn.execute(
+            "DELETE FROM trading_session_state_log WHERE session_id = ?",
+            (session_id,),
+        )
+        conn.execute(
+            "DELETE FROM trading_sessions WHERE id = ?",
+            (session_id,),
+        )
+        conn.commit()
+        conn.close()
+        return True

@@ -94,6 +94,13 @@ export async function stopTradingSession(id: string, reason = 'Stopped by user')
   return parseJson<TradingSession>(res)
 }
 
+export async function deleteTradingSession(id: string): Promise<{ id: string; deleted: boolean }> {
+  const res = await fetch(`/api/control/trading-sessions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+  return parseJson<{ id: string; deleted: boolean }>(res)
+}
+
 export async function dispatchTradingSessionPrompt(id: string, prompt: string): Promise<TradingSession> {
   const res = await fetch(`/api/control/trading-sessions/${encodeURIComponent(id)}/prompt`, {
     method: 'POST',
@@ -144,4 +151,23 @@ export function displayStateReason(reason: string | null | undefined): string | 
   if (!text) return null
   if (text.toLowerCase() === 'session created') return null
   return displayStoppedReason(text)
+}
+
+export function pipelineProgress(
+  state: TradingSessionState,
+  stateLog?: TradingSessionStateLogEntry[],
+): { currentIdx: number; furthestIdx: number } {
+  const stoppedIdx = SESSION_PIPELINE.indexOf('stopped')
+  const currentIdx = SESSION_PIPELINE.indexOf(state)
+  if (state !== 'stopped') {
+    return { currentIdx: currentIdx >= 0 ? currentIdx : 0, furthestIdx: currentIdx >= 0 ? currentIdx : 0 }
+  }
+  let furthestIdx = 0
+  for (const entry of stateLog ?? []) {
+    const to = entry.to_state as TradingSessionState | null | undefined
+    if (!to || to === 'stopped') continue
+    const idx = SESSION_PIPELINE.indexOf(to)
+    if (idx >= 0) furthestIdx = Math.max(furthestIdx, idx)
+  }
+  return { currentIdx: stoppedIdx, furthestIdx }
 }

@@ -11,12 +11,13 @@ import {
 import {
   createTradingSession,
   type CreateTradingSessionInput,
+  type TradingSession,
 } from '@/lib/tradingSessions'
 
 type Props = {
   open: boolean
   onClose: () => void
-  onCreated: (sessionId: string) => void
+  onCreated: (session: TradingSession) => void
 }
 
 export default function AgentModeCreateSession({ open, onClose, onCreated }: Props) {
@@ -69,8 +70,8 @@ export default function AgentModeCreateSession({ open, onClose, onCreated }: Pro
         input.token = selected.symboltoken
         input.exchange = selected.exchange
       }
-      const session = await createTradingSession(input)
-      onCreated(session.id)
+      const session: TradingSession = await createTradingSession(input)
+      onCreated(session)
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create session')

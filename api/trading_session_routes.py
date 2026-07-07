@@ -88,6 +88,14 @@ async def stop_trading_session(session_id: str, req: StopSessionRequest | None =
     return {"status": True, "data": detail}
 
 
+@router.delete("/{session_id}", operation_id="delete_trading_session", summary="Delete a trading session")
+async def delete_trading_session(session_id: str):
+    deleted = await get_trading_session_engine().delete_session(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"status": True, "data": {"id": session_id, "deleted": True}}
+
+
 @router.get("/{session_id}/events", operation_id="poll_trading_session_events", summary="Poll session events")
 def poll_trading_session_events(session_id: str, since_id: int = 0, limit: int = 500):
     store = get_trading_session_store()
