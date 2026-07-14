@@ -2779,8 +2779,9 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
         </button>
       </div>
 
-      <div className="mb-5">
+      <div className={variant === 'minimal' ? 'mb-3' : 'mb-5'}>
         <StrategyScheduleSection
+          variant={variant}
           scheduleEnabled={scheduleEnabled}
           onScheduleEnabledChange={checked => {
             setScheduleEnabled(checked)

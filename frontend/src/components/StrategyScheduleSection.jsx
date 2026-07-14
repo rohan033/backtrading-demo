@@ -8,18 +8,82 @@ export default function StrategyScheduleSection({
   loading = false,
   broker = 'angel',
   compact = false,
+  variant = 'default',
 }) {
   const marketOpenLabel = scheduleHint || (broker === 'etoro' ? 'CEST 3:30 PM' : 'IST 09:15')
+  const isMinimal = variant === 'minimal' || compact
+
+  if (isMinimal) {
+    return (
+      <section
+        className={`ms-schedule-section${scheduleEnabled ? ' ms-schedule-section--on' : ''}`}
+      >
+        <div className="ms-schedule-section__row">
+          <div className="ms-schedule-section__copy">
+            <span className="ms-schedule-section__title">Schedule</span>
+            <span className="ms-schedule-section__hint">
+              {scheduleEnabled
+                ? `Auto-start at market open (${marketOpenLabel})`
+                : `Optional · save as draft and deploy manually`}
+            </span>
+          </div>
+          <label className="ms-schedule-section__toggle">
+            <input
+              type="checkbox"
+              checked={scheduleEnabled}
+              onChange={e => onScheduleEnabledChange(e.target.checked)}
+            />
+            <span>Scheduled</span>
+          </label>
+        </div>
+
+        {scheduleEnabled ? (
+          <div className="ms-schedule-section__body">
+            <div>
+              <div className="ms-schedule-section__label-row">
+                <span className="ms-schedule-section__label">Trading day</span>
+                {loading ? <span className="ms-schedule-section__loading">Updating…</span> : null}
+              </div>
+              <div className="ms-schedule-section__pills">
+                {tradingDayOptions.map(option => {
+                  const selected = scheduledDate === option.trading_day
+                  return (
+                    <button
+                      key={option.trading_day}
+                      type="button"
+                      onClick={() => onScheduledDateChange(option.trading_day)}
+                      className={`ms-schedule-section__pill${selected ? ' ms-schedule-section__pill--active' : ''}`}
+                    >
+                      {option.label}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <div>
+              <label className="ms-schedule-section__label">Or pick a date</label>
+              <input
+                type="date"
+                value={scheduledDate}
+                onChange={e => onScheduledDateChange(e.target.value)}
+                className="ms-schedule-section__date"
+              />
+            </div>
+          </div>
+        ) : null}
+      </section>
+    )
+  }
 
   return (
     <section
       className={`rounded-lg border ${
         scheduleEnabled ? 'border-accent/50 bg-accent/5' : 'border-border bg-card/60'
-      } ${compact ? 'p-3' : 'p-4'}`}
+      } p-4`}
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className={`font-bold text-text-primary ${compact ? 'text-xs' : 'text-sm'}`}>
+          <h3 className="font-bold text-text-primary text-sm">
             Schedule
           </h3>
           <p className="mt-1 text-[10px] text-text-secondary">
@@ -78,7 +142,7 @@ export default function StrategyScheduleSection({
           </div>
         </div>
       ) : (
-        <p className="mt-3 text-[10px] text-text-secondary">
+        <p className="mt-2 text-[10px] text-text-secondary">
           Save as a draft and deploy manually from the strategy detail page.
         </p>
       )}
