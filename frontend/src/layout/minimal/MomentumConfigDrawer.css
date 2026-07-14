@@ -10,9 +10,9 @@
 
 .wmom-drawer {
   position: fixed;
-  top: 20px;
-  right: 20px;
-  bottom: 20px;
+  top: 0;
+  right: 0;
+  bottom: 0;
   z-index: 1200;
   display: flex;
   flex-direction: column;

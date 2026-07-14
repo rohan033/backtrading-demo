@@ -279,7 +279,8 @@ class TradingManager:
 
         exit_result = None
         if position_id and hasattr(self.client, "aclose_position"):
-            closed = await self.client.aclose_position(position_id)
+            result = await self.client.aclose_position(position_id)
+            closed = isinstance(result, dict) and result.get("closed")
             exit_result = {"order_id": activity.order_id, "unique_order_id": raw.get("unique_order_id")} if closed else {}
         elif hasattr(self.client, "aclose_position"):
             logger.error("[TM] TP/SL trigger for executor=%s has no position_id; refusing symbol SELL fallback", executor_id)

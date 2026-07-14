@@ -123,7 +123,7 @@ const Toaster = forwardRef<ToasterRef, { defaultPosition?: Position }>(
                       {title}
                     </h3>
                   ) : null}
-                  <p className="text-xs leading-snug text-[#404040]">{message}</p>
+                  <p className="whitespace-pre-wrap break-all text-xs leading-snug text-[#404040]">{message}</p>
                 </div>
               </div>
 

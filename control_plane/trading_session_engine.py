@@ -72,20 +72,32 @@ class TradingSessionEngine:
         session = self.store.get_session(session_id)
         if not session:
             return None
-        if is_terminal(session["state"]):
+
+        user_prompt = str(prompt or "").strip()
+        if not user_prompt:
             return self.get_session_detail(session_id)
 
         state = session["state"]
+        if is_terminal(state):
+            handler = HANDLERS.get(state, {})
+            on_prompt = handler.get("on_prompt")
+            if not on_prompt:
+                return self.get_session_detail(session_id)
+            transition = await on_prompt(session, user_prompt, self._handler_ctx())
+            if transition:
+                await self._apply_transition(session_id, transition)
+            return self.get_session_detail(session_id)
+
         handler = HANDLERS.get(state, {})
         on_prompt = handler.get("on_prompt")
         transition = None
         if on_prompt:
-            transition = await on_prompt(session, prompt, self._handler_ctx())
+            transition = await on_prompt(session, user_prompt, self._handler_ctx())
 
         self.store.append_event(
             session_id,
             "prompt_handled",
-            {"state": state, "prompt": prompt[:500]},
+            {"state": state, "prompt": user_prompt[:500]},
         )
 
         if transition:

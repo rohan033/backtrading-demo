@@ -479,3 +479,14 @@ export function compactSurfacesAfterDeploy(
 
 // Back-compat alias (older bundles referenced this name).
 export const monitorBatchSurfaceFromUserMessage = monitorBatchSurfaceFromMessage
+
+/** Parse fenced A2UI blocks from raw assistant text (trading sessions, etc.). */
+export function surfacesFromAssistantText(content: string, messageId: string): A2uiSurfaceMessage[] {
+  return expandAssistantContent(content, messageId).filter(
+    surface => surface.components[0]?.component !== 'Text',
+  )
+}
+
+export function stripRecognizedFences(text: string): string {
+  return collapseMarkdownProse(text, 100_000)
+}

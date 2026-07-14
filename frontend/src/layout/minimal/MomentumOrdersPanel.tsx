@@ -225,9 +225,20 @@ function MomentumOrderRow({
 export default function MomentumOrdersPanel({
   ticks,
   filterText,
+  executionIds,
+  sessionScoped = false,
+  compact = false,
+  title = 'Momentum orders',
+  emptyMessage,
 }: {
   ticks: Record<string, WatchlistTick>
-  filterText: string
+  filterText?: string
+  executionIds?: string[]
+  /** When true, never show global momentum trades — session-only (empty until deploy). */
+  sessionScoped?: boolean
+  compact?: boolean
+  title?: string
+  emptyMessage?: string
 }) {
   const {
     trades: monitored,
@@ -245,8 +256,13 @@ export default function MomentumOrdersPanel({
 
   const trades = useMemo(() => {
     void version
-    const query = filterText.trim().toLowerCase()
+    const query = (filterText ?? '').trim().toLowerCase()
+    const scoped = sessionScoped || executionIds !== undefined
+    const idSet = scoped
+      ? new Set((executionIds ?? []).map(id => id.trim()).filter(Boolean))
+      : null
     return monitored.filter(trade => {
+      if (idSet !== null && !idSet.has(trade.executionId)) return false
       if (!query) return true
       return (
         trade.tradingsymbol.toLowerCase().includes(query)
@@ -256,7 +272,7 @@ export default function MomentumOrdersPanel({
         || trade.openPositions.some(pos => pos.positionId.includes(query))
       )
     })
-  }, [monitored, filterText, version])
+  }, [monitored, filterText, version, executionIds, sessionScoped])
 
   const handleRemove = (id: string) => {
     removeMomentumTrade(id)
@@ -270,47 +286,79 @@ export default function MomentumOrdersPanel({
     setVersion(v => v + 1)
   }
 
-  if (!loadMomentumTrades().length && !trades.length) {
-    return (
-      <div className="ms-news-empty">
-        No momentum orders yet. Arm symbols with ⚡ in Watch &amp; Trade — auto-deployed orders appear here with live P&amp;L.
-      </div>
-    )
+  if (!trades.length) {
+    if (sessionScoped || executionIds !== undefined) {
+      return (
+        <div className={`ms-mom-orders${compact ? ' ms-mom-orders--compact' : ''}`}>
+          {compact ? (
+            <div className="ms-mom-orders__header ms-mom-orders__header--compact">
+              <strong>{title}</strong>
+            </div>
+          ) : null}
+          <div className="ms-news-empty">
+            {emptyMessage ?? 'No orders for this session yet.'}
+          </div>
+        </div>
+      )
+    }
+    if (!loadMomentumTrades().length) {
+      return (
+        <div className="ms-news-empty">
+          {emptyMessage ?? 'No momentum orders yet. Arm symbols with ⚡ in Watch & Trade — auto-deployed orders appear here with live P&L.'}
+        </div>
+      )
+    }
+    return null
   }
 
   const openCount = trades.filter(t => t.status === 'open').length
   const completedCount = trades.filter(t => t.status === 'closed').length
 
   return (
-    <div className="ms-mom-orders">
-      <div className="ms-mom-orders__header">
-        <div>
-          <strong>Momentum orders</strong>
-          <span>
-            {trades.length} total
-            {openCount ? ` · ${openCount} open` : ''}
-            {completedCount ? ` · ${completedCount} completed` : ''}
-            {' · '}poll 15s per execution
-            {lastRefreshedAt ? (
-              <> · last {new Date(lastRefreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</>
-            ) : null}
-          </span>
+    <div className={`ms-mom-orders${compact ? ' ms-mom-orders--compact' : ''}`}>
+      {!compact ? (
+        <div className="ms-mom-orders__header">
+          <div>
+            <strong>{title}</strong>
+            <span>
+              {trades.length} total
+              {openCount ? ` · ${openCount} open` : ''}
+              {completedCount ? ` · ${completedCount} completed` : ''}
+              {' · '}poll 15s per execution
+              {lastRefreshedAt ? (
+                <> · last {new Date(lastRefreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</>
+              ) : null}
+            </span>
+          </div>
+          <div className="ms-mom-orders__actions">
+            <button
+              type="button"
+              className="ms-mom-orders__refresh"
+              onClick={() => void refresh()}
+              disabled={isRefreshing}
+              title="Refresh broker data for momentum executions"
+            >
+              {isRefreshing ? 'Refreshing…' : 'Refresh'}
+            </button>
+            <button type="button" className="ms-mom-orders__clear" onClick={handleClear}>
+              Clear
+            </button>
+          </div>
         </div>
-        <div className="ms-mom-orders__actions">
+      ) : (
+        <div className="ms-mom-orders__header ms-mom-orders__header--compact">
+          <strong>{title}</strong>
           <button
             type="button"
             className="ms-mom-orders__refresh"
             onClick={() => void refresh()}
             disabled={isRefreshing}
-            title="Refresh broker data for momentum executions"
+            title="Refresh order status"
           >
-            {isRefreshing ? 'Refreshing…' : 'Refresh'}
-          </button>
-          <button type="button" className="ms-mom-orders__clear" onClick={handleClear}>
-            Clear
+            {isRefreshing ? '…' : '↻'}
           </button>
         </div>
-      </div>
+      )}
       <div className="ms-mom-orders__list">
         {trades.map(trade => {
           const tickKey = watchlistTickKey(trade.broker, trade.accountEnv, trade.symboltoken)

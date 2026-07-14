@@ -14,6 +14,8 @@ import { useCandidateChartLive } from '@/hooks/useCandidateChartLive'
 
 import '../WatchAndTrade.css'
 
+import MomentumOrdersPanel from '../MomentumOrdersPanel'
+
 type Props = {
   picks?: A2uiStockPick[] | null
   selectedSymbol: string | null
@@ -21,6 +23,7 @@ type Props = {
   broker: string
   accountEnv: string
   fallbackPick?: A2uiStockPick | null
+  executionIds?: string[]
 }
 
 function pickSymbolMatch(pick: A2uiStockPick, symbol: string): boolean {
@@ -63,6 +66,7 @@ export default function TradingSessionFocusPanel({
   broker,
   accountEnv,
   fallbackPick,
+  executionIds = [],
 }: Props) {
   const [chartHeight, setChartHeight] = useState(240)
   const chartResizingRef = useRef(false)
@@ -194,6 +198,17 @@ export default function TradingSessionFocusPanel({
                   className="wt-chart-resize-handle"
                   onMouseDown={handleChartResizeStart}
                   title="Drag to resize chart"
+                />
+              </div>
+
+              <div className="am-ts-orders-wrap">
+                <MomentumOrdersPanel
+                  ticks={{}}
+                  executionIds={executionIds}
+                  sessionScoped
+                  compact
+                  title="Session orders"
+                  emptyMessage="Orders appear here after deploy."
                 />
               </div>
             </>

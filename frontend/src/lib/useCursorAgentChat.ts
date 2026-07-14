@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
-  formatToolLabel,
+  formatSessionToolLabel,
   normalizeToolStatus,
+  resolveToolName,
   summarizeToolDetail,
+  type ToolCallFields,
   type ToolCallStatus,
 } from '@/lib/tool-call-display'
 import { stripAiActionBlocks } from '@/lib/aiActionBlocks'
@@ -26,6 +28,7 @@ export type ChatMessage = {
   toolName?: string
   toolStatus?: ToolCallStatus
   toolDetail?: string
+  toolEvent?: ToolCallFields
   attachments?: ChatMediaAttachment[]
   replySummary?: ChatReplySummary
 }
@@ -185,7 +188,8 @@ export function useCursorAgentChat(
     const toolName = event.tool_name?.trim() || 'tool'
     const toolStatus = normalizeToolStatus(event.tool_status)
     const toolDetail = summarizeToolDetail(event)
-    const label = formatToolLabel(toolName)
+    const label = formatSessionToolLabel(toolName, undefined, event)
+    const resolvedName = resolveToolName(toolName, event)
 
     setMessages(prev => {
       let openIdx = -1
@@ -205,6 +209,7 @@ export function useCursorAgentChat(
                 content: label,
                 toolStatus,
                 toolDetail: toolDetail || msg.toolDetail,
+                toolEvent: event,
               }
             : msg,
         )
@@ -216,9 +221,10 @@ export function useCursorAgentChat(
           id: nextId('tool'),
           role: 'tool',
           content: label,
-          toolName,
+          toolName: resolvedName,
           toolStatus,
           toolDetail,
+          toolEvent: event,
         },
       ]
     })

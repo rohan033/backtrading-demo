@@ -1,0 +1,47 @@
+.tool-call-args {
+  margin: 2px 0 4px 26px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.tool-call-args__summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+  user-select: none;
+}
+
+.tool-call-args__summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool-call-args__summary::before {
+  content: '▸ ';
+  display: inline-block;
+  transition: transform 0.12s ease;
+}
+
+.tool-call-args[open] .tool-call-args__summary::before {
+  transform: rotate(90deg);
+}
+
+.tool-call-args__body {
+  margin: 0;
+  padding: 6px 8px 8px;
+  border-top: 1px dashed #e2e8f0;
+  font-size: 10px;
+  line-height: 1.4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #334155;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 140px;
+  overflow: auto;
+}

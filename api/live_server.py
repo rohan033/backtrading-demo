@@ -854,10 +854,12 @@ class LiveEngine:
             units=units,
             instrument_id=instrument_id,
         )
-        action = "POSITION_CLOSED" if closed else "POSITION_CLOSE_FAILED"
+        close_ok = isinstance(closed, dict) and closed.get("closed")
+        action = "POSITION_CLOSED" if close_ok else "POSITION_CLOSE_FAILED"
         result_details = {
             **request_details,
-            "success": closed,
+            "success": close_ok,
+            "debug": closed if isinstance(closed, dict) else None,
         }
         if self.db_writer:
             self.db_writer.log_event(order_id, action, result_details)
@@ -869,7 +871,7 @@ class LiveEngine:
             "position_id": str(position_id),
             "details": result_details,
         })
-        if not closed:
+        if not close_ok:
             raise ValueError(f"Failed to close position '{position_id}'")
         return result_details
 

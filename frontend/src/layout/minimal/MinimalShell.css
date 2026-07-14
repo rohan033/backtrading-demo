@@ -35,7 +35,7 @@
   font-family: var(--ms-font);
   color: var(--ms-text);
   overflow: hidden;
-  padding: 20px;
+  padding: 0;
   gap: 0;
   box-sizing: border-box;
 }
@@ -66,9 +66,9 @@
 
 .ms-drawer--left-overlay {
   position: fixed;
-  top: 20px;
-  left: 20px;
-  bottom: 20px;
+  top: 0;
+  left: 0;
+  bottom: 0;
   z-index: 40;
   margin-right: 0;
   overflow: visible;
@@ -167,7 +167,6 @@
   flex: 1;
   min-width: 0;
   border: 1.5px solid var(--ms-border);
-  border-radius: var(--ms-radius);
   overflow: hidden;
 }
 

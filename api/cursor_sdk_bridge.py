@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Optional
 
 from cursor_sdk import AsyncClient, CursorAgentError, LocalAgentOptions
 
+from api.tool_call_logger import log_tool_call_event
 from api.workspace_media import attachments_from_paths, extract_media_paths_from_text
 from control_plane.engine_process_manager import REPO_ROOT
 
@@ -145,6 +146,7 @@ def sdk_message_payload(message: Any) -> dict[str, Any] | None:
     elif message_type == "tool_call":
         payload["tool_name"] = getattr(message, "name", None)
         payload["tool_status"] = getattr(message, "status", None)
+        payload["call_id"] = getattr(message, "call_id", None)
         _enrich_tool_payload(message, payload)
     elif message_type == "status":
         payload["status"] = getattr(message, "status", None)
@@ -153,7 +155,7 @@ def sdk_message_payload(message: Any) -> dict[str, Any] | None:
 
 
 def _enrich_tool_payload(message: Any, payload: dict[str, Any]) -> None:
-    for attr in ("args", "input", "arguments", "command", "parameters", "path", "content"):
+    for attr in ("args", "result", "input", "arguments", "command", "parameters", "path", "content"):
         if not hasattr(message, attr):
             continue
         value = getattr(message, attr)
@@ -355,6 +357,13 @@ class CursorSdkBridge:
                     if payload.get("media_paths"):
                         yield {"type": "media", "media_paths": payload["media_paths"]}
                 elif message_type == "tool_call":
+                    log_tool_call_event(
+                        message=message_event,
+                        payload=payload,
+                        session_name=session_name,
+                        agent_id=agent.agent_id,
+                        run_id=run.id,
+                    )
                     yield {"type": "tool_call", **payload}
                 elif message_type == "status":
                     yield {"type": "status", **payload}

@@ -115,6 +115,42 @@
 .st-btn:hover { background: #EEE; }
 .st-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.st-delete-old {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.st-delete-old__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.st-delete-old__select {
+  height: 26px;
+  min-width: 84px;
+  padding: 0 8px;
+  border: 1.5px solid var(--ms-border, #303030);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ms-text, #202020);
+  font-size: 11px;
+  font-weight: 600;
+  outline: none;
+  color-scheme: light;
+}
+.st-delete-old__select:focus {
+  border-color: #4A90D9;
+  box-shadow: 0 0 0 1px rgba(74, 144, 217, 0.35);
+}
+
 .st-btn--primary {
   background: #4A90D9;
   color: #fff;
@@ -238,7 +274,7 @@
 .st-col-status { width: 12%; }
 .st-col-env { width: 8%; }
 .st-col-when { width: 17%; }
-.st-col-action { width: 7%; }
+.st-col-action { width: 11%; }
 
 .st-thead-row {
   background: #ECECEC;
@@ -382,6 +418,13 @@
   text-align: right;
 }
 
+.st-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .st-log-link {
   background: none;
   border: none;
@@ -393,6 +436,22 @@
   white-space: nowrap;
 }
 .st-log-link:hover { text-decoration: underline; }
+
+.st-delete-link {
+  background: none;
+  border: none;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #9E1B1B;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.st-delete-link:hover:not(:disabled) { text-decoration: underline; }
+.st-delete-link:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 
 /* ── Status badges ───────────────────────────────────────── */
 .st-badge {
@@ -1043,7 +1102,7 @@
   background: #fff;
   border: 1.5px solid var(--ms-border, #303030);
   border-radius: 8px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 /* CreateExecutionPanel minimal overrides */
@@ -1142,14 +1201,28 @@
 .ms-preview-panel {
   display: flex;
   flex-direction: column;
-  min-height: 420px;
+  align-self: start;
+  width: 100%;
   padding: 12px;
   border: 1.5px solid var(--ms-border, #303030);
   border-radius: 8px;
   background: #fff;
 }
 
+.st-create .ms-preview-sticky {
+  position: sticky;
+  top: 10px;
+  align-self: start;
+  z-index: 3;
+  width: 100%;
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .ms-preview-panel--empty {
+  align-self: stretch;
+  min-height: 280px;
   align-items: center;
   justify-content: center;
   text-align: center;
@@ -1297,7 +1370,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-top: auto;
+  margin-top: 8px;
 }
 
 .ms-level-row {

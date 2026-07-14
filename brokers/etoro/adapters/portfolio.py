@@ -316,6 +316,11 @@ def etoro_position_to_portfolio_row(
         or position.get("openRate")
         or open_rate
     )
+    position_id = (
+        position.get("positionID")
+        or position.get("positionId")
+        or position.get("PositionID")
+    )
     row = {
         "tradingsymbol": symbol,
         "symbol": display_name,
@@ -325,6 +330,7 @@ def etoro_position_to_portfolio_row(
         "averageprice": str(open_rate),
         "ltp": str(ltp),
         "broker": "etoro",
+        "position_id": str(position_id) if position_id is not None else "",
     }
     for key in (
         "internal_asset_class_name",

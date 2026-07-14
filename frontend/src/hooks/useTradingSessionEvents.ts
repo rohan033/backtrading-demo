@@ -28,6 +28,31 @@ function runIdFromEvent(event: TradingSessionEvent): string {
   return String(payload.run_id || payload.runId || 'default')
 }
 
+export function mergeToolCallEvents(tools: TradingSessionEvent[]): TradingSessionEvent[] {
+  const merged: TradingSessionEvent[] = []
+
+  for (const tool of tools) {
+    const payload = tool.payload || {}
+    const callId = String(payload.call_id || '')
+    const last = merged[merged.length - 1]
+    const lastPayload = last?.payload || {}
+    const canMerge = Boolean(last && callId && callId === String(lastPayload.call_id || ''))
+
+    if (canMerge && last) {
+      const nextPayload = { ...lastPayload, ...payload }
+      for (const key of ['args', 'detail'] as const) {
+        if (!nextPayload[key] && lastPayload[key]) nextPayload[key] = lastPayload[key]
+      }
+      merged[merged.length - 1] = { ...tool, payload: nextPayload }
+      continue
+    }
+
+    merged.push(tool)
+  }
+
+  return merged
+}
+
 export function groupEventsIntoTurns(events: TradingSessionEvent[]): AgentTurn[] {
   const turns: AgentTurn[] = []
   let current: AgentTurn | null = null
@@ -47,7 +72,9 @@ export function groupEventsIntoTurns(events: TradingSessionEvent[]): AgentTurn[]
     }
     if (!current) continue
 
-    if (event.event_type === 'agent_tool_call') current.tools.push(event)
+    if (event.event_type === 'agent_tool_call') {
+      current.tools = mergeToolCallEvents([...current.tools, event])
+    }
     else if (event.event_type === 'agent_thinking') current.thinking.push(event)
     else if (event.event_type === 'agent_text') current.texts.push(event)
     else if (event.event_type === 'agent_run_finished') current.finished = event

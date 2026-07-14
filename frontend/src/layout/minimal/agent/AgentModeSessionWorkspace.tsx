@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useTradingSessionEvents } from '@/hooks/useTradingSessionEvents'
 import {
@@ -6,11 +6,15 @@ import {
   pipelineProgress,
   stopTradingSession,
   displayStoppedReason,
+  showSessionInstructionInput,
   type TradingSession,
-  type TradingSessionState,
 } from '@/lib/tradingSessions'
 import { latestSessionPicks } from '@/lib/tradingSessionSurfaces'
 import type { A2uiStockPick } from '@/lib/agentA2uiCatalog'
+import {
+  recordMomentumTrade,
+  WL_MOMENTUM_TRADE_EVENT,
+} from '@/lib/watchlistMomentumState'
 
 import TradingSessionActivityFeed from './TradingSessionActivityFeed'
 import TradingSessionFocusPanel from './TradingSessionFocusPanel'
@@ -55,6 +59,44 @@ export default function AgentModeSessionWorkspace({
     }
     return null
   }, [events])
+
+  const executionIds = useMemo(() => {
+    const ids = new Set<string>()
+    if (session?.engine_id) ids.add(session.engine_id)
+    for (const event of events) {
+      if (event.event_type !== 'deploy_complete') continue
+      const id = String(event.payload?.execution_id || '').trim()
+      if (id) ids.add(id)
+    }
+    return [...ids]
+  }, [events, session?.engine_id])
+
+  const recordedDeployRef = useRef<Set<string>>(new Set())
+
+  useEffect(() => {
+    for (const event of events) {
+      if (event.event_type !== 'deploy_complete') continue
+      const executionId = String(event.payload?.execution_id || '').trim()
+      if (!executionId || recordedDeployRef.current.has(executionId)) continue
+      recordedDeployRef.current.add(executionId)
+      const symbol = String(event.payload?.symbol || session?.symbol || '')
+      const entryPrice = Number(event.payload?.entry_price || 0)
+      recordMomentumTrade({
+        id: `${executionId}-${event.id}`,
+        watchlistId: `session-${sessionId}`,
+        symboltoken: String(session?.token || symbol),
+        tradingsymbol: symbol.split('-')[0] || symbol,
+        exchange: String(session?.exchange || 'ETORO'),
+        broker: session?.broker || 'etoro',
+        executionId,
+        accountEnv: (session?.account_env === 'live' ? 'live' : 'demo'),
+        noTakeProfit: false,
+        entryPrice: entryPrice > 0 ? entryPrice : 0,
+        createdAt: Date.now(),
+      })
+      window.dispatchEvent(new CustomEvent(WL_MOMENTUM_TRADE_EVENT))
+    }
+  }, [events, session?.account_env, session?.broker, session?.exchange, session?.symbol, session?.token, sessionId])
 
   const refreshSession = useCallback(async () => {
     try {
@@ -228,24 +270,29 @@ export default function AgentModeSessionWorkspace({
         </div>
       </header>
 
-      <div className={`am-ts-body${showFocusPanel ? ' am-ts-body--split' : ''}`}>
-        <TradingSessionActivityFeed
-          events={events}
-          turns={turns}
-          agentRunning={agentRunning}
-          sessionStopped={s.state === 'stopped'}
-          onOpenStatusDrawer={() => setStatusDrawerOpen(true)}
-        />
-        {showFocusPanel ? (
-          <TradingSessionFocusPanel
-            picks={picks}
-            selectedSymbol={selectedSymbol || s.symbol || null}
-            onPickSymbol={setSelectedSymbol}
-            broker={s.broker}
-            accountEnv={s.account_env}
-            fallbackPick={activePick}
+      <div className="am-ts-body">
+        <div className={`am-ts-body-main${showFocusPanel ? ' am-ts-body--split' : ''}`}>
+          <TradingSessionActivityFeed
+            events={events}
+            turns={turns}
+            agentRunning={agentRunning}
+            sessionStopped={s.state === 'stopped'}
+            onOpenStatusDrawer={() => setStatusDrawerOpen(true)}
+            session={showSessionInstructionInput(s) ? s : null}
+            onSessionUpdate={onSessionUpdate}
           />
-        ) : null}
+          {showFocusPanel ? (
+            <TradingSessionFocusPanel
+              picks={picks}
+              selectedSymbol={selectedSymbol || s.symbol || null}
+              onPickSymbol={setSelectedSymbol}
+              broker={s.broker}
+              accountEnv={s.account_env}
+              fallbackPick={activePick}
+              executionIds={executionIds}
+            />
+          ) : null}
+        </div>
         <TradingSessionStatusDrawer
           open={statusDrawerOpen}
           onClose={() => setStatusDrawerOpen(false)}

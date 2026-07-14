@@ -2,6 +2,9 @@ import { ChevronRight, Loader2 } from 'lucide-react'
 
 import { ChatMediaGallery } from '@/components/ui/chat-media'
 import { ToolCallHint } from '@/components/ui/tool-call-hint'
+import { ToolCallMcpArgsAccordion } from '@/components/ui/tool-call-mcp-args'
+import '@/components/ui/tool-call-mcp-args.css'
+import { extractMcpToolArgs } from '@/lib/tool-call-display'
 import { extractMediaAttachments } from '@/lib/workspaceMedia'
 import type { ChatMessage } from '@/lib/useCursorAgentChat'
 import { cn } from '@/lib/utils'
@@ -50,12 +53,22 @@ export function ToolCallsCollapsible({ tools, className }: ToolCallsCollapsibleP
       <div className="max-h-36 overflow-y-auto border-t border-border/50 px-2 py-1">
         {tools.map(tool => {
           const media = extractMediaAttachments(tool.toolDetail || '')
+          const toolEvent = tool.toolEvent || {
+            tool_name: tool.toolName,
+            args: tool.toolDetail,
+            detail: tool.toolDetail,
+          }
+          const showArgsAccordion = Boolean(extractMcpToolArgs(toolEvent))
           return (
             <div key={tool.id} className="py-0.5">
               <ToolCallHint
                 label={tool.content}
                 status={tool.toolStatus ?? 'running'}
-                detail={tool.toolDetail}
+                detail={showArgsAccordion ? undefined : tool.toolDetail}
+              />
+              <ToolCallMcpArgsAccordion
+                toolName={tool.toolName || 'tool'}
+                event={toolEvent}
               />
               {tool.toolStatus === 'completed' && media.length ? (
                 <ChatMediaGallery attachments={media} className="px-2 pb-1" />

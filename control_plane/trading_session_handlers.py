@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from control_plane.instrument_resolve import resolve_instrument
+from control_plane.trading_session_prompts import infer_resume_state
 from control_plane.trading_session_store import SESSION_STATES, TradingSessionStore
 
 NO_SYMBOL_REASON = "No symbol supplied; agent-driven discovery not implemented yet"
@@ -106,10 +107,21 @@ async def research_on_enter(session: dict[str, Any], ctx: HandlerContext) -> Tra
 
 
 async def strategy_on_enter(session: dict[str, Any], ctx: HandlerContext) -> Transition | None:
-    if ctx.schedule_strategy_agent:
-        ctx.schedule_strategy_agent(session["id"])
-        return None
-    return Transition(to_state="stopped", reason="Strategy agent scheduler unavailable")
+    from control_plane.trading_session_strategy import prepare_session_strategy_config
+
+    config = await prepare_session_strategy_config(session["id"], ctx.store)
+    if not config:
+        return Transition(
+            to_state="stopped",
+            reason="Strategy failed: could not build deploy config",
+            patch={"stopped_reason": "Strategy failed: could not build deploy config"},
+        )
+
+    return Transition(
+        to_state="deploy",
+        reason="Deterministic strategy ready",
+        patch={"strategy_type": "momentum"},
+    )
 
 
 async def deploy_on_enter(session: dict[str, Any], ctx: HandlerContext) -> Transition | None:
@@ -137,6 +149,28 @@ async def stopped_on_enter(session: dict[str, Any], ctx: HandlerContext) -> Tran
     return None
 
 
+async def stopped_on_prompt(session: dict[str, Any], prompt: str, ctx: HandlerContext) -> Transition | None:
+    text = str(prompt or "").strip()
+    if not text:
+        return None
+
+    session_id = session["id"]
+    state_log = ctx.store.list_state_log(session_id)
+    resume_state = infer_resume_state(session, state_log)
+
+    ctx.store.append_event(
+        session_id,
+        "user_instruction",
+        {"prompt": text, "resume_state": resume_state},
+    )
+
+    return Transition(
+        to_state=resume_state,
+        reason=f"Resuming {resume_state} from user instruction",
+        patch={"stopped_reason": None},
+    )
+
+
 HANDLERS: dict[str, dict[str, Any]] = {
     "explore": {
         "on_enter": explore_on_enter,
@@ -147,7 +181,7 @@ HANDLERS: dict[str, dict[str, Any]] = {
     "strategy": {"on_enter": strategy_on_enter, "on_prompt": None, "on_exit": strategy_on_exit},
     "deploy": {"on_enter": deploy_on_enter, "on_prompt": None, "on_exit": None},
     "monitor": {"on_enter": monitor_on_enter, "on_prompt": None, "on_exit": monitor_on_exit},
-    "stopped": {"on_enter": stopped_on_enter, "on_prompt": None, "on_exit": None},
+    "stopped": {"on_enter": stopped_on_enter, "on_prompt": stopped_on_prompt, "on_exit": None},
 }
 
 

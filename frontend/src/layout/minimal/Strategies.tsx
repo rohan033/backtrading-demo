@@ -32,6 +32,7 @@ import {
   resolveExecutionSourceMetaId,
 } from '../../lib/executionSources'
 import { formatDbTimestamp, parseDbTimestamp } from '../../lib/datetime'
+import { formatApiError } from '../../lib/apiError'
 import { formatScheduledStart, scheduleSummary } from '../../lib/tradingSchedule'
 import { findWatchlistFeedMatch, buildWatchlistLinePoints, resolveWatchlistSymbolRef } from '../../lib/watchlistFeedReuse'
 import { loadHomeChartHistory } from '../../lib/homeChartHistory'
@@ -514,6 +515,107 @@ function BulkUnscheduleButton({
   )
 }
 
+const DELETE_OLD_AGE_OPTIONS = [0, 7, 14, 30, 60, 90] as const
+const NON_DELETABLE_EXECUTION_STATUSES = new Set(['running', 'starting', 'scheduled'])
+
+function countDeletableOldExecutions(
+  executions: ReturnType<typeof useExecution>['panelExecutions'],
+  olderThanDays: number,
+): number {
+  const cutoff = olderThanDays === 0
+    ? null
+    : Date.now() - olderThanDays * 24 * 60 * 60 * 1000
+  return executions.filter(execution => {
+    const status = String(execution.data_plane_status || execution.status || '').toLowerCase()
+    if (NON_DELETABLE_EXECUTION_STATUSES.has(status)) return false
+    if (cutoff == null) return true
+    const created = parseDbTimestamp(execution.created_at)
+    return created != null && created.getTime() < cutoff
+  }).length
+}
+
+function deleteOldAgeLabel(days: number): string {
+  return days === 0 ? 'All stopped' : `${days} days`
+}
+
+function BulkDeleteOldButton({
+  executions,
+  onComplete,
+}: {
+  executions: ReturnType<typeof useExecution>['panelExecutions']
+  onComplete: () => void | Promise<void>
+}) {
+  const [olderThanDays, setOlderThanDays] = useState<number>(30)
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState('')
+  const count = useMemo(
+    () => countDeletableOldExecutions(executions, olderThanDays),
+    [executions, olderThanDays],
+  )
+
+  const deleteOld = async () => {
+    if (deleting || count < 1) return
+    if (!window.confirm(
+      olderThanDays === 0
+        ? `Delete all ${count} stopped strateg${count === 1 ? 'y' : 'ies'}? This cannot be undone.`
+        : `Delete ${count} stopped strateg${count === 1 ? 'y' : 'ies'} older than ${olderThanDays} days? This cannot be undone.`,
+    )) return
+    setDeleting(true)
+    setError('')
+    try {
+      const res = await fetch('/api/control/executions/bulk/delete-old', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ older_than_days: olderThanDays }),
+      })
+      const payload = await res.json()
+      if (!res.ok || !payload.status) {
+        throw new Error(formatApiError(payload, 'Failed to delete old strategies'))
+      }
+      const deletedCount = Number(payload.data?.count || 0)
+      if (deletedCount < 1) {
+        throw new Error(
+          olderThanDays === 0
+            ? 'No stopped strategies were deleted.'
+            : `No stopped strategies older than ${olderThanDays} days were deleted.`,
+        )
+      }
+      await onComplete()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete old strategies')
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <div className="st-delete-old">
+      <label className="st-delete-old__label">
+        <span>Older than</span>
+        <select
+          className="st-delete-old__select"
+          value={olderThanDays}
+          onChange={event => setOlderThanDays(Number(event.target.value))}
+          disabled={deleting}
+        >
+          {DELETE_OLD_AGE_OPTIONS.map(days => (
+            <option key={days} value={days}>{deleteOldAgeLabel(days)}</option>
+          ))}
+        </select>
+      </label>
+      <button
+        type="button"
+        className="st-btn st-btn--danger"
+        disabled={deleting || count < 1}
+        onClick={() => void deleteOld()}
+      >
+        {deleting ? 'Deleting…' : count > 0 ? `Delete old (${count})` : 'Delete old'}
+      </button>
+      {error ? <div className="st-status-msg st-status-msg--error">{error}</div> : null}
+    </div>
+  )
+}
+
 function formatRowWhen(row: StrategyTableRow) {
   const raw = row.scheduledFor || row.createdAt
   const date = parseDbTimestamp(raw)
@@ -532,12 +634,16 @@ function StrategyTableRow({
   selected,
   onSelect,
   onLogs,
+  onDelete,
+  deleting,
 }: {
   row: StrategyTableRow & { isLive?: boolean; isScheduled?: boolean }
   visual: SymbolVisual | null
   selected: boolean
   onSelect: (id: string) => void
   onLogs: (target: LogTarget) => void
+  onDelete: (id: string) => void
+  deleting: boolean
 }) {
   const status = row.status.toLowerCase()
   const statusKind = statusBadgeKind(status, Boolean(row.isLive))
@@ -567,22 +673,36 @@ function StrategyTableRow({
       </td>
       <td className="st-td st-td-when">{formatRowWhen(row)}</td>
       <td className="st-td st-td-action">
-        <button
-          type="button"
-          className="st-log-link"
-          onClick={event => {
-            event.stopPropagation()
-            const target = buildLogTarget({
-              engineId: row.engineId,
-              executionId: row.id,
-              label: row.name,
-              logFile: row.logFile,
-            })
-            if (target) onLogs(target)
-          }}
-        >
-          Logs
-        </button>
+        <div className="st-row-actions">
+          <button
+            type="button"
+            className="st-log-link"
+            onClick={event => {
+              event.stopPropagation()
+              const target = buildLogTarget({
+                engineId: row.engineId,
+                executionId: row.id,
+                label: row.name,
+                logFile: row.logFile,
+              })
+              if (target) onLogs(target)
+            }}
+          >
+            Logs
+          </button>
+          <button
+            type="button"
+            className="st-delete-link"
+            disabled={deleting}
+            title="Delete strategy"
+            onClick={event => {
+              event.stopPropagation()
+              onDelete(row.id)
+            }}
+          >
+            {deleting ? '…' : 'Delete'}
+          </button>
+        </div>
       </td>
     </tr>
   )
@@ -628,12 +748,16 @@ function StrategiesTable({
   selectedId,
   onSelect,
   onLogs,
+  onDelete,
+  deletingId,
 }: {
   rows: Array<StrategyTableRow & { isLive?: boolean; isScheduled?: boolean }>
   symbolVisuals: Map<string, SymbolVisual>
   selectedId: string | null
   onSelect: (id: string) => void
   onLogs: (target: LogTarget) => void
+  onDelete: (id: string) => void
+  deletingId: string | null
 }) {
   return (
     <div className="st-table-scroll">
@@ -666,6 +790,8 @@ function StrategiesTable({
                 selected={selectedId === row.id}
                 onSelect={onSelect}
                 onLogs={onLogs}
+                onDelete={onDelete}
+                deleting={deletingId === row.id}
               />
             ))}
           </tbody>
@@ -1659,6 +1785,8 @@ function StrategyCreatePanel({
 function StrategiesWorkspace() {
   const { state, navigate } = useUrlState()
   const [logTarget, setLogTarget] = useState<LogTarget | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState('')
 
   const openLogs = (target: LogTarget) => {
     setLogTarget(target)
@@ -1671,6 +1799,7 @@ function StrategiesWorkspace() {
     controlledExecutionsLoading,
     controlledExecutionsError,
     refreshControlledExecutions,
+    refreshExecutions,
     duplicateDraft,
     setDuplicateDraft,
   } = useExecution()
@@ -1797,6 +1926,34 @@ function StrategiesWorkspace() {
     navigate({ tab: 'strategies', strategy_id: undefined })
   }
 
+  const deleteStrategy = async (executionId: string) => {
+    if (deletingId) return
+    const row = symbolFilteredRows.find(item => item.id === executionId)
+    const label = row?.name || row?.symbol || executionId
+    if (!window.confirm(`Delete strategy "${label}"? This cannot be undone.`)) return
+
+    setDeletingId(executionId)
+    setDeleteError('')
+    try {
+      const res = await fetch(`/api/control/executions/${encodeURIComponent(executionId)}`, {
+        method: 'DELETE',
+      })
+      const payload = await res.json()
+      if (!res.ok || !payload.status) {
+        throw new Error(formatApiError(payload, 'Failed to delete strategy'))
+      }
+      if (selectedId === executionId) {
+        closeDetail()
+      }
+      await refreshControlledExecutions()
+      await refreshExecutions()
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Failed to delete strategy')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
   const handleCreateDone = (executionId: string) => {
     navigate({
       tab: 'strategies',
@@ -1851,6 +2008,13 @@ function StrategiesWorkspace() {
           />
         </label>
         <div className="st-toolbar-spacer" />
+        <BulkDeleteOldButton
+          executions={panelExecutions}
+          onComplete={async () => {
+            await refreshControlledExecutions()
+            await refreshExecutions()
+          }}
+        />
         <BulkUnscheduleButton count={counts.scheduled} onComplete={refreshControlledExecutions} />
         <BulkStopButton count={counts.running} onComplete={refreshControlledExecutions} />
         <button
@@ -1870,6 +2034,11 @@ function StrategiesWorkspace() {
           {controlledExecutionsError}
         </div>
       ) : null}
+      {deleteError ? (
+        <div className="st-status-msg st-status-msg--error" style={{ padding: '6px 10px' }}>
+          {deleteError}
+        </div>
+      ) : null}
       {controlledExecutionsLoading ? (
         <div className="st-status-msg" style={{ padding: '6px 10px' }}>Loading strategies…</div>
       ) : null}
@@ -1884,6 +2053,8 @@ function StrategiesWorkspace() {
                 selectedId={selectedId}
                 onSelect={selectStrategy}
                 onLogs={openLogs}
+                onDelete={deleteStrategy}
+                deletingId={deletingId}
               />
               <StrategiesPagination
                 page={currentPage}

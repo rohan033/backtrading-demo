@@ -177,7 +177,9 @@ export function ExecutionProvider({ children }) {
     }
     for (const execution of executions) {
       const existing = byId.get(execution.executor_id)
-      byId.set(execution.executor_id, existing ? mergeLiveExecution(existing, execution) : execution)
+      if (existing) {
+        byId.set(execution.executor_id, mergeLiveExecution(existing, execution))
+      }
     }
     return Array.from(byId.values()).sort((a, b) => {
       const createdA = String(a.created_at || '')
@@ -3010,27 +3012,29 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
           </label>
         </div>
 
-        <MarketPreviewPanel
-          variant={variant}
-          selectedStock={selectedStock}
-          ltp={ltp}
-          streamStatus={marketStreamStatus}
-          marketError={marketError}
-          closePrice={form.close_price}
-          onClosePriceChange={value => {
-            setClosePriceManual(true)
-            setForm(prev => ({ ...prev, close_price: value }))
-          }}
-          onUseLivePrice={() => {
-            setClosePriceManual(false)
-            if (ltp != null) setForm(prev => ({ ...prev, close_price: formatPrice(ltp) }))
-          }}
-          levels={levels}
-          form={form}
-          takeProfitMode={takeProfitMode}
-          resolvedLongPercent={resolvedLongPercent}
-          profitTargetAmount={profitTargetAmount}
-        />
+        <div className={variant === 'minimal' ? 'ms-preview-sticky' : 'sticky top-4 self-start z-[2] max-h-[calc(100dvh-24px)] overflow-y-auto'}>
+          <MarketPreviewPanel
+            variant={variant}
+            selectedStock={selectedStock}
+            ltp={ltp}
+            streamStatus={marketStreamStatus}
+            marketError={marketError}
+            closePrice={form.close_price}
+            onClosePriceChange={value => {
+              setClosePriceManual(true)
+              setForm(prev => ({ ...prev, close_price: value }))
+            }}
+            onUseLivePrice={() => {
+              setClosePriceManual(false)
+              if (ltp != null) setForm(prev => ({ ...prev, close_price: formatPrice(ltp) }))
+            }}
+            levels={levels}
+            form={form}
+            takeProfitMode={takeProfitMode}
+            resolvedLongPercent={resolvedLongPercent}
+            profitTargetAmount={profitTargetAmount}
+          />
+        </div>
       </div>
 
       {error && (
@@ -3181,7 +3185,7 @@ function MarketPreviewPanel({
     }`
 
   return (
-    <div className={isMinimal ? 'ms-preview-panel' : 'bg-card border border-border rounded-lg p-5 min-h-[420px] flex flex-col'}>
+    <div className={isMinimal ? 'ms-preview-panel' : 'bg-card border border-border rounded-lg p-5 flex flex-col self-start'}>
       <div className={isMinimal ? 'ms-preview-head' : 'flex items-start justify-between gap-3 mb-4'}>
         <div>
           <div className={isMinimal ? 'ms-preview-kicker' : 'text-[10px] uppercase tracking-[2px] text-text-secondary'}>
@@ -3247,7 +3251,7 @@ function MarketPreviewPanel({
         </p>
       </div>
 
-      <div className={isMinimal ? 'ms-level-stack' : 'grid grid-cols-1 gap-2 mt-auto'}>
+      <div className={isMinimal ? 'ms-level-stack' : 'grid grid-cols-1 gap-2'}>
         <PreviewLevelRow variant={variant} label="Buy Trigger" value={formatBrokerPrice(form.broker, levels.buyTrigger)} hint={`+${form.initial_threshold}% from close`} tone="accent" />
         <PreviewLevelRow
           variant={variant}

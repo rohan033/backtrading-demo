@@ -54,7 +54,7 @@ function StatusEventRow({ event }: { event: TradingSessionEvent }) {
   if (a2uiSurface && (event.event_type === 'agent_a2ui_surface' || event.event_type === 'agent_picks')) {
     return (
       <div className="am-ts-log-row am-ts-log-row--block">
-        <A2uiRenderer surface={a2uiSurface} />
+        <A2uiRenderer surface={a2uiSurface} autonomousSession />
       </div>
     )
   }
@@ -107,6 +107,17 @@ function StatusEventRow({ event }: { event: TradingSessionEvent }) {
       <LogRow
         label={event.event_type === 'session_created' ? 'Created' : 'Explore'}
         main="Session started"
+      />
+    )
+  }
+
+  if (event.event_type === 'user_instruction') {
+    const resume = p.resume_state ? String(p.resume_state) : null
+    return (
+      <LogRow
+        label="Instruction"
+        main={String(p.prompt || '—')}
+        meta={resume ? `Resume ${resume}` : null}
       />
     )
   }

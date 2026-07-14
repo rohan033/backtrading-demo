@@ -14,11 +14,10 @@ from control_plane.agent_trade_completion import (
     extract_update_order_actions,
 )
 from control_plane.trading_session_agent_common import (
-    emit_surfaces_from_text,
     schedule_phase_task,
     stream_agent_prompt,
 )
-from control_plane.trading_session_prompts import trading_session_prompt_prefix
+from control_plane.trading_session_prompts import trading_session_prompt_prefix, wrap_trading_session_prompt
 from control_plane.trading_session_store import TradingSessionStore
 
 log = logging.getLogger("backtrading")
@@ -26,7 +25,7 @@ log = logging.getLogger("backtrading")
 MONITOR_POLL_SEC = float(os.getenv("TRADING_SESSION_MONITOR_POLL_SEC", "60"))
 
 
-def build_monitor_prompt(session: dict[str, Any], context: dict[str, Any]) -> str:
+def build_monitor_prompt(session: dict[str, Any], context: dict[str, Any], store: TradingSessionStore, session_id: str) -> str:
     from control_plane.agent_monitor import _execute_monitor_instructions
 
     focus = {
@@ -43,13 +42,14 @@ def build_monitor_prompt(session: dict[str, Any], context: dict[str, Any]) -> st
     focus_json = json.dumps(focus, ensure_ascii=False, indent=2)
     context_json = json.dumps(context, ensure_ascii=False, indent=2)
     instructions = _execute_monitor_instructions()
-    return (
-        f"{trading_session_prompt_prefix()}\n\n"
+    body = (
+        f"{trading_session_prompt_prefix(session)}\n\n"
         f"[Trading session monitor batch] Session {session.get('id')} — {session.get('symbol')}.\n\n"
         f"Trade focus:\n```json\n{focus_json}\n```\n\n"
         f"Live context:\n```json\n{context_json}\n```\n\n"
         f"{instructions}\n"
     )
+    return wrap_trading_session_prompt(store, session_id, body)
 
 
 async def _collect_monitor_context(session: dict[str, Any]) -> dict[str, Any]:
@@ -236,7 +236,7 @@ async def run_monitor_batch(
         return True
 
     context = await _collect_monitor_context(session)
-    prompt = build_monitor_prompt(session, context)
+    prompt = build_monitor_prompt(session, context, store, session_id)
     store.append_event(session_id, "monitor_batch_started", {"execution_id": session.get("engine_id")})
 
     try:
@@ -246,7 +246,6 @@ async def run_monitor_batch(
             state="monitor",
             prompt=prompt,
         )
-        emit_surfaces_from_text(store, session_id, assistant_text)
         return await process_session_monitor_actions(session_id, store, engine, assistant_text)
     except Exception as exc:
         log.exception("[TRADING_SESSION] monitor batch failed session=%s", session_id)

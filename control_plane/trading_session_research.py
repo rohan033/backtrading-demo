@@ -4,24 +4,30 @@ import logging
 from typing import Any
 
 from control_plane.trading_session_agent_common import (
-    emit_surfaces_from_text,
     schedule_phase_task,
     stream_agent_prompt,
 )
-from control_plane.trading_session_prompts import trading_session_prompt_prefix, trading_session_profit_target_block
+from control_plane.trading_session_prompts import (
+    trading_session_prompt_prefix,
+    trading_session_profit_target_block,
+    trading_session_user_instruction_block,
+    wrap_trading_session_prompt,
+)
 from control_plane.trading_session_store import TradingSessionStore
 
 log = logging.getLogger("backtrading")
 
 
-def build_research_kickoff_prompt(session: dict[str, Any]) -> str:
+def build_research_kickoff_prompt(session: dict[str, Any], store: TradingSessionStore, session_id: str) -> str:
     symbol = session.get("symbol") or "the selected symbol"
     goals = trading_session_profit_target_block(session)
-    return f"""{trading_session_prompt_prefix()}
+    user_note = trading_session_user_instruction_block(store, session_id)
+    body = f"""{trading_session_prompt_prefix(session)}
 
 Autonomous trading session — RESEARCH (deep dive on selected symbol).
 
 {goals}
+{user_note}
 
 Symbol: {symbol} (token={session.get("token")}, exchange={session.get("exchange")})
 Broker: {session.get("broker")} ({session.get("account_env")})
@@ -38,6 +44,7 @@ Example TradeDecision fence:
 {{"a2ui":{{"component":"TradeDecision","props":{{"text":"Bullish momentum intact","confidence_pct":72,"symbol":"{symbol}"}}}}}}
 ```
 """
+    return wrap_trading_session_prompt(store, session_id, body)
 
 
 async def run_agent_research(
@@ -54,7 +61,7 @@ async def run_agent_research(
         return
 
     store.append_event(session_id, "agent_research_started", {"state": "research"})
-    prompt = build_research_kickoff_prompt(session)
+    prompt = build_research_kickoff_prompt(session, store, session_id)
 
     try:
         assistant_text = await stream_agent_prompt(
@@ -63,7 +70,6 @@ async def run_agent_research(
             state="research",
             prompt=prompt,
         )
-        emit_surfaces_from_text(store, session_id, assistant_text)
 
         await engine.transition_session(
             session_id,
@@ -73,7 +79,14 @@ async def run_agent_research(
     except Exception as exc:
         log.exception("[TRADING_SESSION] research agent failed session=%s", session_id)
         store.append_event(session_id, "agent_research_failed", {"reason": str(exc)})
-        await engine.stop_session(session_id, f"Research error: {exc}", skip_task_cancel=True)
+        session = store.get_session(session_id) or session
+        if session.get("state") == "stopped":
+            return
+        await engine.transition_session(
+            session_id,
+            to_state="strategy",
+            reason="Research incomplete — continuing with deterministic deploy",
+        )
 
 
 def schedule_research_agent(session_id: str, store: TradingSessionStore, engine: Any) -> None:

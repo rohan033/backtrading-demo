@@ -17,6 +17,7 @@ import Home from './Home'
 import AgentMode from './agent/AgentMode'
 import Earnings from './Earnings'
 import Portfolio from './Portfolio'
+import Positions from './Positions'
 import MomentumSidebarPanel from './MomentumSidebarPanel'
 import EarningsMonitorBar from './EarningsMonitorBar'
 import MarketClockBar from './MarketClockBar'
@@ -26,10 +27,10 @@ import { useWatchlistEarnings } from '../../hooks/useWatchlistEarnings'
 import type { WatchlistEarningsRef } from '../../lib/marketResearch'
 
 /* ─── types ─────────────────────────────────────────────── */
-type MainTab = 'home' | 'watch-trade' | 'orders' | 'strategies' | 'earnings' | 'agent'
+type MainTab = 'home' | 'watch-trade' | 'orders' | 'positions' | 'strategies' | 'earnings' | 'agent'
 type NewsTab = 'watchlist' | 'momentum' | 'new' | 'news' | 'market'
 
-const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'strategies', 'earnings', 'agent']
+const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'positions', 'strategies', 'earnings', 'agent']
 const NEWS_TABS: NewsTab[] = ['watchlist', 'momentum', 'news', 'market', 'new']
 const LEFT_COLLAPSED_KEY = 'minimal-shell-left-collapsed'
 const RIGHT_WIDTH_KEY = 'minimal-shell-right-width'
@@ -181,6 +182,9 @@ function MainPanel({
           <Pill active={tab === 'orders'} href={buildShellUrl({ tab: 'orders' })} onClick={() => setTab('orders')}>
             {'\u00a0Portfolio\u00a0'}
           </Pill>
+          <Pill active={tab === 'positions'} href={buildShellUrl({ tab: 'positions' })} onClick={() => setTab('positions')}>
+            {'\u00a0Positions\u00a0'}
+          </Pill>
           <Pill active={tab === 'strategies'} href={buildShellUrl({ tab: 'strategies' })} onClick={() => setTab('strategies')}>
             {'\u00a0Strategies\u00a0'}
           </Pill>
@@ -218,6 +222,8 @@ function MainPanel({
           />
         ) : tab === 'orders' ? (
           <Portfolio />
+        ) : tab === 'positions' ? (
+          <Positions />
         ) : tab === 'agent' ? (
           <AgentMode />
         ) : (

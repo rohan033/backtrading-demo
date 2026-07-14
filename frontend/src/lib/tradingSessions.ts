@@ -171,3 +171,18 @@ export function pipelineProgress(
   }
   return { currentIdx: stoppedIdx, furthestIdx }
 }
+
+export type SessionOutcome = 'running' | 'stopped' | 'success'
+
+export function sessionOutcomeLabel(session: TradingSession): SessionOutcome {
+  if (session.state !== 'stopped') return 'running'
+  const reason = (session.stopped_reason || '').toLowerCase()
+  if (reason.includes('profit target') || reason.includes('trade complete')) {
+    return 'success'
+  }
+  return 'stopped'
+}
+
+export function showSessionInstructionInput(session: TradingSession): boolean {
+  return session.state === 'stopped'
+}

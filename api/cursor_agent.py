@@ -102,6 +102,7 @@ Prefer minimal, safe diffs and explain consequential actions before destructive 
 
 TRADING_SESSION_EXTERNAL_HINT = """Autonomous trading session agent (market research & execution).
 
+- Match the session broker on every MCP call (broker + account_env + exchange in the user prompt). eToro sessions: broker=etoro, exchange=ETORO only — never NSE, Angel One, search_scrip, or Indian stocks.
 - Prefer MCP trading tools (search_instruments, get_company_news, get_recommendation_trends, get_historical_candles, portfolio/position tools) and web search for live market facts — not stale repo code.
 - BEFORE any final A2UI output: fetch get_historical_candles, compute recent $/% moves, and double-check every thesis against that data — do not contradict visible price action (e.g. calling a selloff when candles show a spike).
 - Emit trader-facing UI via fenced JSON a2ui / ai_action blocks only (no markdown prose).
@@ -308,6 +309,7 @@ class CursorAgentService:
         web_search_enabled: bool = True,
         research_session_id: Optional[str] = None,
         trading_session: bool = False,
+        trading_session_id: Optional[str] = None,
         ws: WebSocket | None = None,
         cancel_event: asyncio.Event | None = None,
         active_run: dict[str, Any] | None = None,
@@ -358,6 +360,7 @@ class CursorAgentService:
             web_search_enabled=web_search_enabled,
             research_session_id=research_session_id,
             trading_session=trading_session,
+            trading_session_id=trading_session_id,
         )
         media_paths: list[str] = []
 
@@ -497,12 +500,15 @@ class CursorAgentService:
                     summary = derive_research_summary(final_text)
                     if summary:
                         store.update_session(research_session_id, {"summary": summary})
-                yield {
+                done_payload: dict[str, Any] = {
                     **event,
-                    "text": display_text,
+                    "text": final_text if trading_session else display_text,
                     "research_session_id": research_session_id,
                     "attachments": final_attachments,
                 }
+                if trading_session:
+                    done_payload["display_text"] = display_text
+                yield done_payload
                 continue
 
             yield event
@@ -674,6 +680,7 @@ def _wrap_prompt(
     web_search_enabled: bool = True,
     research_session_id: Optional[str] = None,
     trading_session: bool = False,
+    trading_session_id: Optional[str] = None,
 ) -> str:
     parts: list[str] = []
     if trading_session:
@@ -691,6 +698,13 @@ def _wrap_prompt(
             parts.append(
                 "Trading session execute mode: full tool access. Prefer MCP + web for live market data."
             )
+            if trading_session_id:
+                parts.append(
+                    f'Active trading session ({trading_session_id}): '
+                    'every MCP execution MUST use source_id "ai_research" and '
+                    f'source_meta_id "{trading_session_id}". '
+                    "The prompt includes a TRADING SESSION CONTEXT JSON block — use it for symbol, broker, and state."
+                )
         elif research_session_id:
             parts.append(
                 f'Active AI Research session ({research_session_id}): '
@@ -804,10 +818,12 @@ def _tool_call_blocked(
     web_search_enabled: bool,
     trading_session: bool = False,
 ) -> tuple[bool, str]:
+    if trading_session:
+        return False, ""
+
     normalized = _normalize_tool_name(payload)
     blob = _tool_call_text(payload)
     _ = web_search_enabled
-    _ = trading_session
 
     if (
         normalized in SHELL_TOOL_NAMES

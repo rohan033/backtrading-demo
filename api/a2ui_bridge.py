@@ -313,8 +313,22 @@ def should_refresh_agent_thread_title(session: dict[str, Any]) -> bool:
     return title.endswith("…")
 
 
+def surface_component_props(surface: dict[str, Any] | None) -> dict[str, Any]:
+    if not surface:
+        return {}
+    components = surface.get("components") or []
+    if components and isinstance(components[0], dict):
+        props = components[0].get("props")
+        if isinstance(props, dict):
+            return props
+    legacy = surface.get("props")
+    return legacy if isinstance(legacy, dict) else {}
+
+
 def surface_from_tool_call(event: dict[str, Any]) -> dict[str, Any] | None:
-    tool_name = str(event.get("tool_name") or "tool")
+    from api.tool_call_names import resolve_cursor_tool_name
+
+    tool_name = resolve_cursor_tool_name(event)
     status = str(event.get("tool_status") or "running")
     detail = _tool_detail(event)
     return tool_status_surface(tool_name, status, detail)

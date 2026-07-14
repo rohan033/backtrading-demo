@@ -2,7 +2,7 @@ import asyncio
 import json
 from typing import Any
 
-from brokers.etoro.client import EtoroClient
+from brokers.etoro.client import EtoroApiError, EtoroClient
 from brokers.etoro.order_helpers import (
     apply_v1_bracket_fields,
     normalize_etoro_order_payload,
@@ -213,22 +213,59 @@ class EtoroTradingClient(EtoroClient, TickClient):
         *,
         units: float | None = None,
         instrument_id: int | None = None,
-    ):
+    ) -> dict:
         """Close a specific position on eToro.
 
         When units is omitted or <= 0, eToro closes the full position.
+        Returns a dict with request/response debug info. Raises EtoroApiError on broker failure.
         """
         logger.info("[eToro] close_position START position=%s units=%s", position_id, units)
 
-        resolved_instrument_id = instrument_id
-        if resolved_instrument_id is None:
-            position = await self._find_position(position_id)
-            if position:
-                resolved_instrument_id = position.get("instrumentID") or position.get("instrumentId")
+        position = await self._find_position(position_id)
+        if not position:
+            logger.error(
+                "[eToro] close_position ABORT position=%s reason=not_found_in_open_portfolio",
+                position_id,
+            )
+            raise EtoroApiError(
+                f"Position {position_id} not found in open eToro portfolio",
+                payload={"request": {"position_id": str(position_id)}},
+            )
 
+        broker_position_id = position.get("positionID") or position.get("positionId")
+        resolved_instrument_id = position.get("instrumentID") or position.get("instrumentId")
         if resolved_instrument_id is None:
-            logger.error("[eToro] close_position ABORT position=%s reason=instrument_id_not_found", position_id)
-            return False
+            logger.error(
+                "[eToro] close_position ABORT position=%s reason=instrument_id_not_found",
+                position_id,
+            )
+            raise EtoroApiError(
+                f"Position {position_id} is missing instrumentID in eToro portfolio",
+                payload={"request": {"position_id": str(position_id), "position": position}},
+            )
+
+        if str(broker_position_id) == str(resolved_instrument_id):
+            logger.error(
+                "[eToro] close_position ABORT position=%s reason=position_id_matches_instrument_id",
+                position_id,
+            )
+            raise EtoroApiError(
+                f"Position {position_id} looks like an instrument id, not a broker position id",
+                payload={
+                    "request": {
+                        "position_id": str(position_id),
+                        "broker_position_id": broker_position_id,
+                        "instrument_id": resolved_instrument_id,
+                    }
+                },
+            )
+
+        if instrument_id is not None and str(instrument_id) != str(resolved_instrument_id):
+            logger.warning(
+                "[eToro] close_position instrument_id mismatch requested=%s portfolio=%s; using portfolio",
+                instrument_id,
+                resolved_instrument_id,
+            )
 
         units_to_deduct = None
         if units is not None:
@@ -239,27 +276,59 @@ class EtoroTradingClient(EtoroClient, TickClient):
             except (TypeError, ValueError):
                 units_to_deduct = None
 
-        path = f"{self.execution_base_path()}/market-close-orders/positions/{position_id}"
+        close_target = str(broker_position_id or position_id)
+        path = f"{self.execution_base_path()}/market-close-orders/positions/{close_target}"
         payload = normalize_etoro_order_payload({
             "InstrumentID": int(resolved_instrument_id),
             "UnitsToDeduct": units_to_deduct,
         })
+        request_debug = {
+            "method": "POST",
+            "path": path,
+            "payload": payload,
+            "position_id": close_target,
+            "instrument_id": int(resolved_instrument_id),
+            "units_to_deduct": units_to_deduct,
+        }
 
         logger.info(
             "[eToro] close_position REQUEST position=%s path=%s payload=%s",
-            position_id, path, json.dumps(payload, default=str),
+            close_target, path, json.dumps(payload, default=str),
         )
 
         try:
             response = await self.arequest("POST", path, json_body=payload, trade_execution=True)
             logger.info(
                 "[eToro] close_position RESPONSE position=%s response=%s",
-                position_id, json.dumps(response, default=str) if response else "(empty)",
+                close_target, json.dumps(response, default=str) if response else "(empty)",
             )
-            return True
-        except Exception as e:
-            logger.error("[eToro] close_position ERROR position=%s error=%s", position_id, e, exc_info=True)
-            return False
+            return {
+                "closed": True,
+                "request": request_debug,
+                "response": response,
+            }
+        except EtoroApiError as exc:
+            logger.error(
+                "[eToro] close_position ERROR position=%s request=%s response=%s",
+                close_target,
+                json.dumps(request_debug, default=str),
+                json.dumps(exc.payload, default=str) if exc.payload is not None else "(none)",
+                exc_info=True,
+            )
+            if exc.payload is None:
+                exc.payload = {"request": request_debug}
+            elif isinstance(exc.payload, dict) and "request" not in exc.payload:
+                exc.payload = {**exc.payload, "request": request_debug}
+            raise
+        except Exception as exc:
+            logger.error(
+                "[eToro] close_position ERROR position=%s request=%s error=%s",
+                close_target,
+                json.dumps(request_debug, default=str),
+                exc,
+                exc_info=True,
+            )
+            raise EtoroApiError(str(exc), payload={"request": request_debug, "response": str(exc)}) from exc
 
     async def aget_position_ids_for_order(self, order_id):
         """Return position IDs opened by an order once eToro has executed it."""

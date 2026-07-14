@@ -3,105 +3,130 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from control_plane.trading_session_agent_common import (
-    emit_surfaces_from_text,
-    parse_strategy_suggestion,
-    schedule_phase_task,
-    stream_agent_prompt,
-)
-from control_plane.trading_session_prompts import trading_session_prompt_prefix, trading_session_profit_target_block
+from api.a2ui_bridge import component_to_surface
+
+from control_plane.instrument_resolve import resolve_instrument
+from control_plane.trading_session_deterministic import build_deterministic_strategy_config
 from control_plane.trading_session_store import TradingSessionStore
 
 log = logging.getLogger("backtrading")
 
 
-def build_strategy_kickoff_prompt(session: dict[str, Any]) -> str:
-    symbol = session.get("symbol") or "the selected symbol"
-    goals = trading_session_profit_target_block(session)
-    return f"""{trading_session_prompt_prefix()}
+async def _ensure_session_symbol_token(
+    session_id: str,
+    store: TradingSessionStore,
+    session: dict[str, Any],
+) -> dict[str, Any]:
+    symbol = str(session.get("symbol") or "").strip()
+    token = str(session.get("token") or "").strip()
+    if symbol and token:
+        return session
 
-Autonomous trading session — STRATEGY (setup parameters for deploy).
+    if not symbol and not token:
+        return session
 
-{goals}
+    resolved = await resolve_instrument(
+        session.get("broker") or "etoro",
+        session.get("account_env") or "demo",
+        symbol=symbol or None,
+        token=token or None,
+        exchange=session.get("exchange"),
+    )
+    if not resolved:
+        return session
 
-Symbol: {symbol} (token={session.get("token")}, exchange={session.get("exchange")})
-Broker: {session.get("broker")} ({session.get("account_env")})
-
-Instructions:
-1. Call get_historical_candles for {symbol} — use the latest close as close_price (not stale quotes).
-2. DOUBLE-CHECK: long_percent / short_percent align with recent candle range and profit target math before emitting strategy_suggestion.
-3. Emit ai_action strategy_suggestion with deploy parameters from live candle LTP.
-   Required payload fields: symbol, token, exchange, broker, account_env, close_price,
-   long_percent, short_percent, initial_threshold, max_available_capital.
-4. Also emit StrategySummary props preview and TradeDecision with confidence_pct.
-5. Do NOT place orders — the server deploys automatically from your strategy_suggestion.
-
-Example:
-```json
-{{"ai_action":{{"type":"strategy_suggestion","title":"{symbol} momentum","payload":{{
-  "symbol":"{symbol}","token":"{session.get("token")}","exchange":"{session.get("exchange") or "ETORO"}",
-  "broker":"{session.get("broker")}","account_env":"{session.get("account_env")}",
-  "close_price":100.0,"long_percent":2,"short_percent":1,"initial_threshold":0.2,
-  "max_available_capital":{session.get("max_capital")}
-}}}}}}
-```
-"""
+    patch = {
+        "symbol": resolved.symbol,
+        "token": resolved.token,
+        "exchange": resolved.exchange,
+    }
+    store.update_session(session_id, patch)
+    return store.get_session(session_id) or {**session, **patch}
 
 
-async def run_agent_strategy(
+async def prepare_session_strategy_config(
+    session_id: str,
+    store: TradingSessionStore,
+) -> dict[str, Any] | None:
+    """Build, persist, and return deploy config — always callable before deploy."""
+    session = store.get_session(session_id)
+    if not session:
+        return None
+
+    session = await _ensure_session_symbol_token(session_id, store, session)
+    if not session.get("symbol") or not session.get("token"):
+        log.warning("[TRADING_SESSION] strategy config missing symbol/token session=%s", session_id)
+        return None
+
+    config = await build_deterministic_strategy_config(session)
+    if not config:
+        log.warning("[TRADING_SESSION] could not build strategy config session=%s", session_id)
+        return None
+
+    config.setdefault("symbol", session.get("symbol"))
+    config.setdefault("token", session.get("token"))
+    config.setdefault("exchange", session.get("exchange"))
+    config.setdefault("broker", session.get("broker"))
+    config.setdefault("account_env", session.get("account_env"))
+    config.setdefault("max_available_capital", session.get("max_capital"))
+
+    store.append_event(session_id, "agent_strategy_started", {"state": "strategy", "deterministic": True})
+    store.append_event(session_id, "strategy_config", {"config": config, "source": "deterministic"})
+    store.append_event(
+        session_id,
+        "agent_a2ui_surface",
+        component_to_surface(
+            "StrategySummary",
+            {
+                "symbol": str(config.get("symbol") or "").split("-")[0],
+                "entry_price": config.get("close_price"),
+                "long_percent": config.get("long_percent"),
+                "short_percent": config.get("short_percent"),
+                "capital": config.get("max_available_capital"),
+                "broker": config.get("broker"),
+                "account_env": config.get("account_env"),
+                "status": "auto-deploying",
+            },
+        ),
+    )
+    return config
+
+
+async def run_deterministic_strategy(
     session_id: str,
     store: TradingSessionStore,
     engine: Any,
 ) -> None:
+    """Legacy entry point — prefer synchronous strategy_on_enter."""
     session = store.get_session(session_id)
     if not session or session.get("state") != "strategy":
         return
 
-    if not session.get("symbol") or not session.get("token"):
-        await engine.stop_session(session_id, "Strategy skipped: missing symbol/token", skip_task_cancel=True)
-        return
-
-    store.append_event(session_id, "agent_strategy_started", {"state": "strategy"})
-    prompt = build_strategy_kickoff_prompt(session)
-
     try:
-        assistant_text = await stream_agent_prompt(
-            session_id=session_id,
-            store=store,
-            state="strategy",
-            prompt=prompt,
-        )
-        emit_surfaces_from_text(store, session_id, assistant_text)
-
-        config = parse_strategy_suggestion(assistant_text)
+        config = await prepare_session_strategy_config(session_id, store)
         if not config:
-            store.append_event(session_id, "agent_strategy_failed", {"reason": "No strategy_suggestion in response"})
-            await engine.stop_session(session_id, "Strategy agent did not return setup parameters", skip_task_cancel=True)
+            await engine.stop_session(session_id, "Strategy failed: could not build deploy config", skip_task_cancel=True)
             return
-
-        config.setdefault("symbol", session.get("symbol"))
-        config.setdefault("token", session.get("token"))
-        config.setdefault("exchange", session.get("exchange"))
-        config.setdefault("broker", session.get("broker"))
-        config.setdefault("account_env", session.get("account_env"))
-        config.setdefault("max_available_capital", session.get("max_capital"))
-
-        store.append_event(session_id, "strategy_config", {"config": config})
 
         await engine.transition_session(
             session_id,
             to_state="deploy",
-            reason="Strategy parameters ready",
+            reason="Deterministic strategy ready",
             patch={"strategy_type": "momentum"},
         )
     except Exception as exc:
-        log.exception("[TRADING_SESSION] strategy agent failed session=%s", session_id)
+        log.exception("[TRADING_SESSION] deterministic strategy failed session=%s", session_id)
         store.append_event(session_id, "agent_strategy_failed", {"reason": str(exc)})
         await engine.stop_session(session_id, f"Strategy error: {exc}", skip_task_cancel=True)
 
 
+run_agent_strategy = run_deterministic_strategy
+
+
 def schedule_strategy_agent(session_id: str, store: TradingSessionStore, engine: Any) -> None:
+    from control_plane.trading_session_agent_common import schedule_phase_task
+
     schedule_phase_task(
         f"{session_id}:strategy",
-        lambda: run_agent_strategy(session_id, store, engine),
+        lambda: run_deterministic_strategy(session_id, store, engine),
     )

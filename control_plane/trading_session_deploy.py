@@ -22,6 +22,21 @@ def _latest_strategy_config(store: TradingSessionStore, session_id: str) -> dict
     return None
 
 
+async def resolve_deploy_config(
+    session_id: str,
+    store: TradingSessionStore,
+    session: dict[str, Any],
+) -> dict[str, Any] | None:
+    config = _latest_strategy_config(store, session_id)
+    if config:
+        return config
+
+    from control_plane.trading_session_strategy import prepare_session_strategy_config
+
+    log.info("[TRADING_SESSION] no strategy_config event — building inline session=%s", session_id)
+    return await prepare_session_strategy_config(session_id, store)
+
+
 async def run_session_deploy(
     session_id: str,
     store: TradingSessionStore,
@@ -31,7 +46,7 @@ async def run_session_deploy(
     if not session or session.get("state") != "deploy":
         return
 
-    config = _latest_strategy_config(store, session_id)
+    config = await resolve_deploy_config(session_id, store, session)
     if not config:
         await engine.stop_session(session_id, "Deploy failed: no strategy configuration")
         return
@@ -41,10 +56,22 @@ async def run_session_deploy(
         await engine.stop_session(session_id, f"Deploy unsupported broker: {broker}")
         return
 
+    account_env = str(config.get("account_env") or session.get("account_env") or "demo").lower()
+
     try:
         entry_price = float(config.get("close_price") or 0)
     except (TypeError, ValueError):
         entry_price = 0.0
+    if entry_price <= 0:
+        from control_plane.trading_session_strategy import prepare_session_strategy_config
+
+        refreshed = await prepare_session_strategy_config(session_id, store)
+        if refreshed:
+            config = refreshed
+            try:
+                entry_price = float(config.get("close_price") or 0)
+            except (TypeError, ValueError):
+                entry_price = 0.0
     if entry_price <= 0:
         await engine.stop_session(session_id, "Deploy failed: invalid entry price")
         return
@@ -57,10 +84,22 @@ async def run_session_deploy(
 
     store.append_event(session_id, "deploy_started", {"symbol": symbol, "broker": broker})
 
+    placing = strategy_summary_surface(
+        symbol=symbol.split("-")[0],
+        execution_id="",
+        entry_price=entry_price,
+        status="placing order",
+        broker=broker,
+        account_env=account_env,
+        long_percent=float(config.get("long_percent") or 2),
+        short_percent=float(config.get("short_percent") or 1),
+        capital=float(config.get("max_available_capital") or session.get("max_capital") or 0),
+    )
+    store.append_event(session_id, "agent_a2ui_surface", placing)
+
     from api.server import MomentumEnterRequest, momentum_enter
     from fastapi import HTTPException
 
-    account_env = str(config.get("account_env") or session.get("account_env") or "demo").lower()
     try:
         response = await momentum_enter(
             MomentumEnterRequest(
@@ -130,8 +169,3 @@ async def run_session_deploy(
         reason="Trade deployed",
         patch={"engine_id": execution_id},
     )
-
-
-async def deploy_on_enter(session: dict[str, Any], store: TradingSessionStore, engine: Any) -> None:
-    """Deploy runs synchronously on state enter (no background agent)."""
-    await run_session_deploy(session["id"], store, engine)

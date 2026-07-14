@@ -38,7 +38,7 @@ from api.trading_session_routes import get_trading_session_store, handle_trading
 from api.news_feed import get_news_feed_hub
 from api.watchlist_feed import get_watchlist_feed_hub, market_preview_uses_shared_hub
 from control_plane.client_mode import normalize_client_mode
-from control_plane.engine_registry import EngineRegistry
+from control_plane.engine_registry import EngineRegistry, _parse_datetime
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
 from control_plane.live_engine_proxy import forward_live_json
 from control_plane.ops_logging import configure_control_plane_logging, quiet_uvicorn_poll_access_logs
@@ -73,6 +73,7 @@ from brokers.etoro.adapters.portfolio import (
     portfolio_row_needs_symbol_enrichment as _portfolio_row_needs_symbol_enrichment,
     rehydrate_etoro_portfolio_rows as _rehydrate_etoro_portfolio_rows,
 )
+from brokers.etoro.client import EtoroApiError
 from brokers.fake.adapters.portfolio import fake_portfolio_rows
 from event.db_event_consumer import DbEventWriter, resolve_live_events_db_path
 from event.platform_notifier import emit_strategy_event, shutdown_platform_notifier
@@ -181,6 +182,22 @@ def _set_portfolio_cache(broker: str, account_env: str, data: list) -> None:
     import time as _time
 
     _control_portfolio_cache[_portfolio_cache_key(broker, account_env)] = (data, _time.time())
+
+
+def _remove_position_from_portfolio_cache(broker: str, account_env: str, position_id: str) -> None:
+    key = _portfolio_cache_key(broker, account_env)
+    entry = _control_portfolio_cache.get(key)
+    if entry is None:
+        return
+    data, cached_at = entry
+    pid = str(position_id)
+    filtered = [
+        row
+        for row in data
+        if str(row.get("position_id") or row.get("positionId") or "") != pid
+    ]
+    if len(filtered) != len(data):
+        _control_portfolio_cache[key] = (filtered, cached_at)
 
 
 def get_client() -> TotpClient:
@@ -332,6 +349,14 @@ class MomentumEnterRequest(BaseModel):
     watchlist_id: Optional[int] = None
     source_id: Optional[ExecutionSourceId] = None
     source_meta_id: Optional[str] = None
+
+
+class BulkDeleteOldExecutionsRequest(BaseModel):
+    older_than_days: int = Field(default=30, ge=0, le=365)
+
+
+ACTIVE_CONTROLLED_EXECUTION_STATUSES = frozenset({"running", "starting", "stale", "scheduled"})
+NON_DELETABLE_EXECUTION_STATUSES = frozenset({"running", "starting", "scheduled"})
 
 
 # ── Endpoints ──
@@ -639,6 +664,23 @@ def _is_controlled_execution(engine: dict) -> bool:
     if metadata.get("executor_payload"):
         return True
     return False
+
+
+def _is_deletable_stopped_execution(
+    engine: dict,
+    cutoff: datetime,
+    *,
+    all_stopped: bool = False,
+) -> bool:
+    if not _is_controlled_execution(engine):
+        return False
+    status = str(engine.get("status") or "").lower()
+    if status in NON_DELETABLE_EXECUTION_STATUSES:
+        return False
+    if all_stopped:
+        return True
+    created = _parse_datetime(engine.get("created_at"))
+    return created is not None and created < cutoff
 
 
 @app.get("/api/control/executions", operation_id="get_strategies", summary="List saved strategy executions")
@@ -1019,6 +1061,44 @@ def unschedule_all_controlled_executions():
     }
 
 
+@app.post(
+    "/api/control/executions/bulk/delete-old",
+    operation_id="delete_old_strategies",
+    summary="Delete stopped strategies older than a given age",
+)
+def delete_old_controlled_executions(req: BulkDeleteOldExecutionsRequest):
+    cutoff = datetime.now(timezone.utc) - timedelta(days=req.older_than_days)
+    all_stopped = req.older_than_days == 0
+    deleted: list[str] = []
+    skipped: list[str] = []
+
+    for engine in engine_registry.list_engines():
+        execution_id = engine.get("id")
+        if not execution_id:
+            continue
+        if not _is_deletable_stopped_execution(engine, cutoff, all_stopped=all_stopped):
+            continue
+        if engine_registry.delete_engine(execution_id):
+            deleted.append(execution_id)
+            log.info(
+                "[CONTROL] Deleted old execution %s (older than %s days)",
+                execution_id,
+                req.older_than_days,
+            )
+        else:
+            skipped.append(execution_id)
+
+    return {
+        "status": True,
+        "data": {
+            "deleted": deleted,
+            "skipped": skipped,
+            "count": len(deleted),
+            "older_than_days": req.older_than_days,
+        },
+    }
+
+
 @app.post("/api/control/executions/stop-all", operation_id="stop_all_strategies", summary="Stop all running strategies")
 def stop_all_controlled_executions():
     stopped: list[str] = []
@@ -1321,6 +1401,60 @@ def stop_controlled_execution(execution_id: str):
     }
 
 
+@app.delete(
+    "/api/control/executions/{execution_id}",
+    operation_id="delete_strategy",
+    summary="Delete one saved strategy execution",
+)
+def delete_controlled_execution(execution_id: str):
+    engine = engine_registry.get_engine(execution_id)
+    if not engine:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    if not _is_controlled_execution(engine):
+        raise HTTPException(status_code=400, detail="Not a controlled execution")
+
+    status = str(engine.get("status") or "").lower()
+    previous_state = status or None
+
+    if status == "scheduled":
+        updated = _unschedule_engine_if_scheduled(execution_id, engine)
+        if updated:
+            _notify_controlled_strategy(
+                updated,
+                STRATEGY_CANCELLED,
+                previous_state="scheduled",
+                trigger="delete",
+            )
+    elif status in {"starting", "running", "stale"}:
+        if engine.get("pid"):
+            stopped = engine_process_manager.stop_engine(execution_id)
+        else:
+            stopped = engine_registry.update_engine(
+                execution_id,
+                {"status": "stopped", "pid": None},
+            )
+        if stopped:
+            _notify_controlled_strategy(
+                stopped,
+                STRATEGY_STOPPED,
+                previous_state=previous_state,
+                trigger="delete",
+            )
+
+    if not engine_registry.delete_engine(execution_id):
+        raise HTTPException(status_code=500, detail="Failed to delete execution")
+
+    log.info("[CONTROL] Deleted execution %s", execution_id)
+    return {
+        "status": True,
+        "data": {
+            "execution_id": execution_id,
+            "deleted": True,
+        },
+    }
+
+
 def _execution_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
@@ -1393,6 +1527,31 @@ class ClosePositionRequest(BaseModel):
     units: Optional[float] = None
     instrument_id: Optional[int] = None
     max_positions: Optional[int] = None
+
+
+def _etoro_close_error_detail(exc: Exception, request_debug: dict | None = None) -> dict:
+    response = getattr(exc, "payload", None)
+    if isinstance(response, dict) and "request" in response:
+        request_debug = response.get("request") or request_debug
+        response = response.get("response", response)
+    return {
+        "message": str(exc),
+        "debug": {
+            "request": request_debug,
+            "response": response,
+        },
+    }
+
+
+def _log_etoro_close_result(label: str, result: dict) -> None:
+    request_debug = result.get("request") or {}
+    response = result.get("response")
+    log.info(
+        "[%s] request=%s response=%s",
+        label,
+        json.dumps(request_debug, default=str),
+        json.dumps(response, default=str) if response is not None else "(empty)",
+    )
 
 
 def _execution_engine(execution_id: str) -> dict[str, Any]:
@@ -1660,6 +1819,24 @@ async def close_execution_position(
             units=req.units,
             instrument_id=req.instrument_id,
         )
+    except EtoroApiError as exc:
+        log.error(
+            "[CONTROL_ETORO] close_position failed execution=%s position=%s env=%s: %s",
+            execution_id, position_id, account_env, exc, exc_info=True,
+        )
+        bgp_error(
+            "control_plane_position_close",
+            "close_failed",
+            **request_details,
+            order_id=order_id,
+            error=str(exc),
+        )
+        db.log_event(
+            order_id,
+            "POSITION_CLOSE_FAILED",
+            {**request_details, "error": str(exc)},
+        )
+        raise HTTPException(status_code=502, detail=_etoro_close_error_detail(exc)) from exc
     except Exception as exc:
         log.error(
             "[CONTROL_ETORO] close_position failed execution=%s position=%s env=%s: %s",
@@ -1679,7 +1856,7 @@ async def close_execution_position(
         )
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
-    if not closed:
+    if not closed.get("closed"):
         bgp_error(
             "control_plane_position_close",
             "close_not_confirmed",
@@ -1692,6 +1869,8 @@ async def close_execution_position(
             {**request_details, "error": "eToro returned failure without exception"},
         )
         raise HTTPException(status_code=502, detail="eToro did not confirm position close")
+
+    _log_etoro_close_result("CONTROL_ETORO", closed)
 
     bgp_info(
         "control_plane_position_close",
@@ -1717,11 +1896,18 @@ async def close_execution_position(
     except Exception as exc:
         log.debug("[CONTROL_ETORO] agent trade log skip: %s", exc)
 
+    _remove_position_from_portfolio_cache("etoro", account_env, str(position_id))
+
     log.info(
         "[CONTROL_ETORO] close_position OK execution=%s position=%s env=%s units=%s",
         execution_id, position_id, account_env, req.units,
     )
-    return {"status": True, "position_id": position_id, "closed": True}
+    return {
+        "status": True,
+        "position_id": position_id,
+        "closed": True,
+        "debug": closed,
+    }
 
 
 @app.get(
@@ -2043,6 +2229,70 @@ async def control_plane_etoro_positions(
                 "message": str(e),
             }
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.post(
+    "/api/control/etoro/positions/{position_id}/close",
+    operation_id="close_etoro_position",
+    summary="Close an eToro position directly by broker position id",
+)
+async def control_plane_etoro_close_position(
+    position_id: str,
+    account_env: str = "demo",
+    req: ClosePositionRequest = ClosePositionRequest(),
+):
+    env = "demo" if (account_env or "demo").lower() == "demo" else "live"
+    request_debug = {
+        "position_id": position_id,
+        "account_env": env,
+        "units": req.units,
+        "instrument_id": req.instrument_id,
+    }
+    log.info(
+        "[CONTROL_ETORO] direct close position=%s env=%s units=%s instrument=%s",
+        position_id,
+        env,
+        req.units,
+        req.instrument_id,
+    )
+    try:
+        client = await _etoro_trading_client(env)
+        closed = await client.aclose_position(
+            position_id,
+            units=req.units,
+            instrument_id=req.instrument_id,
+        )
+    except EtoroApiError as exc:
+        log.error(
+            "[CONTROL_ETORO] direct close failed position=%s env=%s request=%s response=%s",
+            position_id,
+            env,
+            json.dumps(request_debug, default=str),
+            json.dumps(getattr(exc, "payload", None), default=str),
+            exc_info=True,
+        )
+        raise HTTPException(status_code=502, detail=_etoro_close_error_detail(exc, request_debug)) from exc
+    except Exception as exc:
+        log.error(
+            "[CONTROL_ETORO] direct close failed position=%s env=%s: %s",
+            position_id,
+            env,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=502, detail=_etoro_close_error_detail(exc, request_debug)) from exc
+
+    _log_etoro_close_result("CONTROL_ETORO", closed)
+    _remove_position_from_portfolio_cache("etoro", env, str(position_id))
+    log.info("[CONTROL_ETORO] direct close OK position=%s env=%s", position_id, env)
+    return {
+        "status": True,
+        "broker": "etoro",
+        "account_env": env,
+        "position_id": position_id,
+        "closed": True,
+        "debug": closed,
+    }
 
 
 @app.get("/api/control/etoro/orders", operation_id="get_etoro_orders", summary="Get eToro pending and active orders")

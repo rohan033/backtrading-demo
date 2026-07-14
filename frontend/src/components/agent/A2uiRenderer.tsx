@@ -11,6 +11,7 @@ import type {
   A2uiUserAction,
 } from '@/lib/agentA2uiCatalog'
 import type { WatchlistBroker } from '@/lib/watchlistBrokers'
+import { formatSessionToolLabel } from '@/lib/tool-call-display'
 
 type BubbleRole = 'user' | 'agent'
 
@@ -20,6 +21,8 @@ type Props = {
   onAction?: (action: A2uiUserAction) => void
   broker?: WatchlistBroker
   accountEnv?: 'live' | 'demo'
+  /** Autonomous trading session — no manual deploy buttons. */
+  autonomousSession?: boolean
 }
 
 function Bubble({ role, children }: { role: BubbleRole; children: ReactNode }) {
@@ -236,10 +239,27 @@ function ButtonRow({
   )
 }
 
+function setupFormToSummaryProps(props: Record<string, unknown>): Record<string, unknown> {
+  return {
+    symbol: String(props.symbol || '').split('-')[0],
+    entry_price: props.close_price ?? props.entry_price,
+    long_percent: props.long_percent,
+    short_percent: props.short_percent,
+    capital: props.max_available_capital ?? props.capital,
+    broker: props.broker,
+    account_env: props.account_env,
+    status: props.status ?? 'auto-deploying',
+  }
+}
+
 function renderComponent(
   component: A2uiComponent,
   onAction?: (action: A2uiUserAction) => void,
-  context?: { broker?: WatchlistBroker; accountEnv?: 'live' | 'demo' },
+  context?: {
+    broker?: WatchlistBroker
+    accountEnv?: 'live' | 'demo'
+    autonomousSession?: boolean
+  },
 ) {
   const props = component.props || {}
   switch (component.component) {
@@ -283,16 +303,23 @@ function renderComponent(
         </div>
       )
     }
-    case 'ToolStatus':
+    case 'ToolStatus': {
+      const detail = String(props.detail || '')
+      const label = formatSessionToolLabel(String(props.toolName || 'tool'), 'mcp', {
+        tool_name: String(props.toolName || ''),
+        detail,
+        args: detail,
+      })
       return (
         <div className="am-a2ui-tool">
-          <span className="am-a2ui-tool__name">{String(props.toolName || 'tool')}</span>
+          <span className="am-a2ui-tool__name">{label}</span>
           <span className="am-a2ui-tool__status">{String(props.status || 'running')}</span>
           {props.detail ? (
-            <span className="am-a2ui-tool__detail">{String(props.detail)}</span>
+            <span className="am-a2ui-tool__detail">{detail}</span>
           ) : null}
         </div>
       )
+    }
     case 'CandidateDebate':
       return (
         <div className="am-a2ui-debate">
@@ -357,6 +384,17 @@ function renderComponent(
     case 'MonitorBatch':
       return <MonitorBatch props={props} />
     case 'StrategySetupForm':
+      if (context?.autonomousSession) {
+        return renderComponent(
+          {
+            id: component.id,
+            component: 'StrategySummary',
+            props: setupFormToSummaryProps(props),
+          },
+          onAction,
+          context,
+        )
+      }
       return <StrategySetupForm props={props} onAction={onAction} />
     case 'InsightCards':
       return <InsightCards props={props} />
@@ -428,9 +466,16 @@ function renderComponent(
   }
 }
 
-export function A2uiRenderer({ surface, className, onAction, broker, accountEnv }: Props) {
+export function A2uiRenderer({
+  surface,
+  className,
+  onAction,
+  broker,
+  accountEnv,
+  autonomousSession = false,
+}: Props) {
   const role: BubbleRole = surface.role === 'user' ? 'user' : 'agent'
-  const renderCtx = { broker, accountEnv }
+  const renderCtx = { broker, accountEnv, autonomousSession }
 
   if (surface.type === 'a2ui_tool_log') {
     const inner = surface.components.map(component => (
