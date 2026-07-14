@@ -1,4 +1,4 @@
-export type BracketValueMode = 'price' | 'amount'
+export type BracketValueMode = 'price' | 'amount' | 'percent'
 
 export type PositionBracketSettings = {
   takeProfitEnabled: boolean
@@ -122,6 +122,13 @@ export function bracketTargetPrice(
   if (!Number.isFinite(value) || !(openRate > 0) || !(units > 0)) return null
   const direction = isBuy ? 1 : -1
   if (mode === 'price') return value
+  if (mode === 'percent') {
+    const pct = value / 100
+    if (kind === 'take_profit') {
+      return isBuy ? openRate * (1 + pct) : openRate * (1 - pct)
+    }
+    return isBuy ? openRate * (1 - pct) : openRate * (1 + pct)
+  }
   const delta = value / (units * direction)
   if (kind === 'take_profit') return openRate + delta
   return openRate - delta
@@ -142,6 +149,12 @@ export function bracketTargetPnl(
     const amount = Number(rawValue)
     if (!Number.isFinite(amount)) return null
     return kind === 'take_profit' ? amount : -Math.abs(amount)
+  }
+  if (mode === 'percent') {
+    const pct = Number(rawValue)
+    if (!Number.isFinite(pct)) return null
+    const dollars = openRate * (pct / 100) * units
+    return kind === 'take_profit' ? dollars : -Math.abs(dollars)
   }
   const direction = isBuy ? 1 : -1
   return (price - openRate) * units * direction

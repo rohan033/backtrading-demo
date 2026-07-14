@@ -24,8 +24,9 @@ function assignedTakeProfit(row: EtoroPositionRow, brackets: PositionBracketSett
     const dollars = Number(brackets.takeProfitValue)
     return Number.isFinite(dollars) && dollars > 0 ? dollars : null
   }
+  const mode = brackets.takeProfitMode === 'percent' ? 'percent' : 'price'
   const pnl = bracketTargetPnl(
-    'price',
+    mode,
     brackets.takeProfitValue,
     row.openRate,
     row.quantity,
@@ -41,8 +42,9 @@ function assignedStopLoss(row: EtoroPositionRow, brackets: PositionBracketSettin
     const dollars = Math.abs(Number(brackets.stopLossValue))
     return Number.isFinite(dollars) && dollars > 0 ? dollars : null
   }
+  const mode = brackets.stopLossMode === 'percent' ? 'percent' : 'price'
   const pnl = bracketTargetPnl(
-    'price',
+    mode,
     brackets.stopLossValue,
     row.openRate,
     row.quantity,

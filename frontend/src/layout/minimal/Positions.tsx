@@ -126,6 +126,14 @@ function BracketModeToggle({
       </button>
       <button
         type="button"
+        className={`pos-mode-btn${mode === 'percent' ? ' pos-mode-btn--active' : ''}`}
+        onClick={() => onChange('percent')}
+        title="Percent move from entry"
+      >
+        %
+      </button>
+      <button
+        type="button"
         className={`pos-mode-btn${mode === 'amount' ? ' pos-mode-btn--active' : ''}`}
         onClick={() => onChange('amount')}
         title="Target P&L amount"
@@ -196,8 +204,8 @@ function BracketCell({
         type="number"
         className="pos-bracket-input"
         value={value}
-        step={mode === 'price' ? 0.01 : 1}
-        placeholder={mode === 'price' ? 'Price' : 'Amount'}
+        step={mode === 'price' ? 0.01 : mode === 'percent' ? 0.1 : 1}
+        placeholder={mode === 'price' ? 'Price' : mode === 'percent' ? '%' : 'Amount'}
         onChange={e =>
           onChange(
             kind === 'take_profit'
@@ -209,9 +217,11 @@ function BracketCell({
         <div className="pos-bracket-hint">
           {mode === 'amount'
             ? `Target ${formatBrokerMoney('etoro', targetPrice)}`
-            : targetPnl != null
-              ? `P&L ${fmtSignedMoney(targetPnl)}`
-              : null}
+            : mode === 'percent'
+              ? `Target ${formatBrokerMoney('etoro', targetPrice)}${targetPnl != null ? ` · P&L ${fmtSignedMoney(targetPnl)}` : ''}`
+              : targetPnl != null
+                ? `P&L ${fmtSignedMoney(targetPnl)}`
+                : null}
         </div>
       ) : null}
     </div>
