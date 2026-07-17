@@ -33,6 +33,7 @@ from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket
 from api.workspace_media import router as workspace_media_router
 from api.watchlist_routes import router as watchlist_router
 from api.watchlist_panel_routes import router as watchlist_panel_router
+from api.screener_routes import router as screener_router
 from api.traded_instruments_routes import router as traded_instruments_router
 from api.trades_pnl_routes import router as trades_pnl_router
 from api.market_news_routes import router as market_news_router
@@ -134,6 +135,7 @@ app.include_router(agent_monitor_router)
 app.include_router(workspace_media_router)
 app.include_router(watchlist_router)
 app.include_router(watchlist_panel_router)
+app.include_router(screener_router)
 app.include_router(traded_instruments_router)
 app.include_router(trades_pnl_router)
 app.include_router(market_news_router)

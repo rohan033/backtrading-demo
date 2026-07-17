@@ -18,6 +18,7 @@ import AgentMode from './agent/AgentMode'
 import Earnings from './Earnings'
 import Portfolio from './Portfolio'
 import Positions from './Positions'
+import ScreenerPage from '../../components/screener/ScreenerPage'
 import MomentumSidebarPanel from './MomentumSidebarPanel'
 import EarningsMonitorBar from './EarningsMonitorBar'
 import MarketClockBar from './MarketClockBar'
@@ -27,10 +28,10 @@ import { useWatchlistEarnings } from '../../hooks/useWatchlistEarnings'
 import type { WatchlistEarningsRef } from '../../lib/marketResearch'
 
 /* ─── types ─────────────────────────────────────────────── */
-type MainTab = 'home' | 'watch-trade' | 'orders' | 'positions' | 'strategies' | 'earnings' | 'agent'
+type MainTab = 'home' | 'watch-trade' | 'orders' | 'positions' | 'strategies' | 'earnings' | 'screener' | 'agent'
 type NewsTab = 'watchlist' | 'momentum' | 'new' | 'news' | 'market'
 
-const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'positions', 'strategies', 'earnings', 'agent']
+const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'positions', 'strategies', 'earnings', 'screener', 'agent']
 const NEWS_TABS: NewsTab[] = ['watchlist', 'momentum', 'news', 'market', 'new']
 const LEFT_COLLAPSED_KEY = 'minimal-shell-left-collapsed'
 const RIGHT_WIDTH_KEY = 'minimal-shell-right-width'
@@ -191,6 +192,9 @@ function MainPanel({
           <Pill active={tab === 'earnings'} href={buildShellUrl({ tab: 'earnings' })} onClick={() => setTab('earnings')}>
             {'\u00a0Earnings\u00a0'}
           </Pill>
+          <Pill active={tab === 'screener'} href={buildShellUrl({ tab: 'screener' })} onClick={() => setTab('screener')}>
+            {'\u00a0Screener\u00a0'}
+          </Pill>
           <Pill active={tab === 'agent'} href={buildShellUrl({ tab: 'agent' })} onClick={() => setTab('agent')}>
             {'\u00a0Agent\u00a0'}
           </Pill>
@@ -220,6 +224,8 @@ function MainPanel({
             error={earnings.error}
             onRefresh={earnings.refresh}
           />
+        ) : tab === 'screener' ? (
+          <ScreenerPage />
         ) : tab === 'orders' ? (
           <Portfolio />
         ) : tab === 'positions' ? (
