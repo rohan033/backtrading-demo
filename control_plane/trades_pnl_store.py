@@ -286,6 +286,109 @@ class TradesPnlStore:
         conn.close()
         return self._payload(row) if row else None
 
+    def record_completed_ui_trade(
+        self,
+        *,
+        position_id: str | None,
+        source: str,
+        broker: str = "etoro",
+        account_env: str = "demo",
+        symbol: str | None = None,
+        entry_price: float | None = None,
+        exit_price: float | None = None,
+        pnl: float | None = None,
+        pnl_pct: float | None = None,
+        close_reason: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Persist a finalized trade closed by the Positions UI or its automation."""
+        position = _clean(position_id)
+        ticker = _clean(symbol)
+        buy = _num(entry_price)
+        sell = _num(exit_price)
+        profit = _num(pnl)
+        profit_pct = _num(pnl_pct)
+        if not position or not ticker or buy is None or sell is None:
+            return None
+        if profit is None and profit_pct is None:
+            return None
+
+        now = _now_utc()
+        broker_name = (broker or "etoro").lower()
+        env = (account_env or "demo").lower()
+        trade_source = (source or "positions").lower()
+        conn = self._connect()
+        existing = conn.execute(
+            """
+            SELECT * FROM trades_pnl
+            WHERE broker = ? AND account_env = ? AND position_id = ?
+            ORDER BY opened_at DESC
+            LIMIT 1
+            """,
+            (broker_name, env, position),
+        ).fetchone()
+
+        if existing is None:
+            row_id = str(uuid.uuid4())
+            conn.execute(
+                """
+                INSERT INTO trades_pnl (
+                    id, position_id, source, broker, account_env, symbol,
+                    tradingsymbol, exchange, side, entry_price, exit_price,
+                    pnl, pnl_pct, status, close_reason, opened_at, closed_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'ETORO', 'buy', ?, ?, ?, ?,
+                        'closed', ?, ?, ?, ?)
+                """,
+                (
+                    row_id,
+                    position,
+                    trade_source,
+                    broker_name,
+                    env,
+                    ticker,
+                    ticker,
+                    buy,
+                    sell,
+                    profit,
+                    profit_pct,
+                    _clean(close_reason),
+                    now,
+                    now,
+                    now,
+                ),
+            )
+        else:
+            row_id = existing["id"]
+            conn.execute(
+                """
+                UPDATE trades_pnl
+                SET source = ?, symbol = ?, tradingsymbol = ?,
+                    entry_price = ?, exit_price = ?, pnl = ?, pnl_pct = ?,
+                    status = 'closed', close_reason = ?, closed_at = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    trade_source,
+                    ticker,
+                    ticker,
+                    buy,
+                    sell,
+                    profit,
+                    profit_pct,
+                    _clean(close_reason),
+                    now,
+                    now,
+                    row_id,
+                ),
+            )
+
+        conn.commit()
+        row = conn.execute("SELECT * FROM trades_pnl WHERE id = ?", (row_id,)).fetchone()
+        conn.close()
+        return self._payload(row) if row else None
+
     def list_trades(
         self,
         *,

@@ -19,6 +19,7 @@ import Earnings from './Earnings'
 import Portfolio from './Portfolio'
 import Positions from './Positions'
 import ScreenerPage from '../../components/screener/ScreenerPage'
+import SettingsPage from '../../pages/SettingsPage'
 import MomentumSidebarPanel from './MomentumSidebarPanel'
 import EarningsMonitorBar from './EarningsMonitorBar'
 import MarketClockBar from './MarketClockBar'
@@ -28,10 +29,10 @@ import { useWatchlistEarnings } from '../../hooks/useWatchlistEarnings'
 import type { WatchlistEarningsRef } from '../../lib/marketResearch'
 
 /* ─── types ─────────────────────────────────────────────── */
-type MainTab = 'home' | 'watch-trade' | 'orders' | 'positions' | 'strategies' | 'earnings' | 'screener' | 'agent'
+type MainTab = 'home' | 'watch-trade' | 'orders' | 'positions' | 'strategies' | 'earnings' | 'screener' | 'agent' | 'settings'
 type NewsTab = 'watchlist' | 'momentum' | 'new' | 'news' | 'market'
 
-const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'positions', 'strategies', 'earnings', 'screener', 'agent']
+const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'positions', 'strategies', 'earnings', 'screener', 'agent', 'settings']
 const NEWS_TABS: NewsTab[] = ['watchlist', 'momentum', 'news', 'market', 'new']
 const LEFT_COLLAPSED_KEY = 'minimal-shell-left-collapsed'
 const RIGHT_WIDTH_KEY = 'minimal-shell-right-width'
@@ -198,6 +199,9 @@ function MainPanel({
           <Pill active={tab === 'agent'} href={buildShellUrl({ tab: 'agent' })} onClick={() => setTab('agent')}>
             {'\u00a0Agent\u00a0'}
           </Pill>
+          <Pill active={tab === 'settings'} href={buildShellUrl({ tab: 'settings' })} onClick={() => setTab('settings')}>
+            {'\u00a0Settings\u00a0'}
+          </Pill>
         </div>
         <div className="ms-header-trailing">
           <NewsNotificationsBar
@@ -232,6 +236,8 @@ function MainPanel({
           <Positions />
         ) : tab === 'agent' ? (
           <AgentMode />
+        ) : tab === 'settings' ? (
+          <SettingsPage />
         ) : (
           <div style={{ height: '100%', background: '#EBEBEB' }} />
         )}

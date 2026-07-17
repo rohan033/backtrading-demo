@@ -2426,6 +2426,30 @@ async def control_plane_etoro_close_position(
 
     _log_etoro_close_result("CONTROL_ETORO", closed)
     _remove_position_from_portfolio_cache("etoro", env, str(position_id))
+
+    # Direct closes initiated by the Positions page (manual or bracket
+    # automation) do not have an execution id, so persist their finalized P&L
+    # explicitly. Other API callers are intentionally excluded.
+    notify = req.notify
+    if notify and notify.source in {"positions", "bracket"}:
+        try:
+            from control_plane.trades_pnl_store import get_trades_pnl_store
+
+            get_trades_pnl_store().record_completed_ui_trade(
+                position_id=str(position_id),
+                source=notify.source,
+                broker="etoro",
+                account_env=env,
+                symbol=notify.ticker,
+                entry_price=notify.buy_price,
+                exit_price=notify.sell_price,
+                pnl=notify.pnl,
+                pnl_pct=notify.pnl_pct,
+                close_reason=notify.close_reason,
+            )
+        except Exception as exc:
+            log.debug("[CONTROL_ETORO] UI trade P&L record skipped: %s", exc)
+
     _notify_ui_position_closed(
         account_env=env,
         position_id=str(position_id),
