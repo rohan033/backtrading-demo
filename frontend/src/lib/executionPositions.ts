@@ -360,10 +360,13 @@ export async function loadExecutionPositions({
   return dedupePositions(rows).filter(isOpenExecutionPosition)
 }
 
+import type { PositionCloseNotifyContext } from './closeEtoroPosition'
+
 export async function closeExecutionPosition(
   executorId: string,
   row: ExecutionPositionRow,
   units: number | null = null,
+  notify: PositionCloseNotifyContext | null = null,
 ): Promise<void> {
   if (!row.closable) {
     throw new Error('This tracked position cannot be closed on the broker yet.')
@@ -377,6 +380,7 @@ export async function closeExecutionPosition(
       body: JSON.stringify({
         units,
         instrument_id: row.instrument_id || null,
+        notify,
       }),
     },
   )

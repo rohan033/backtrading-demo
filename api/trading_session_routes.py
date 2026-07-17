@@ -41,6 +41,7 @@ class CreateTradingSessionRequest(BaseModel):
     account_env: str = "demo"
     max_capital: float = Field(default=5000, ge=0)
     profit_target: float = Field(default=500, ge=0)
+    prompt: str | None = Field(default=None, max_length=8000)
 
 
 class DispatchPromptRequest(BaseModel):

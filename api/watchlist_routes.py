@@ -97,6 +97,15 @@ async def _fill_missing_etoro_metadata(req: AddSymbolRequest, account_env: str) 
 @router.get("", operation_id="list_watchlists", summary="List all watchlists")
 def list_watchlists():
     store = get_watchlist_store()
+    # Refresh the auto-maintained "Past Traded" watchlist so it shows up in
+    # Watch & Trade as soon as the panel loads. Local-only + best-effort.
+    try:
+        from control_plane.past_traded_sync import sync_past_traded_watchlist
+
+        for env in ("demo", "live"):
+            sync_past_traded_watchlist(broker="etoro", account_env=env)
+    except Exception:
+        pass
     return {"status": True, "data": store.list_watchlists()}
 
 

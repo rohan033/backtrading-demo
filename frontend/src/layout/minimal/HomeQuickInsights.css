@@ -1,0 +1,313 @@
+.hm-qi {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #fff;
+  color: #1a1a1a;
+  color-scheme: light;
+}
+
+.hm-qi__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1.5px solid var(--ms-border, #303030);
+  background: #f6f8fa;
+  flex-shrink: 0;
+}
+
+.hm-qi__title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #26313f;
+}
+
+.hm-qi__collapse {
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+  color: #4a5568;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.hm-qi__collapse:hover {
+  background: #eef3f9;
+  border-color: var(--ms-border, #303030);
+}
+
+.hm-qi__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px;
+}
+
+.hm-qi__section {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #e3e8ee;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.hm-qi__section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #26313f;
+  border-left: 3px solid #94a3b8;
+  border-bottom: 1px solid #eef1f4;
+  background: #f4f6f8;
+}
+
+/* Color-coded header strips per section */
+.hm-qi__section--news .hm-qi__section-title {
+  border-left-color: #1f6feb;
+  background: #eaf2ff;
+  color: #14458f;
+}
+
+.hm-qi__section--trades .hm-qi__section-title {
+  border-left-color: #7b3ff2;
+  background: #f1ecfe;
+  color: #5426b0;
+}
+
+.hm-qi__section--technical .hm-qi__section-title {
+  border-left-color: #0f9d58;
+  background: #e9f7ef;
+  color: #0b6b3c;
+}
+
+/* Section content padding (title strip stays flush to edges) */
+.hm-qi__section > :not(.hm-qi__section-title) {
+  margin: 8px 9px;
+}
+
+.hm-qi__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #1f6feb;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.hm-qi__muted {
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.hm-qi__muted--err {
+  color: #b42318;
+}
+
+/* News */
+.hm-qi__news {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hm-qi__news-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #eef1f4;
+}
+
+.hm-qi__news-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.hm-qi__news-link {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111;
+  text-decoration: none;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.hm-qi__news-link:hover {
+  color: #1f6feb;
+  text-decoration: underline;
+}
+
+.hm-qi__news-meta {
+  font-size: 10px;
+  color: #6b7280;
+}
+
+/* Momentum trades */
+.hm-qi__trades {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.hm-qi__trade-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #26313f;
+}
+
+.hm-qi__env {
+  flex-shrink: 0;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.hm-qi__env--demo {
+  background: #e7f0fe;
+  color: #1f5fbf;
+}
+
+.hm-qi__env--live {
+  background: #fdecec;
+  color: #b42318;
+}
+
+.hm-qi__trade-sym {
+  font-weight: 700;
+  color: #111;
+}
+
+.hm-qi__trade-detail {
+  color: #4a5568;
+}
+
+/* Technical analysis */
+.hm-qi__ta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hm-qi__verdict {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.hm-qi__verdict--up { color: #087443; }
+.hm-qi__verdict--down { color: #b42318; }
+.hm-qi__verdict--flat { color: #6b7280; }
+
+.hm-qi__change {
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.hm-qi__change--up { color: #087443; }
+.hm-qi__change--down { color: #b42318; }
+
+.hm-qi__ta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.hm-qi__ta-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 7px;
+  border: 1px solid #e3e8ee;
+  border-radius: 6px;
+  background: #fafbfc;
+}
+
+.hm-qi__ta-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6b7280;
+}
+
+.hm-qi__ta-val {
+  font-size: 12px;
+  font-weight: 700;
+  color: #111;
+}
+
+.hm-qi__ta-val--up { color: #087443; }
+.hm-qi__ta-val--down { color: #b42318; }
+
+/* Collapsed rail */
+.hm-qi--collapsed {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  height: 100%;
+}
+
+.hm-qi__rail-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 100%;
+  border: 1.5px solid var(--ms-border, #303030);
+  border-radius: 8px;
+  background: #f6f8fa;
+  color: #26313f;
+  cursor: pointer;
+  padding: 8px 0;
+}
+
+.hm-qi__rail-btn:hover {
+  background: #eef3f9;
+}
+
+.hm-qi__rail-label {
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}

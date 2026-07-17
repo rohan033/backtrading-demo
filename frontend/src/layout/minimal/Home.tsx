@@ -94,8 +94,9 @@ import {
   HomeSentimentPanel,
 } from './HomeResearchPanels'
 import HomeIndicesChart from './HomeIndicesChart'
+import HomeQuickInsights from './HomeQuickInsights'
 
-type InfoTab = 'news' | 'filings' | 'earnings' | 'insider' | 'sentiment'
+type InfoTab = 'news' | 'filings' | 'earnings' | 'insider' | 'sentiment' | 'recommendations'
 
 type HomeSelection = {
   broker: WatchlistBroker
@@ -613,6 +614,9 @@ function InfoPlaceholder({ title, body }: { title: string; body: string }) {
 const AI_DRAWER_WIDTH_KEY = 'home-ai-drawer-width'
 const AI_DRAWER_COLLAPSED_KEY = 'home-ai-drawer-collapsed'
 const INFO_PANEL_COLLAPSED_KEY = 'home-info-panel-collapsed'
+const INSIGHTS_COLLAPSED_KEY = 'home-insights-collapsed'
+const HOME_RECENT_STOCKS_KEY = 'home-recent-stocks'
+const HOME_RECENT_STOCKS_LIMIT = 5
 const HOME_NEWS_MARKERS_KEY = 'home-chart-news-markers'
 const HOME_AUTO_TRADE_SCAN_KEY = 'home-chart-auto-trade-scan'
 const AI_DRAWER_MIN = 280
@@ -637,6 +641,32 @@ function loadDrawerWidth(fallback: number, min: number, max: number) {
   } catch {
     return fallback
   }
+}
+
+function recentStockKey(stock: Pick<HomeSelection, 'broker' | 'symboltoken'>): string {
+  return `${stock.broker}:${stock.symboltoken}`
+}
+
+function loadRecentStocks(): HomeSelection[] {
+  try {
+    const raw = localStorage.getItem(HOME_RECENT_STOCKS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((item): item is HomeSelection =>
+        Boolean(item && item.tradingsymbol && item.symboltoken && item.broker),
+      )
+      .slice(0, HOME_RECENT_STOCKS_LIMIT)
+  } catch {
+    return []
+  }
+}
+
+function upsertRecentStock(list: HomeSelection[], next: HomeSelection): HomeSelection[] {
+  const key = recentStockKey(next)
+  const deduped = list.filter(item => recentStockKey(item) !== key)
+  return [next, ...deduped].slice(0, HOME_RECENT_STOCKS_LIMIT)
 }
 
 function HomeAiDrawer({
@@ -860,9 +890,13 @@ export default function Home() {
   const [results, setResults] = useState<WatchlistSymbolHit[]>([])
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState('')
+  const [recentStocks, setRecentStocks] = useState<HomeSelection[]>(() => loadRecentStocks())
   const [infoTab, setInfoTab] = useState<InfoTab>('news')
   const [infoPanelCollapsed, setInfoPanelCollapsed] = useState(() =>
     loadDrawerBool(INFO_PANEL_COLLAPSED_KEY, false),
+  )
+  const [insightsCollapsed, setInsightsCollapsed] = useState(() =>
+    loadDrawerBool(INSIGHTS_COLLAPSED_KEY, false),
   )
   const [chatDraft, setChatDraft] = useState('')
   const [chartRange, setChartRange] = useState<ChartTimeRange | null>(null)
@@ -947,8 +981,31 @@ export default function Home() {
     })
   }, [])
 
+  const toggleInsights = useCallback(() => {
+    setInsightsCollapsed(prev => {
+      const next = !prev
+      try {
+        localStorage.setItem(INSIGHTS_COLLAPSED_KEY, String(next))
+      } catch {
+        // ignore storage errors
+      }
+      return next
+    })
+  }, [])
+
   const persistSelection = useCallback((next: HomeSelection | null) => {
     setSelection(next)
+    if (next) {
+      setRecentStocks(prev => {
+        const updated = upsertRecentStock(prev, next)
+        try {
+          localStorage.setItem(HOME_RECENT_STOCKS_KEY, JSON.stringify(updated))
+        } catch {
+          // ignore storage errors
+        }
+        return updated
+      })
+    }
     if (!next) {
       navigate({
         home_symbol: '',
@@ -1010,6 +1067,15 @@ export default function Home() {
     setQuery('')
     setSearchError('')
   }
+
+  const selectRecent = useCallback((stock: HomeSelection) => {
+    setBroker(stock.broker)
+    setAccountEnv(stock.accountEnv)
+    persistSelection(stock)
+    setQuery('')
+    setResults([])
+    setSearchError('')
+  }, [persistSelection])
 
   const showIndices = useCallback(() => {
     persistSelection(null)
@@ -1364,6 +1430,30 @@ export default function Home() {
           {searching ? 'Searching…' : 'Search'}
         </button>
 
+        {recentStocks.length ? (
+          <div className="hm-recent-pills" aria-label="Recently viewed stocks">
+            <span className="hm-recent-pills__label">Recent</span>
+            {recentStocks.map(stock => {
+              const active = Boolean(
+                selection
+                && selection.symboltoken === stock.symboltoken
+                && selection.broker === stock.broker,
+              )
+              return (
+                <button
+                  key={recentStockKey(stock)}
+                  type="button"
+                  className={`hm-recent-pill${active ? ' hm-recent-pill--active' : ''}`}
+                  onClick={() => selectRecent(stock)}
+                  title={stock.displayName || stock.tradingsymbol}
+                >
+                  {stock.tradingsymbol}
+                </button>
+              )
+            })}
+          </div>
+        ) : null}
+
         {searchError ? (
           <div className="hm-toolbar-meta">
             <div className="hm-toolbar-error">{searchError}</div>
@@ -1373,7 +1463,7 @@ export default function Home() {
 
       <div className="hm-body-row">
         <div className={`hm-main${infoPanelCollapsed ? ' hm-main--info-collapsed' : ''}`}>
-          <div className={`hm-top-row${selection ? '' : ' hm-top-row--full'}`}>
+          <div className={`hm-top-row${selection ? '' : ' hm-top-row--full'}${selection && insightsCollapsed ? ' hm-top-row--insights-collapsed' : ''}`}>
             <section className="hm-card hm-chart-card">
               {selection ? (
                 <>
@@ -1505,13 +1595,13 @@ export default function Home() {
             </section>
 
             {selection ? (
-              <section className="hm-card hm-rec-card">
-                <div className="hm-rec-card-head">
-                  <div className="hm-rec-section-title">Analyst recommendation trends</div>
-                  <div className="hm-rec-section-meta">{newsSymbol} · Finnhub</div>
-                </div>
-                <HomeRecommendationsPanel symbol={newsSymbol} />
-              </section>
+              <HomeQuickInsights
+                selection={selection}
+                newsSymbol={newsSymbol}
+                candles={chartCandles}
+                collapsed={insightsCollapsed}
+                onToggle={toggleInsights}
+              />
             ) : null}
           </div>
 
@@ -1534,6 +1624,7 @@ export default function Home() {
                   ['earnings', 'Earnings'],
                   ['insider', 'Insider'],
                   ['sentiment', 'Sentiment'],
+                  ['recommendations', 'Analysts'],
                 ] as const).map(([id, label]) => (
                   <button
                     key={id}
@@ -1570,8 +1661,10 @@ export default function Home() {
                   <HomeEarningsPanel symbol={newsSymbol} />
                 ) : infoTab === 'insider' ? (
                   <HomeInsiderPanel symbol={newsSymbol} />
-                ) : (
+                ) : infoTab === 'sentiment' ? (
                   <HomeSentimentPanel symbol={newsSymbol} />
+                ) : (
+                  <HomeRecommendationsPanel symbol={newsSymbol} />
                 )}
               </div>
             </section>

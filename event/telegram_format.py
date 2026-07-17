@@ -456,3 +456,58 @@ def format_telegram_event(
     if action in STRATEGY_LIFECYCLE_ACTIONS:
         return format_strategy_telegram_message(action, details)
     return format_order_telegram_message(action, order_id, details)
+
+
+def format_ui_position_closed_message(details: dict[str, Any]) -> str:
+    """Plain-text Telegram body for manual closes from Positions / Momentum UI."""
+    account_env = str(details.get("account_env") or "demo").upper()
+    ticker = str(details.get("ticker") or details.get("symbol") or "—")
+    symbol_name = details.get("symbol_name") or details.get("name")
+    broker = details.get("broker") or "etoro"
+    source = str(details.get("source") or "ui").replace("_", " ").title()
+    close_reason = details.get("close_reason") or details.get("reason")
+
+    lines = [
+        "──────────────────────",
+        "📉 Position closed (UI)",
+        "──────────────────────",
+        f"{ticker} · {account_env}",
+    ]
+    if symbol_name and str(symbol_name).strip() and str(symbol_name) != ticker:
+        lines.append(str(symbol_name))
+
+    buy_price = _float(details.get("buy_price") or details.get("entry_price"))
+    sell_price = _float(details.get("sell_price") or details.get("exit_price") or details.get("end_rate"))
+    pnl = _float(details.get("pnl"))
+    pnl_pct = _float(details.get("pnl_pct"))
+
+    if buy_price is not None or sell_price is not None or pnl is not None:
+        lines.append("")
+    if buy_price is not None:
+        lines.append(f"Buy  {format_money(broker, buy_price)}")
+    if sell_price is not None:
+        lines.append(f"Sell {format_money(broker, sell_price)}")
+    if pnl is not None or pnl_pct is not None:
+        pnl_text = format_money(broker, pnl, signed=True) if pnl is not None else "—"
+        pct_text = format_pct(pnl_pct, signed=True) if pnl_pct is not None else ""
+        lines.append(f"P&L  {pnl_text}{f' ({pct_text})' if pct_text and pct_text != '—' else ''}")
+
+    tp_cfg = details.get("take_profit_config") or details.get("take_profit")
+    sl_cfg = details.get("stop_loss_config") or details.get("stop_loss")
+    if tp_cfg or sl_cfg:
+        lines.append("")
+        if tp_cfg:
+            lines.append(f"TP  {tp_cfg}")
+        if sl_cfg:
+            lines.append(f"SL  {sl_cfg}")
+
+    lines.append("")
+    lines.append(f"Source {source}")
+    if close_reason:
+        lines.append(f"Reason {close_reason}")
+    if details.get("executor_id"):
+        lines.append(f"Executor {details['executor_id']}")
+    if details.get("position_id"):
+        lines.append(f"Position {details['position_id']}")
+
+    return "\n".join(lines)

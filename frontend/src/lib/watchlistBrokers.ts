@@ -9,31 +9,6 @@ export function defaultAccountEnv(broker: WatchlistBroker): 'live' | 'demo' {
   return broker === 'etoro' ? 'demo' : 'live'
 }
 
-export async function searchWatchlistSymbol(
-  broker: WatchlistBroker,
-  query: string,
-  accountEnv: string,
-): Promise<Array<{ symboltoken: string; tradingsymbol: string; exchange: string }>> {
-  const q = query.trim()
-  if (!q) return []
-
-  if (broker === 'etoro') {
-    const params = new URLSearchParams({
-      q,
-      broker: 'etoro',
-      exchange: 'ETORO',
-      account_env: accountEnv,
-    })
-    const res = await fetch(`/api/control/search?${params}`)
-    const body = await res.json()
-    return body.status ? body.data || [] : []
-  }
-
-  const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`)
-  const body = await res.json()
-  return body.status ? body.data || [] : []
-}
-
 export type WatchlistSymbolHit = {
   symboltoken: string
   tradingsymbol: string
@@ -46,6 +21,94 @@ export type WatchlistSymbolHit = {
   logo50x50?: string | null
   logo150x150?: string | null
   raw?: Record<string, unknown> | null
+}
+
+/**
+ * Looks up a single eToro instrument by its numeric instrument ID and maps the
+ * display metadata into a search hit. Returns `null` when the ID is unknown so
+ * callers can fall back to (or merge with) the text search results.
+ */
+export async function lookupEtoroInstrumentById(
+  instrumentId: string,
+  accountEnv: string,
+): Promise<WatchlistSymbolHit | null> {
+  const id = instrumentId.trim()
+  if (!/^\d+$/.test(id)) return null
+
+  const params = new URLSearchParams({
+    broker: 'etoro',
+    account_env: accountEnv,
+    instrument_ids: id,
+  })
+  let body: { status?: boolean; data?: Record<string, Record<string, unknown>> }
+  try {
+    const res = await fetch(`/api/control/instruments/display?${params}`)
+    body = await res.json()
+  } catch {
+    return null
+  }
+  const record = body?.status ? body.data?.[id] : undefined
+  if (!record) return null
+
+  const str = (value: unknown): string | null => {
+    if (value == null) return null
+    const text = String(value).trim()
+    return text || null
+  }
+  const tradingsymbol = str(record.tradingsymbol) || id
+  const displayName = str(record.instrument_display_name) || str(record.symbol)
+  return {
+    symboltoken: id,
+    tradingsymbol,
+    exchange: 'ETORO',
+    name: displayName || tradingsymbol,
+    symbol: str(record.symbol) || displayName || tradingsymbol,
+    internalAssetClassName: str(record.internal_asset_class_name),
+    instrumentDisplayName: displayName,
+    logo35x35: str(record.logo35x35),
+    logo50x50: str(record.logo50x50),
+    logo150x150: str(record.logo150x150),
+    raw: record,
+  }
+}
+
+export async function searchWatchlistSymbol(
+  broker: WatchlistBroker,
+  query: string,
+  accountEnv: string,
+): Promise<WatchlistSymbolHit[]> {
+  const q = query.trim()
+  if (!q) return []
+
+  if (broker === 'etoro') {
+    const params = new URLSearchParams({
+      q,
+      broker: 'etoro',
+      exchange: 'ETORO',
+      account_env: accountEnv,
+    })
+    let textHits: WatchlistSymbolHit[] = []
+    try {
+      const res = await fetch(`/api/control/search?${params}`)
+      const body = await res.json()
+      textHits = body.status ? body.data || [] : []
+    } catch {
+      textHits = []
+    }
+
+    // Allow searching directly by numeric eToro instrument ID — the text search
+    // endpoint only matches ticker/name, so a bare ID would otherwise miss.
+    // Runs even when the text search failed, so an ID always resolves.
+    if (/^\d+$/.test(q) && !textHits.some(hit => String(hit.symboltoken) === q)) {
+      const byId = await lookupEtoroInstrumentById(q, accountEnv)
+      if (byId) return [byId, ...textHits]
+    }
+    return textHits
+  }
+
+  const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`)
+  const body = await res.json()
+  return body.status ? body.data || [] : []
 }
 
 /**

@@ -50,11 +50,16 @@ class TelegramEventListener:
             except queue.Empty:
                 continue
             try:
-                text = format_telegram_event(
-                    event.get("order_id"),
-                    event["action"],
-                    event.get("details") or {},
-                )
+                details = event.get("details") or {}
+                custom_text = details.get("_telegram_text")
+                if custom_text:
+                    text = str(custom_text)
+                else:
+                    text = format_telegram_event(
+                        event.get("order_id"),
+                        event["action"],
+                        details,
+                    )
                 self._send_message(text)
             except Exception as exc:
                 logger.error("[TELEGRAM] Failed to send event: %s", exc)

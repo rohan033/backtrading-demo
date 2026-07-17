@@ -159,3 +159,42 @@ export function bracketTargetPnl(
   const direction = isBuy ? 1 : -1
   return (price - openRate) * units * direction
 }
+
+function bracketModeLabel(mode: BracketValueMode): string {
+  if (mode === 'percent') return '%'
+  if (mode === 'amount') return '$'
+  return 'price'
+}
+
+function formatBracketSide(
+  label: 'TP' | 'SL',
+  enabled: boolean,
+  mode: BracketValueMode,
+  value: string,
+): string {
+  const trimmed = value.trim()
+  if (!enabled && !trimmed) return `${label} off`
+  const state = enabled ? 'on' : 'off'
+  if (!trimmed) return `${label} ${state}`
+  return `${label} ${trimmed} ${bracketModeLabel(mode)} (${state})`
+}
+
+export function formatPositionBracketSummary(settings: PositionBracketSettings): {
+  takeProfit: string
+  stopLoss: string
+} {
+  return {
+    takeProfit: formatBracketSide(
+      'TP',
+      settings.takeProfitEnabled,
+      settings.takeProfitMode,
+      settings.takeProfitValue,
+    ),
+    stopLoss: formatBracketSide(
+      'SL',
+      settings.stopLossEnabled,
+      settings.stopLossMode,
+      settings.stopLossValue,
+    ),
+  }
+}

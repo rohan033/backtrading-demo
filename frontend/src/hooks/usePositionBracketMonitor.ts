@@ -17,6 +17,10 @@ import {
   markBracketCloseInFlight,
   type MonitoredPosition,
 } from '@/lib/positionBracketMonitor'
+import { positionLivePnl } from '@/lib/etoroPositions'
+import {
+  formatPositionBracketSummary,
+} from '@/lib/positionBrackets'
 import { showPlatformToast } from '@/lib/platform-toast'
 
 type Params = {
@@ -69,8 +73,21 @@ export function usePositionBracketMonitor({
       setClosingKeys(prev => new Set(prev).add(rowKey))
 
       const label = trigger === 'take_profit' ? 'Take profit' : 'Stop loss'
+      const bracketSummary = formatPositionBracketSummary(brackets)
+      const live = positionLivePnl(row, livePrice)
       void closeEtoroPosition(positionId, accountEnv, {
         instrumentId: row.symboltoken,
+        notify: {
+          source: 'bracket',
+          ticker,
+          buy_price: row.openRate,
+          sell_price: livePrice,
+          pnl: live?.pnl ?? row.brokerPnl,
+          pnl_pct: live?.pnlPct,
+          close_reason: trigger === 'take_profit' ? 'take_profit' : 'stop_loss',
+          take_profit_config: bracketSummary.takeProfit,
+          stop_loss_config: bracketSummary.stopLoss,
+        },
       })
         .then(result => {
           logCloseEtoroExchange(ticker, result)

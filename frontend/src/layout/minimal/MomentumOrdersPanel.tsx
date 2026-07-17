@@ -7,7 +7,7 @@ import {
   type MomentumTradeOpenPosition,
 } from '../../hooks/useMomentumTradesMonitor'
 import { formatBrokerMoney } from '../../lib/currency'
-import { closeExecutionPosition } from '../../lib/executionPositions'
+import { closeExecutionPosition, type ExecutionPositionRow } from '../../lib/executionPositions'
 import { showPlatformToast } from '../../lib/platform-toast'
 import {
   clearMomentumTrades,
@@ -117,13 +117,30 @@ function MomentumOrderRow({
     if (!trade.executionId || !position.closable) return
     setClosingId(position.positionId)
     try {
-      await closeExecutionPosition(trade.executionId, {
-        position_id: position.positionId,
-        instrument_id: position.instrumentId,
-        remaining_units: position.units,
-        closable: true,
-        source: 'control',
-      })
+      const sellPrice = trade.brokerLtp ?? currentPrice ?? trade.entryPrice
+      const livePnl = trade.status === 'open' ? trade.livePnl : null
+      await closeExecutionPosition(
+        trade.executionId,
+        {
+          position_id: position.positionId,
+          instrument_id: position.instrumentId,
+          remaining_units: position.units,
+          closable: true,
+          source: 'control',
+        } as ExecutionPositionRow,
+        position.units,
+        {
+          source: 'momentum',
+          ticker: trade.tradingsymbol,
+          buy_price: trade.entryPrice,
+          sell_price: sellPrice,
+          pnl: livePnl?.pnl ?? trade.realizedPnl,
+          pnl_pct: livePnl?.pnlPct ?? trade.realizedPnlPct,
+          close_reason: 'manual',
+          take_profit_config: trade.noTakeProfit ? 'TP off' : 'TP default bracket',
+          stop_loss_config: 'SL 1%',
+        },
+      )
       showPlatformToast({
         variant: 'success',
         title: 'Position closed',

@@ -630,7 +630,7 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
           <div className="wt-add-stock-row">
             <input ref={inputRef} value={query} onChange={e=>setQuery(e.target.value)}
               onKeyDown={e=>{ if(e.key==='Enter') void runSearch() }}
-              placeholder="Search ticker or name…" className="wt-add-stock-input"/>
+              placeholder="Search ticker, name, or instrument ID…" className="wt-add-stock-input"/>
             <button type="button" className="wt-add-stock-search-btn"
               onClick={()=>void runSearch()}>{searching ? '...' : 'Search'}</button>
           </div>

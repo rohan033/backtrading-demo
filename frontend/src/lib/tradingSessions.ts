@@ -53,6 +53,8 @@ export type CreateTradingSessionInput = {
   account_env?: 'live' | 'demo' | string
   max_capital: number
   profit_target: number
+  /** Optional free-text instruction to steer the agent (esp. AI discovery). */
+  prompt?: string | null
 }
 
 async function parseJson<T>(res: Response): Promise<T> {

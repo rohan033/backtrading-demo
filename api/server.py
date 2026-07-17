@@ -33,6 +33,8 @@ from api.cursor_agent import cursor_agent_service, handle_cursor_agent_websocket
 from api.workspace_media import router as workspace_media_router
 from api.watchlist_routes import router as watchlist_router
 from api.watchlist_panel_routes import router as watchlist_panel_router
+from api.traded_instruments_routes import router as traded_instruments_router
+from api.trades_pnl_routes import router as trades_pnl_router
 from api.market_news_routes import router as market_news_router
 from api.trading_session_routes import get_trading_session_store, handle_trading_session_websocket, router as trading_session_router
 from api.news_feed import get_news_feed_hub
@@ -132,6 +134,8 @@ app.include_router(agent_monitor_router)
 app.include_router(workspace_media_router)
 app.include_router(watchlist_router)
 app.include_router(watchlist_panel_router)
+app.include_router(traded_instruments_router)
+app.include_router(trades_pnl_router)
 app.include_router(market_news_router)
 app.include_router(trading_session_router)
 
@@ -984,6 +988,30 @@ async def momentum_enter(req: MomentumEnterRequest):
         },
     )
 
+    # Durable P&L ledger entry for reporting. Best-effort: never fail the trade.
+    try:
+        from control_plane.trades_pnl_store import get_trades_pnl_store
+
+        get_trades_pnl_store().record_entry(
+            execution_id=execution_id,
+            order_id=str(order_id),
+            source=EXECUTION_SOURCE_MOMENTUM_TRADE,
+            broker="etoro",
+            account_env=env,
+            symbol=req.symbol,
+            tradingsymbol=req.symbol,
+            symboltoken=req.token,
+            exchange=req.exchange,
+            side="buy",
+            quantity=quantity,
+            capital=capital,
+            entry_price=entry_price,
+            take_profit_price=take_profit_price,
+            stop_loss_price=buy_result.get("stop_loss_rate", stop_loss_price),
+        )
+    except Exception as exc:
+        log.debug("[MOMENTUM] trades_pnl entry record skipped: %s", exc)
+
     # 5. Spin up the monitor engine.
     try:
         _start_controlled_execution(execution_id, trigger="momentum")
@@ -1523,10 +1551,24 @@ def _resolve_execution_order_poll_job(execution_id: str) -> dict[str, Any] | Non
     return None
 
 
+class PositionCloseNotifyContext(BaseModel):
+    source: Optional[str] = None
+    ticker: Optional[str] = None
+    symbol_name: Optional[str] = None
+    buy_price: Optional[float] = None
+    sell_price: Optional[float] = None
+    pnl: Optional[float] = None
+    pnl_pct: Optional[float] = None
+    close_reason: Optional[str] = None
+    take_profit_config: Optional[str] = None
+    stop_loss_config: Optional[str] = None
+
+
 class ClosePositionRequest(BaseModel):
     units: Optional[float] = None
     instrument_id: Optional[int] = None
     max_positions: Optional[int] = None
+    notify: Optional[PositionCloseNotifyContext] = None
 
 
 def _etoro_close_error_detail(exc: Exception, request_debug: dict | None = None) -> dict:
@@ -1552,6 +1594,50 @@ def _log_etoro_close_result(label: str, result: dict) -> None:
         json.dumps(request_debug, default=str),
         json.dumps(response, default=str) if response is not None else "(empty)",
     )
+
+
+def _position_close_notify_details(
+    *,
+    account_env: str,
+    position_id: str,
+    notify: PositionCloseNotifyContext | None = None,
+    executor_id: str | None = None,
+    position_row: dict | None = None,
+) -> dict:
+    details: dict[str, Any] = {
+        "broker": "etoro",
+        "account_env": account_env,
+        "position_id": str(position_id),
+        "source": "ui",
+    }
+    if executor_id:
+        details["executor_id"] = executor_id
+    if notify is not None:
+        for key, value in notify.model_dump().items():
+            if value is not None:
+                details[key] = value
+    if position_row:
+        if not details.get("ticker"):
+            details["ticker"] = (
+                position_row.get("tradingsymbol")
+                or position_row.get("symbol")
+                or position_row.get("instrument_display_name")
+            )
+        if details.get("buy_price") is None:
+            for key in ("averageprice", "openRate", "open_rate", "entry_price"):
+                if position_row.get(key) is not None:
+                    details["buy_price"] = position_row.get(key)
+                    break
+    return details
+
+
+def _notify_ui_position_closed(**kwargs) -> None:
+    try:
+        from event.position_close_notify import notify_ui_position_closed
+
+        notify_ui_position_closed(_position_close_notify_details(**kwargs))
+    except Exception as exc:
+        log.debug("[CONTROL_ETORO] telegram position close notify skip: %s", exc)
 
 
 def _execution_engine(execution_id: str) -> dict[str, Any]:
@@ -1884,6 +1970,24 @@ async def close_execution_position(
     # reflects the new state without waiting for the next remote poll.
     db.mark_position_closed(str(position_id), execution_id)
 
+    # Record the exit + realized P&L in the durable ledger. No-op unless this
+    # execution has a momentum entry recorded. Best-effort: never fail the close.
+    try:
+        from control_plane.trades_pnl_store import get_trades_pnl_store
+
+        notify = req.notify
+        get_trades_pnl_store().record_exit(
+            execution_id=execution_id,
+            position_id=str(position_id),
+            exit_price=getattr(notify, "sell_price", None) if notify else None,
+            entry_price=getattr(notify, "buy_price", None) if notify else None,
+            pnl=getattr(notify, "pnl", None) if notify else None,
+            pnl_pct=getattr(notify, "pnl_pct", None) if notify else None,
+            close_reason=(getattr(notify, "close_reason", None) if notify else None) or "manual",
+        )
+    except Exception as exc:
+        log.debug("[CONTROL_ETORO] trades_pnl exit record skipped: %s", exc)
+
     try:
         from control_plane.agent_trade_completion import log_position_close_for_execution
 
@@ -1897,6 +2001,14 @@ async def close_execution_position(
         log.debug("[CONTROL_ETORO] agent trade log skip: %s", exc)
 
     _remove_position_from_portfolio_cache("etoro", account_env, str(position_id))
+
+    _notify_ui_position_closed(
+        account_env=account_env,
+        position_id=str(position_id),
+        notify=req.notify,
+        executor_id=execution_id,
+        position_row=position_row,
+    )
 
     log.info(
         "[CONTROL_ETORO] close_position OK execution=%s position=%s env=%s units=%s",
@@ -2177,6 +2289,32 @@ async def _etoro_trading_client(account_env: str):
     return client
 
 
+def _capture_traded_instruments(rows: list[dict], *, broker: str = "etoro", account_env: str = "demo") -> None:
+    """Persist instruments seen in positions into the permanent "past traded" registry.
+
+    Best-effort: never let a bookkeeping failure break the positions response.
+    """
+    if not rows:
+        return
+    try:
+        from control_plane.traded_instruments_store import get_traded_instruments_store
+
+        store = get_traded_instruments_store()
+        for row in rows:
+            try:
+                store.upsert_from_position_row(row, broker=broker, account_env=account_env)
+            except Exception:
+                continue
+    except Exception as exc:
+        log.debug("[TRADED_INSTRUMENTS] capture skipped: %s", exc)
+
+
+def _sync_past_traded_watchlist(*, broker: str = "etoro", account_env: str = "demo") -> None:
+    from control_plane.past_traded_sync import sync_past_traded_watchlist
+
+    sync_past_traded_watchlist(broker=broker, account_env=account_env)
+
+
 @app.get("/api/control/etoro/positions", operation_id="get_etoro_positions", summary="Get eToro open positions")
 async def control_plane_etoro_positions(
     account_env: str = "demo",
@@ -2204,6 +2342,8 @@ async def control_plane_etoro_positions(
             _etoro_position_to_portfolio_row(item, symbol_map, display_map)
             for item in positions
         ]
+        _capture_traded_instruments(rows, account_env=env)
+        _sync_past_traded_watchlist(broker="etoro", account_env=env)
         _set_portfolio_cache("etoro", env, rows)
         log.info("[CONTROL_ETORO] positions env=%s count=%d", env, len(rows))
         return {
@@ -2284,6 +2424,11 @@ async def control_plane_etoro_close_position(
 
     _log_etoro_close_result("CONTROL_ETORO", closed)
     _remove_position_from_portfolio_cache("etoro", env, str(position_id))
+    _notify_ui_position_closed(
+        account_env=env,
+        position_id=str(position_id),
+        notify=req.notify,
+    )
     log.info("[CONTROL_ETORO] direct close OK position=%s env=%s", position_id, env)
     return {
         "status": True,

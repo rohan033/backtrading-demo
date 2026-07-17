@@ -1,5 +1,9 @@
 from event.strategy_events import STRATEGY_DEPLOYED, strategy_details_from_engine
-from event.telegram_format import format_strategy_telegram_message, format_telegram_event
+from event.telegram_format import (
+    format_strategy_telegram_message,
+    format_telegram_event,
+    format_ui_position_closed_message,
+)
 
 
 def test_strategy_details_from_engine():
@@ -90,3 +94,28 @@ def test_strategy_details_enriched_from_engine():
     assert details["estimated_quantity"] > 0
     assert details["take_profit_price"] > details["reference_close"]
     assert details["stop_loss_price"] < details["reference_close"]
+
+
+def test_format_ui_position_closed_message():
+    text = format_ui_position_closed_message({
+        "account_env": "demo",
+        "ticker": "VEEE",
+        "symbol_name": "Twin Vee PowerCats Co",
+        "buy_price": 981.78,
+        "sell_price": 982.02,
+        "pnl": 24.0,
+        "pnl_pct": 0.02,
+        "take_profit_config": "TP 5% (on)",
+        "stop_loss_config": "SL 1 $ (off)",
+        "source": "positions",
+        "close_reason": "manual",
+        "position_id": "123456789",
+    })
+    assert "VEEE" in text
+    assert "DEMO" in text
+    assert "Buy" in text
+    assert "Sell" in text
+    assert "P&L" in text
+    assert "TP  5% (on)" in text
+    assert "SL  1 $ (off)" in text
+    assert "Positions" in text

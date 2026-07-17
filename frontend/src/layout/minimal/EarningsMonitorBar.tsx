@@ -17,44 +17,39 @@ export default function EarningsMonitorBar({
   if (!alerts.length) return null
 
   return (
-    <div className="er-monitor-bar" role="region" aria-label="Earnings monitor alerts">
+    <div className="er-toast-stack" role="region" aria-label="Earnings notifications">
       {alerts.map(alert => {
         const ref = alert.watchlistRefs?.[0]
+        const handleShow = () => {
+          if (ref?.symboltoken) onOpenSymbol(ref)
+          else onOpenEarnings()
+        }
         return (
           <div
             key={alert.id}
-            className={`er-monitor-bar__item er-monitor-bar__item--${alert.phase}`}
+            className={`er-toast er-toast--${alert.phase}`}
+            title={alert.message}
           >
-            <div className="er-monitor-bar__copy">
-              <strong>{alert.symbol}</strong>
-              <span>{alert.message}</span>
+            <span className="er-toast__dot" aria-hidden="true" />
+            <div className="er-toast__copy">
+              <span className="er-toast__label">Earnings notification</span>
+              <strong className="er-toast__ticker">{alert.symbol}</strong>
             </div>
-            <div className="er-monitor-bar__actions">
-              {ref?.symboltoken ? (
-                <button
-                  type="button"
-                  className="er-monitor-bar__btn"
-                  onClick={() => onOpenSymbol(ref)}
-                >
-                  Watch
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="er-monitor-bar__btn er-monitor-bar__btn--ghost"
-                onClick={onOpenEarnings}
-              >
-                Calendar
-              </button>
-              <button
-                type="button"
-                className="er-monitor-bar__dismiss"
-                aria-label={`Dismiss ${alert.symbol} earnings alert`}
-                onClick={() => onDismiss(alert.id)}
-              >
-                ×
-              </button>
-            </div>
+            <button
+              type="button"
+              className="er-toast__show"
+              onClick={handleShow}
+            >
+              Show
+            </button>
+            <button
+              type="button"
+              className="er-toast__dismiss"
+              aria-label={`Dismiss ${alert.symbol} earnings alert`}
+              onClick={() => onDismiss(alert.id)}
+            >
+              ×
+            </button>
           </div>
         )
       })}

@@ -1,5 +1,18 @@
 import { formatApiError } from './apiError'
 
+export type PositionCloseNotifyContext = {
+  source?: 'positions' | 'momentum' | 'bracket'
+  ticker?: string
+  symbol_name?: string | null
+  buy_price?: number | null
+  sell_price?: number | null
+  pnl?: number | null
+  pnl_pct?: number | null
+  close_reason?: string
+  take_profit_config?: string
+  stop_loss_config?: string
+}
+
 export type CloseEtoroDebug = {
   request?: Record<string, unknown> | null
   response?: unknown
@@ -69,14 +82,17 @@ export async function closeEtoroPosition(
   {
     units,
     instrumentId,
+    notify,
   }: {
     units?: number | null
     instrumentId?: string | number | null
+    notify?: PositionCloseNotifyContext | null
   } = {},
 ): Promise<CloseEtoroPositionResult> {
   const requestBody = {
     units: units ?? null,
     instrument_id: instrumentId != null ? Number(instrumentId) : null,
+    notify: notify ?? null,
   }
   const params = new URLSearchParams({ account_env: accountEnv })
   const url = `/api/control/etoro/positions/${encodeURIComponent(positionId)}/close?${params.toString()}`

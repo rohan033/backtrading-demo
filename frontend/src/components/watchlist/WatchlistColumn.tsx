@@ -460,7 +460,7 @@ export default function WatchlistColumn({
               value={query}
               onChange={e => setQuery(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && runSearch()}
-              placeholder={broker === 'etoro' ? 'Search symbol…' : 'Search NSE…'}
+              placeholder={broker === 'etoro' ? 'Search symbol or instrument ID…' : 'Search NSE…'}
               className="min-w-0 flex-1 rounded-md border border-border bg-primary px-2.5 py-1.5 text-sm outline-none focus:border-accent/50"
             />
             <Button type="button" size="sm" onClick={runSearch} disabled={searching}>

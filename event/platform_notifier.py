@@ -65,6 +65,29 @@ def emit_strategy_event(
         log.error("[TELEGRAM] Strategy event enqueue failed %s: %s", action, exc)
 
 
+def emit_position_closed_event(
+    position_id: str | int | None,
+    details: dict[str, Any],
+    *,
+    text: str | None = None,
+) -> None:
+    """Notify Telegram of a position close (UI or control-plane)."""
+    listener = _telegram_listener()
+    if listener is None:
+        return
+    payload = dict(details)
+    if text:
+        payload["_telegram_text"] = text
+    try:
+        listener.enqueue(
+            str(position_id) if position_id is not None else None,
+            "POSITION_CLOSED",
+            payload,
+        )
+    except Exception as exc:
+        log.error("[TELEGRAM] Position close enqueue failed: %s", exc)
+
+
 def shutdown_platform_notifier() -> None:
     global _listeners
     for listener in _listeners:

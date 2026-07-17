@@ -30,6 +30,7 @@ import {
   bracketStorageKey,
   bracketTargetPnl,
   bracketTargetPrice,
+  formatPositionBracketSummary,
   loadPositionBracketsForRow,
   savePositionBrackets,
   type BracketValueMode,
@@ -41,6 +42,7 @@ import {
   type InstrumentDisplayRecord,
 } from '../../lib/portfolioSymbolDisplay'
 import { buildSymbolVisualMap, type SymbolVisual } from '../../lib/symbolVisuals'
+import { recordTradedInstrument } from '../../lib/tradedInstruments'
 import { fetchWatchlists, type Watchlist } from '../../lib/watchlists'
 import './Positions.css'
 
@@ -256,11 +258,17 @@ const PositionLivePnlCell = memo(function PositionLivePnlCell({
   const pnl = live?.pnl ?? row.brokerPnl
   const pnlPct = live?.pnlPct ?? 0
   const pnlUp = (pnl ?? 0) >= 0
+  const currentPrice = ltp ?? row.brokerLtp ?? null
 
   return (
-    <td className={`pos-td-num ${pnlUp ? 'pos-pnl--up' : 'pos-pnl--down'}`}>
-      {pnl != null ? fmtPnl(pnl, pnlPct) : '—'}
-    </td>
+    <>
+      <td className="pos-td-num">
+        {currentPrice != null ? formatBrokerMoney('etoro', currentPrice) : '—'}
+      </td>
+      <td className={`pos-td-num ${pnlUp ? 'pos-pnl--up' : 'pos-pnl--down'}`}>
+        {pnl != null ? fmtPnl(pnl, pnlPct) : '—'}
+      </td>
+    </>
   )
 })
 
@@ -271,6 +279,15 @@ function matchesTickerFilter(prepared: PreparedRow, query: string): boolean {
   const symbol = prepared.row.tradingsymbol.toUpperCase()
   const name = String(prepared.name || '').toUpperCase()
   return ticker.includes(needle) || symbol.includes(needle) || name.includes(needle)
+}
+
+function matchesSelectedTickers(prepared: PreparedRow, selected: Set<string>): boolean {
+  if (selected.size === 0) return true
+  return selected.has(prepared.ticker.toUpperCase())
+}
+
+function rowMatchesFilters(prepared: PreparedRow, query: string, selected: Set<string>): boolean {
+  return matchesTickerFilter(prepared, query) && matchesSelectedTickers(prepared, selected)
 }
 
 const PositionTableRow = memo(function PositionTableRow({
@@ -415,6 +432,7 @@ function PositionsTable({
   const { prices } = usePositionsPrice()
   const [bracketRevision, setBracketRevision] = useState(0)
   const [tickerFilter, setTickerFilter] = useState('')
+  const [selectedTickers, setSelectedTickers] = useState<Set<string>>(() => new Set())
   const [manualClosingKeys, setManualClosingKeys] = useState<Set<string>>(() => new Set())
   const bumpBracketRevision = useCallback(() => setBracketRevision(v => v + 1), [])
 
@@ -424,11 +442,32 @@ function PositionsTable({
   )
 
   const filterQuery = tickerFilter.trim()
+  const hasActiveFilter = filterQuery.length > 0 || selectedTickers.size > 0
+
+  const toggleTicker = useCallback((ticker: string) => {
+    const key = ticker.toUpperCase()
+    setSelectedTickers(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
+
+  const clearAllFilters = useCallback(() => {
+    setTickerFilter('')
+    setSelectedTickers(new Set())
+  }, [])
+
+  const filterLabel = useMemo(
+    () => [filterQuery, ...[...selectedTickers]].filter(Boolean).join(', '),
+    [filterQuery, selectedTickers],
+  )
 
   const visibleCount = useMemo(() => {
-    if (!filterQuery) return preparedRows.length
-    return preparedRows.filter(row => matchesTickerFilter(row, filterQuery)).length
-  }, [filterQuery, preparedRows])
+    if (!hasActiveFilter) return preparedRows.length
+    return preparedRows.filter(row => rowMatchesFilters(row, filterQuery, selectedTickers)).length
+  }, [hasActiveFilter, filterQuery, selectedTickers, preparedRows])
 
   const monitoredRows = useMemo((): MonitoredPosition[] => {
     void bracketRevision
@@ -464,7 +503,7 @@ function PositionsTable({
   )
 
   const handleClosePosition = useCallback(async (prepared: PreparedRow) => {
-    const { row, ticker, storageKey } = prepared
+    const { row, ticker, storageKey, name } = prepared
     if (!isBrokerClosablePosition(row) || !row.brokerPositionId) {
       showPlatformToast({
         variant: 'error',
@@ -477,10 +516,43 @@ function PositionsTable({
 
     setManualClosingKeys(prev => new Set(prev).add(row.rowKey))
     try {
+      const brackets = loadPositionBracketsForRow(accountEnv, storageKey, [
+        row.brokerPositionId,
+        row.positionId,
+        row.symboltoken,
+      ])
+      const bracketSummary = formatPositionBracketSummary(brackets)
+      const sellPrice = prices[row.rowKey] ?? row.brokerLtp
+      const live = positionLivePnl(row, sellPrice)
       const result = await closeEtoroPosition(row.brokerPositionId!, accountEnv, {
         instrumentId: row.symboltoken,
+        notify: {
+          source: 'positions',
+          ticker,
+          symbol_name: prepared.name,
+          buy_price: row.openRate,
+          sell_price: sellPrice,
+          pnl: live?.pnl ?? row.brokerPnl,
+          pnl_pct: live?.pnlPct,
+          close_reason: 'manual',
+          take_profit_config: bracketSummary.takeProfit,
+          stop_loss_config: bracketSummary.stopLoss,
+        },
       })
       logCloseEtoroExchange(ticker, result)
+      void recordTradedInstrument({
+        symboltoken: row.symboltoken,
+        tradingsymbol: ticker,
+        account_env: accountEnv,
+        symbol: name || row.displayName || undefined,
+        instrument_display_name: name || row.displayName || undefined,
+        logo35x35: row.logo35x35 ?? undefined,
+        logo50x50: row.logo50x50 ?? undefined,
+        logo150x150: row.logo150x150 ?? undefined,
+        position_id: row.brokerPositionId || row.positionId,
+        side: row.isBuy ? 'buy' : 'sell',
+        bump_trade_count: true,
+      }).catch(() => {})
       disableBracketsAfterClose(accountEnv, storageKey)
       bumpBracketRevision()
       const closedRef: ClosedPositionRef = {
@@ -515,7 +587,7 @@ function PositionsTable({
         return next
       })
     }
-  }, [accountEnv, bumpBracketRevision, filterQuery, onPositionClosed])
+  }, [accountEnv, bumpBracketRevision, filterQuery, onPositionClosed, prices])
 
   const refreshedLabel = lastRefreshedAt
     ? new Date(lastRefreshedAt).toLocaleTimeString()
@@ -571,22 +643,32 @@ function PositionsTable({
           </span>
         </label>
         {tickerOptions.length > 1 ? (
-          <div className="pos-ticker-pills" role="list" aria-label="Quick ticker filters">
-            {tickerOptions.map(ticker => (
+          <div className="pos-ticker-pills" role="list" aria-label="Quick ticker filters (multi-select)">
+            {tickerOptions.map(ticker => {
+              const active = selectedTickers.has(ticker.toUpperCase())
+              return (
+                <button
+                  key={ticker}
+                  type="button"
+                  role="listitem"
+                  aria-pressed={active}
+                  className={`pos-ticker-pill${active ? ' pos-ticker-pill--active' : ''}`}
+                  onClick={() => toggleTicker(ticker)}
+                >
+                  {ticker}
+                </button>
+              )
+            })}
+            {hasActiveFilter ? (
               <button
-                key={ticker}
                 type="button"
-                role="listitem"
-                className={`pos-ticker-pill${
-                  tickerFilter.trim().toUpperCase() === ticker.toUpperCase() ? ' pos-ticker-pill--active' : ''
-                }`}
-                onClick={() => setTickerFilter(
-                  tickerFilter.trim().toUpperCase() === ticker.toUpperCase() ? '' : ticker,
-                )}
+                className="pos-ticker-pill pos-ticker-pill--clear"
+                onClick={clearAllFilters}
+                title="Clear all ticker filters"
               >
-                {ticker}
+                Clear
               </button>
-            ))}
+            ) : null}
           </div>
         ) : null}
         <div className="pos-toolbar-spacer" />
@@ -599,7 +681,7 @@ function PositionsTable({
           <span className="pos-toolbar-meta">Updated {refreshedLabel}</span>
         ) : null}
         <span className="pos-toolbar-meta">
-          {filterQuery
+          {hasActiveFilter
             ? `${visibleCount} / ${positions.length} shown`
             : `${positions.length} position${positions.length === 1 ? '' : 's'}`}
         </span>
@@ -621,6 +703,7 @@ function PositionsTable({
                     <th>Symbol</th>
                     <th>Qty</th>
                     <th>Buy</th>
+                    <th>Current</th>
                     <th>P&amp;L</th>
                     <th>Take profit</th>
                     <th>TP</th>
@@ -630,15 +713,15 @@ function PositionsTable({
                   </tr>
                 </thead>
                 <tbody>
-                  {filterQuery && visibleCount === 0 ? (
+                  {hasActiveFilter && visibleCount === 0 ? (
                     <tr className="pos-filter-empty-row">
-                      <td colSpan={9}>
+                      <td colSpan={10}>
                         <div className="pos-filter-empty">
-                          No positions match “{filterQuery}”.
+                          No positions match “{filterLabel}”.
                           <button
                             type="button"
                             className="pos-empty-clear"
-                            onClick={() => setTickerFilter('')}
+                            onClick={clearAllFilters}
                           >
                             Clear filter
                           </button>
@@ -649,7 +732,7 @@ function PositionsTable({
                   {preparedRows.map(prepared => {
                     const isClosing = closingKeys.has(prepared.row.rowKey)
                       || manualClosingKeys.has(prepared.row.rowKey)
-                    const hidden = !matchesTickerFilter(prepared, filterQuery)
+                    const hidden = !rowMatchesFilters(prepared, filterQuery, selectedTickers)
                     return (
                       <PositionTableRow
                         key={prepared.row.rowKey}

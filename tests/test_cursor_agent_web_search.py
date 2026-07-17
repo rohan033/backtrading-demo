@@ -58,6 +58,21 @@ def test_wrap_prompt_execute_mode_prefers_mcp_tools():
     assert "POST /api/control/executions" not in prompt
 
 
+def test_tool_call_allowed_for_trading_session_shell_curl():
+    blocked, reason = _tool_call_blocked(
+        {
+            "tool_name": "shell",
+            "tool_status": "running",
+            "command": "curl -X POST http://127.0.0.1:8000/api/control/executions",
+        },
+        interaction_mode="execute",
+        web_search_enabled=False,
+        trading_session=True,
+    )
+    assert blocked is False
+    assert reason == ""
+
+
 def test_tool_call_blocked_when_shell_curls_control_plane_in_execute_mode():
     blocked, reason = _tool_call_blocked(
         {

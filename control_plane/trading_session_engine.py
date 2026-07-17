@@ -56,6 +56,15 @@ class TradingSessionEngine:
                 "symbol": session.get("symbol"),
             },
         )
+        # Seed an initial user instruction before entering explore so the
+        # discovery agent (scheduled on enter) can pick it up immediately.
+        initial_prompt = str(req.get("prompt") or "").strip()
+        if initial_prompt:
+            self.store.append_event(
+                session["id"],
+                "user_instruction",
+                {"prompt": initial_prompt[:8000]},
+            )
         await self._enter_state(session["id"], "explore", from_state=None, reason="session created")
         return self.get_session_detail(session["id"])  # type: ignore[return-value]
 

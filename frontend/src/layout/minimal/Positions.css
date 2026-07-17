@@ -373,6 +373,17 @@
   border-color: var(--ms-border, #303030);
 }
 
+.pos-ticker-pill--clear {
+  color: #a61f1f;
+  border-color: #e2b6b6;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pos-ticker-pill--clear:hover {
+  background: #fdeded;
+}
+
 .pos-td-actions {
   white-space: nowrap;
 }

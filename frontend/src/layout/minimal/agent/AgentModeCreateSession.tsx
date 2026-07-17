@@ -25,6 +25,7 @@ export default function AgentModeCreateSession({ open, onClose, onCreated }: Pro
   const [accountEnv, setAccountEnv] = useState<'live' | 'demo'>('demo')
   const [maxCapital, setMaxCapital] = useState('5000')
   const [profitTarget, setProfitTarget] = useState('500')
+  const [prompt, setPrompt] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [searchHits, setSearchHits] = useState<WatchlistSymbolHit[]>([])
   const [selected, setSelected] = useState<WatchlistSymbolHit | null>(null)
@@ -65,6 +66,8 @@ export default function AgentModeCreateSession({ open, onClose, onCreated }: Pro
         max_capital: Number(maxCapital) || 0,
         profit_target: Number(profitTarget) || 0,
       }
+      const trimmedPrompt = prompt.trim()
+      if (trimmedPrompt) input.prompt = trimmedPrompt
       if (selected) {
         input.symbol = selected.tradingsymbol.split('-')[0]
         input.token = selected.symboltoken
@@ -78,15 +81,21 @@ export default function AgentModeCreateSession({ open, onClose, onCreated }: Pro
     } finally {
       setSubmitting(false)
     }
-  }, [accountEnv, broker, maxCapital, onClose, onCreated, profitTarget, selected])
+  }, [accountEnv, broker, maxCapital, onClose, onCreated, profitTarget, prompt, selected])
 
   if (!open) return null
 
   const discoveryMode = !selected
 
   return (
-    <div className="am-ts-create-overlay" role="dialog" aria-modal="true" aria-labelledby="am-ts-create-title">
-      <div className="am-ts-create">
+    <div
+      className="am-ts-create-overlay am-ts-create-overlay--drawer"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="am-ts-create-title"
+      onClick={onClose}
+    >
+      <aside className="am-ts-create am-ts-create--drawer" onClick={e => e.stopPropagation()}>
         <header className="am-ts-create__header">
           <div>
             <h2 id="am-ts-create-title">New trading session</h2>
@@ -220,6 +229,25 @@ export default function AgentModeCreateSession({ open, onClose, onCreated }: Pro
             )}
           </section>
 
+          <section className="am-ts-create__section">
+            <div className="am-ts-create__section-head">
+              <h3 className="am-ts-create__section-title">Prompt</h3>
+              <span className="am-ts-create__optional">Optional</span>
+            </div>
+            <p className="am-ts-field__hint">
+              {discoveryMode
+                ? 'Steer AI discovery — e.g. "focus on AI semiconductor names with upcoming earnings".'
+                : 'Extra instructions for the agent while it works this symbol.'}
+            </p>
+            <textarea
+              className="am-ts-input am-ts-textarea"
+              rows={3}
+              placeholder="Add an instruction for the agent…"
+              value={prompt}
+              onChange={e => setPrompt(e.target.value)}
+            />
+          </section>
+
           {error ? <div className="am-ts-create__error">{error}</div> : null}
         </div>
 
@@ -236,7 +264,7 @@ export default function AgentModeCreateSession({ open, onClose, onCreated }: Pro
             {submitting ? 'Starting…' : discoveryMode ? 'Start · AI discovery' : 'Start session'}
           </button>
         </footer>
-      </div>
+      </aside>
     </div>
   )
 }
