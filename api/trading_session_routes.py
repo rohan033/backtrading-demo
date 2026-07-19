@@ -42,6 +42,8 @@ class CreateTradingSessionRequest(BaseModel):
     max_capital: float = Field(default=5000, ge=0)
     profit_target: float = Field(default=500, ge=0)
     prompt: str | None = Field(default=None, max_length=8000)
+    agent_model: str | None = None
+    agent_model_params: list[dict[str, str]] = Field(default_factory=list)
 
 
 class DispatchPromptRequest(BaseModel):

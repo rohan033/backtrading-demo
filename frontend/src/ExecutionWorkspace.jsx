@@ -2432,6 +2432,27 @@ export function LaunchTab({ executions, selectedLaunchId, onSelect, onStarted, o
   )
 }
 
+function CreateFormSection({ title, hint, children, variant }) {
+  const isMinimal = variant === 'minimal'
+  return (
+    <section className={isMinimal ? 'ms-create-section' : 'rounded border border-border bg-card/30 p-3'}>
+      <header className={isMinimal ? 'ms-create-section__head' : 'mb-3'}>
+        <h3 className={isMinimal ? 'ms-create-section__title' : 'text-[10px] font-bold uppercase tracking-[0.12em] text-text-secondary'}>
+          {title}
+        </h3>
+        {hint ? (
+          <p className={isMinimal ? 'ms-create-section__hint' : 'mt-0.5 text-[10px] text-text-secondary'}>
+            {hint}
+          </p>
+        ) : null}
+      </header>
+      <div className={isMinimal ? 'ms-create-section__grid' : 'grid grid-cols-2 gap-4 content-start'}>
+        {children}
+      </div>
+    </section>
+  )
+}
+
 export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onCancel, variant }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
@@ -2779,238 +2800,230 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
         </button>
       </div>
 
-      <div className={variant === 'minimal' ? 'mb-3' : 'mb-5'}>
-        <StrategyScheduleSection
-          variant={variant}
-          scheduleEnabled={scheduleEnabled}
-          onScheduleEnabledChange={checked => {
-            setScheduleEnabled(checked)
-            if (!checked) setError('')
-          }}
-          scheduledDate={scheduledDate}
-          onScheduledDateChange={setScheduledDate}
-          tradingDayOptions={visibleTradingDayOptions}
-          scheduleHint={scheduleHint}
-          loading={scheduleOptionsLoading}
-          broker={form.broker}
-        />
-      </div>
-
       <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-5">
-        <div className="grid grid-cols-2 gap-4 content-start">
-          <div>
-            <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Broker</label>
-            <select
-              value={form.broker}
-              onChange={e => {
-                const value = e.target.value
-                setSelectedStock(null)
-                setResults([])
-                setForm(prev => ({
-                  ...prev,
-                  broker: value,
-                  allow_partial_stocks: value === 'etoro' ? true : prev.allow_partial_stocks,
-                  client_mode: defaultClientMode(value),
-                }))
-              }}
-              className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent"
-            >
-              {BROKER_OPTIONS.map(option => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Environment</label>
-            <select
-              value={form.account_env}
-              onChange={e => setForm(prev => ({ ...prev, account_env: e.target.value }))}
-              className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent"
-            >
-              <option value="live">LIVE</option>
-              <option value="demo">DEMO</option>
-            </select>
-          </div>
-
-          <FormField label="Strategy Name" value={form.strategy_name} onChange={value => setForm(prev => ({ ...prev, strategy_name: value }))} />
-          <div>
-            <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Client Mode</label>
-            <select
-              value={form.client_mode}
-              onChange={e => setForm(prev => ({ ...prev, client_mode: e.target.value }))}
-              disabled={form.broker !== 'etoro'}
-              className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent disabled:opacity-50"
-            >
-              <option value="standard">Standard (feed TP/SL)</option>
-              <option value="bracket">Bracket Order</option>
-            </select>
-          </div>
-          {form.broker === 'etoro' ? (
+        <div className={variant === 'minimal' ? 'ms-create-sections' : 'flex flex-col gap-4 content-start'}>
+          <CreateFormSection variant={variant} title="Account" hint="Broker, environment, and strategy identity">
             <div>
-              <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">
-                Instrument Type
-              </label>
-              <div className="flex gap-4 mt-1">
-                <label className="flex items-center gap-2 text-xs text-text-primary cursor-pointer">
-                  <input
-                    type="radio"
-                    name="instrument_class"
-                    value="equity"
-                    checked={form.instrument_class === 'equity'}
-                    onChange={() => setForm(prev => ({ ...prev, instrument_class: 'equity' }))}
-                  />
-                  Equity
-                </label>
-                <label className="flex items-center gap-2 text-xs text-text-primary cursor-pointer">
-                  <input
-                    type="radio"
-                    name="instrument_class"
-                    value="crypto"
-                    checked={form.instrument_class === 'crypto'}
-                    onChange={() => setForm(prev => ({ ...prev, instrument_class: 'crypto' }))}
-                  />
-                  Crypto
-                </label>
-              </div>
-              <p className="mt-1 text-[10px] text-text-secondary">
-                eToro settlement: real for equity, marginTrade for crypto.
-              </p>
-            </div>
-          ) : null}
-          {['angel', 'etoro'].includes(form.broker) && !form.use_fake_client ? (
-            <div>
-              <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Price Feed</label>
+              <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Broker</label>
               <select
-                value={form.feed_mode}
-                onChange={e => setForm(prev => ({ ...prev, feed_mode: e.target.value }))}
+                value={form.broker}
+                onChange={e => {
+                  const value = e.target.value
+                  setSelectedStock(null)
+                  setResults([])
+                  setForm(prev => ({
+                    ...prev,
+                    broker: value,
+                    allow_partial_stocks: value === 'etoro' ? true : prev.allow_partial_stocks,
+                    client_mode: defaultClientMode(value),
+                  }))
+                }}
                 className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent"
               >
-                {feedOptionsForBroker(form.broker).map(option => (
+                {BROKER_OPTIONS.map(option => (
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
             </div>
-          ) : null}
-          <div>
-            <FormField
-              label="Tick sampling (every N ticks)"
-              type="number"
-              value={form.tick_sample_every}
-              onChange={value => setForm(prev => ({ ...prev, tick_sample_every: value }))}
-            />
-            <p className="mt-1 text-[10px] text-text-secondary">
-              Strategy runs on every Nth price tick (~1 tick/sec on WebSocket). N=5 ≈ one check every 5s.
-            </p>
-          </div>
-          <div className="col-span-2">
-            <FormField label="Execution ID" value={form.executor_id} onChange={value => setForm(prev => ({ ...prev, executor_id: value }))} />
-          </div>
-
-          <div className="col-span-2">
-            <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Stock</label>
-            <div className="flex gap-2">
-              <input
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && search()}
-                placeholder="Search stock"
-                className="flex-1 px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent placeholder:text-text-secondary"
-              />
-              <button onClick={search} className="px-4 py-2 bg-accent text-white rounded text-xs font-bold">Search</button>
+            <div>
+              <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Environment</label>
+              <select
+                value={form.account_env}
+                onChange={e => setForm(prev => ({ ...prev, account_env: e.target.value }))}
+                className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent"
+              >
+                <option value="live">LIVE</option>
+                <option value="demo">DEMO</option>
+              </select>
             </div>
-            {selectedStock && (
-              <p className="mt-2 text-xs text-green">
-                Selected: {selectedStock.tradingsymbol} · {instrumentLabel(form.broker)} {selectedStock.symboltoken}
-              </p>
-            )}
-            {!!results.length && (
-              <div className="mt-2 border border-border rounded bg-card max-h-40 overflow-auto">
-                {results.slice(0, 20).map(stock => (
-                  <button key={stock.symboltoken} onClick={() => selectStock(stock)} className="w-full text-left px-3 py-2 text-xs hover:bg-accent/10 border-b border-border/40">
-                    {stock.tradingsymbol} <span className="text-text-secondary">· {stock.exchange} · {instrumentLabel(form.broker)} {stock.symboltoken}</span>
-                  </button>
-                ))}
+
+            <FormField label="Strategy Name" value={form.strategy_name} onChange={value => setForm(prev => ({ ...prev, strategy_name: value }))} />
+            <div>
+              <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Client Mode</label>
+              <select
+                value={form.client_mode}
+                onChange={e => setForm(prev => ({ ...prev, client_mode: e.target.value }))}
+                disabled={form.broker !== 'etoro'}
+                className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent disabled:opacity-50"
+              >
+                <option value="standard">Standard (feed TP/SL)</option>
+                <option value="bracket">Bracket Order</option>
+              </select>
+            </div>
+          </CreateFormSection>
+
+          <CreateFormSection variant={variant} title="Market data" hint="Feed, sampling, and execution identity">
+            {form.broker === 'etoro' ? (
+              <div>
+                <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">
+                  Instrument Type
+                </label>
+                <div className="flex gap-4 mt-1">
+                  <label className="flex items-center gap-2 text-xs text-text-primary cursor-pointer">
+                    <input
+                      type="radio"
+                      name="instrument_class"
+                      value="equity"
+                      checked={form.instrument_class === 'equity'}
+                      onChange={() => setForm(prev => ({ ...prev, instrument_class: 'equity' }))}
+                    />
+                    Equity
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-text-primary cursor-pointer">
+                    <input
+                      type="radio"
+                      name="instrument_class"
+                      value="crypto"
+                      checked={form.instrument_class === 'crypto'}
+                      onChange={() => setForm(prev => ({ ...prev, instrument_class: 'crypto' }))}
+                    />
+                    Crypto
+                  </label>
+                </div>
+                <p className="mt-1 text-[10px] text-text-secondary">
+                  eToro settlement: real for equity, marginTrade for crypto.
+                </p>
               </div>
-            )}
-          </div>
-
-          <FormField label="Initial Threshold %" type="number" value={form.initial_threshold} onChange={value => setForm(prev => ({ ...prev, initial_threshold: value }))} />
-          <FormField
-            label="Capital"
-            type="number"
-            value={form.max_available_capital}
-            onChange={value => setForm(prev => ({ ...prev, max_available_capital: value }))}
-            highlighted={showHighCapitalWarning}
-            warning={showHighCapitalWarning ? 'High capital — risky' : undefined}
-          />
-          <div className="col-span-2 space-y-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[9px] uppercase tracking-[1.5px] text-text-secondary">
-                {takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? 'Potential profit' : 'Take profit %'}
-              </span>
-              <TakeProfitModeToggle
-                mode={takeProfitMode}
-                onChange={(nextMode) => {
-                  if (nextMode === TAKE_PROFIT_MODE_ABSOLUTE) {
-                    if (levels.potentialProfitAbsolute != null) {
-                      setProfitTargetAmount(String(levels.potentialProfitAbsolute))
-                    }
-                  }
-                  setTakeProfitMode(nextMode)
-                }}
+            ) : null}
+            {['angel', 'etoro'].includes(form.broker) && !form.use_fake_client ? (
+              <div>
+                <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Price Feed</label>
+                <select
+                  value={form.feed_mode}
+                  onChange={e => setForm(prev => ({ ...prev, feed_mode: e.target.value }))}
+                  className="w-full px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent"
+                >
+                  {feedOptionsForBroker(form.broker).map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+            <div>
+              <FormField
+                label="Tick sampling (every N ticks)"
+                type="number"
+                value={form.tick_sample_every}
+                onChange={value => setForm(prev => ({ ...prev, tick_sample_every: value }))}
               />
+              <p className="mt-1 text-[10px] text-text-secondary">
+                Strategy runs on every Nth price tick (~1 tick/sec on WebSocket). N=5 ≈ one check every 5s.
+              </p>
             </div>
-            {takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? (
-              <FormField
-                label="Target profit ($)"
-                type="number"
-                value={profitTargetAmount}
-                onChange={setProfitTargetAmount}
-                hint={resolvedLongPercent != null ? `≈ ${resolvedLongPercent.toFixed(2)}% from trigger` : undefined}
-              />
-            ) : (
-              <FormField
-                label="Take profit %"
-                type="number"
-                value={form.long_percent}
-                onChange={value => setForm(prev => ({ ...prev, long_percent: value }))}
-                hint={levels.potentialProfitAbsolute != null
-                  ? `≈ ${formatBrokerCompactMoney(form.broker, levels.potentialProfitAbsolute)} profit`
-                  : undefined}
-              />
-            )}
-          </div>
-          <FormField
-            label="Stop Loss Amount"
-            type="number"
-            value={form.stop_loss_amount}
-            onChange={value => setForm(prev => ({ ...prev, stop_loss_amount: value }))}
-            warning={stopLossAmountActive ? 'Percent stop loss is ignored while amount is set' : undefined}
-          />
-          <FormField
-            label="Stop Loss %"
-            type="number"
-            value={form.short_percent}
-            onChange={value => setForm(prev => ({ ...prev, short_percent: value }))}
-            disabled={stopLossAmountActive}
-            warning={stopLossAmountActive ? 'Disabled while stop loss amount is set' : undefined}
-          />
-          <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
-            <input
-              type="checkbox"
-              checked={form.allow_partial_stocks}
-              onChange={e => setForm(prev => ({ ...prev, allow_partial_stocks: e.target.checked }))}
+            <div className="col-span-2">
+              <FormField label="Execution ID" value={form.executor_id} onChange={value => setForm(prev => ({ ...prev, executor_id: value }))} />
+            </div>
+          </CreateFormSection>
+
+          <CreateFormSection variant={variant} title="Instrument" hint="Search and select the stock to trade">
+            <div className="col-span-2">
+              <label className="text-[9px] uppercase tracking-[1.5px] text-text-secondary block mb-1">Stock</label>
+              <div className="flex gap-2">
+                <input
+                  value={query}
+                  onChange={e => setQuery(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && search()}
+                  placeholder="Search stock"
+                  className="flex-1 px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent placeholder:text-text-secondary"
+                />
+                <button onClick={search} className="px-4 py-2 bg-accent text-white rounded text-xs font-bold">Search</button>
+              </div>
+              {selectedStock && (
+                <p className="mt-2 text-xs text-green">
+                  Selected: {selectedStock.tradingsymbol} · {instrumentLabel(form.broker)} {selectedStock.symboltoken}
+                </p>
+              )}
+              {!!results.length && (
+                <div className="mt-2 border border-border rounded bg-card max-h-40 overflow-auto">
+                  {results.slice(0, 20).map(stock => (
+                    <button key={stock.symboltoken} onClick={() => selectStock(stock)} className="w-full text-left px-3 py-2 text-xs hover:bg-accent/10 border-b border-border/40">
+                      {stock.tradingsymbol} <span className="text-text-secondary">· {stock.exchange} · {instrumentLabel(form.broker)} {stock.symboltoken}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </CreateFormSection>
+
+          <CreateFormSection variant={variant} title="Sizing & risk" hint="Capital, entry threshold, take profit, and stop loss">
+            <FormField label="Initial Threshold %" type="number" value={form.initial_threshold} onChange={value => setForm(prev => ({ ...prev, initial_threshold: value }))} />
+            <FormField
+              label="Capital"
+              type="number"
+              value={form.max_available_capital}
+              onChange={value => setForm(prev => ({ ...prev, max_available_capital: value }))}
+              highlighted={showHighCapitalWarning}
+              warning={showHighCapitalWarning ? 'High capital — risky' : undefined}
             />
-            Allow partial stocks (quantity rounded to 2 decimals)
-          </label>
-          <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
-            <input
-              type="checkbox"
-              checked={form.use_fake_client}
-              onChange={e => setForm(prev => ({ ...prev, use_fake_client: e.target.checked }))}
+            <div className="col-span-2 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[9px] uppercase tracking-[1.5px] text-text-secondary">
+                  {takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? 'Potential profit' : 'Take profit %'}
+                </span>
+                <TakeProfitModeToggle
+                  mode={takeProfitMode}
+                  onChange={(nextMode) => {
+                    if (nextMode === TAKE_PROFIT_MODE_ABSOLUTE) {
+                      if (levels.potentialProfitAbsolute != null) {
+                        setProfitTargetAmount(String(levels.potentialProfitAbsolute))
+                      }
+                    }
+                    setTakeProfitMode(nextMode)
+                  }}
+                />
+              </div>
+              {takeProfitMode === TAKE_PROFIT_MODE_ABSOLUTE ? (
+                <FormField
+                  label="Target profit ($)"
+                  type="number"
+                  value={profitTargetAmount}
+                  onChange={setProfitTargetAmount}
+                  hint={resolvedLongPercent != null ? `≈ ${resolvedLongPercent.toFixed(2)}% from trigger` : undefined}
+                />
+              ) : (
+                <FormField
+                  label="Take profit %"
+                  type="number"
+                  value={form.long_percent}
+                  onChange={value => setForm(prev => ({ ...prev, long_percent: value }))}
+                  hint={levels.potentialProfitAbsolute != null
+                    ? `≈ ${formatBrokerCompactMoney(form.broker, levels.potentialProfitAbsolute)} profit`
+                    : undefined}
+                />
+              )}
+            </div>
+            <FormField
+              label="Stop Loss Amount"
+              type="number"
+              value={form.stop_loss_amount}
+              onChange={value => setForm(prev => ({ ...prev, stop_loss_amount: value }))}
+              warning={stopLossAmountActive ? 'Percent stop loss is ignored while amount is set' : undefined}
             />
-            Use fake broker client
-          </label>
+            <FormField
+              label="Stop Loss %"
+              type="number"
+              value={form.short_percent}
+              onChange={value => setForm(prev => ({ ...prev, short_percent: value }))}
+              disabled={stopLossAmountActive}
+              warning={stopLossAmountActive ? 'Disabled while stop loss amount is set' : undefined}
+            />
+            <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
+              <input
+                type="checkbox"
+                checked={form.allow_partial_stocks}
+                onChange={e => setForm(prev => ({ ...prev, allow_partial_stocks: e.target.checked }))}
+              />
+              Allow partial stocks (quantity rounded to 2 decimals)
+            </label>
+            <label className="col-span-2 flex items-center gap-2 text-xs text-text-secondary">
+              <input
+                type="checkbox"
+                checked={form.use_fake_client}
+                onChange={e => setForm(prev => ({ ...prev, use_fake_client: e.target.checked }))}
+              />
+              Use fake broker client
+            </label>
+          </CreateFormSection>
         </div>
 
         <div className={variant === 'minimal' ? 'ms-preview-sticky' : 'sticky top-4 self-start z-[2] max-h-[calc(100dvh-24px)] overflow-y-auto'}>
@@ -3036,6 +3049,23 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
             profitTargetAmount={profitTargetAmount}
           />
         </div>
+      </div>
+
+      <div className={variant === 'minimal' ? 'mt-3 mb-1' : 'mt-5 mb-1'}>
+        <StrategyScheduleSection
+          variant={variant}
+          scheduleEnabled={scheduleEnabled}
+          onScheduleEnabledChange={checked => {
+            setScheduleEnabled(checked)
+            if (!checked) setError('')
+          }}
+          scheduledDate={scheduledDate}
+          onScheduledDateChange={setScheduledDate}
+          tradingDayOptions={visibleTradingDayOptions}
+          scheduleHint={scheduleHint}
+          loading={scheduleOptionsLoading}
+          broker={form.broker}
+        />
       </div>
 
       {error && (

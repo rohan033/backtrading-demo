@@ -38,6 +38,8 @@ DEFAULT_CONFIG = {
     "query_keys": [],
     "screener_ids": [],
     "focus_symbols": [],
+    "agent_model": None,
+    "agent_model_params": [],
 }
 
 
@@ -142,6 +144,23 @@ def normalize_config(raw: dict[str, Any] | None = None) -> dict[str, Any]:
     if focus_symbols:
         selection_mode = "agent"
 
+    agent_model = str(data.get("agent_model") or "").strip() or None
+    raw_params = data.get("agent_model_params")
+    if not isinstance(raw_params, list):
+        raw_params = []
+    agent_model_params: list[dict[str, str]] = []
+    for row in raw_params:
+        if not isinstance(row, dict):
+            continue
+        pid = str(row.get("id") or "").strip()
+        value = str(row.get("value") or "").strip()
+        if pid and value:
+            agent_model_params.append({"id": pid, "value": value})
+    # Model selection only applies to AI agent mode.
+    if selection_mode not in {"agent", "hybrid"}:
+        agent_model = None
+        agent_model_params = []
+
     return {
         "capital": capital,
         "target_pct": target_pct,
@@ -154,6 +173,8 @@ def normalize_config(raw: dict[str, Any] | None = None) -> dict[str, Any]:
         "query_keys": [] if focus_symbols else query_keys,
         "screener_ids": [] if focus_symbols else screener_ids,
         "focus_symbols": focus_symbols,
+        "agent_model": agent_model,
+        "agent_model_params": agent_model_params,
         "target_dollars": round(capital * target_pct / 100.0, 2),
     }
 

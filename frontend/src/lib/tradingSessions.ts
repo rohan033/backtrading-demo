@@ -23,6 +23,8 @@ export type TradingSession = {
   strategy_type?: string | null
   engine_id?: string | null
   total_pnl: number
+  agent_model?: string | null
+  agent_model_params?: Array<{ id: string; value: string }> | null
   created_at: string
   updated_at: string
   state_log?: TradingSessionStateLogEntry[]
@@ -55,6 +57,10 @@ export type CreateTradingSessionInput = {
   profit_target: number
   /** Optional free-text instruction to steer the agent (esp. AI discovery). */
   prompt?: string | null
+  /** Cursor SDK model id (from GET /api/control/cursor-agent/models). */
+  agent_model?: string | null
+  /** Model parameter selections, e.g. [{ id: "thinking", value: "high" }]. */
+  agent_model_params?: Array<{ id: string; value: string }>
 }
 
 async function parseJson<T>(res: Response): Promise<T> {

@@ -164,6 +164,16 @@ async def stream_agent_prompt(
         state=state,
     )
 
+    session = store.get_session(session_id) or {}
+    config = session.get("config") if isinstance(session.get("config"), dict) else {}
+    model_id = (
+        str(session.get("agent_model") or config.get("agent_model") or "").strip() or None
+    )
+    raw_params = session.get("agent_model_params")
+    if raw_params is None:
+        raw_params = config.get("agent_model_params")
+    model_params = raw_params if isinstance(raw_params, list) else None
+
     try:
         async for event in cursor_agent_service.stream_chat(
             prompt=prompt,
@@ -174,6 +184,8 @@ async def stream_agent_prompt(
             trading_session_id=session_id,
             cancel_event=cancel_event,
             active_run=active_run,
+            model_id=model_id,
+            model_params=model_params,
         ):
             current = store.get_session(session_id)
             if not current or current.get("state") == "stopped":

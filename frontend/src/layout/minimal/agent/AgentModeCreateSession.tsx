@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import {
   defaultAccountEnv,
@@ -13,6 +13,14 @@ import {
   type CreateTradingSessionInput,
   type TradingSession,
 } from '@/lib/tradingSessions'
+import {
+  defaultParamsForModel,
+  listCursorAgentModels,
+  paramValueFor,
+  setParamValue,
+  type AgentModelParamSelection,
+  type CursorAgentModel,
+} from '@/lib/cursorAgentModels'
 
 type Props = {
   open: boolean
@@ -32,11 +40,55 @@ export default function AgentModeCreateSession({ open, onClose, onCreated }: Pro
   const [searching, setSearching] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [models, setModels] = useState<CursorAgentModel[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState('')
+  const [agentModelId, setAgentModelId] = useState('')
+  const [agentModelParams, setAgentModelParams] = useState<AgentModelParamSelection[]>([])
+
+  const selectedModel = useMemo(
+    () => models.find(m => m.id === agentModelId) || null,
+    [models, agentModelId],
+  )
 
   useEffect(() => {
     if (!open) return
     setAccountEnv(defaultAccountEnv(broker))
   }, [broker, open])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setModelsLoading(true)
+    setModelsError('')
+    void listCursorAgentModels()
+      .then(rows => {
+        if (cancelled) return
+        setModels(rows)
+        setModelsLoading(false)
+        if (!rows.length) return
+        const preferred =
+          rows.find(m => m.id === 'composer-2.5') ||
+          rows.find(m => m.variants?.some(v => v.is_default)) ||
+          rows[0]
+        setAgentModelId(prev => {
+          if (prev && rows.some(m => m.id === prev)) return prev
+          return preferred.id
+        })
+        setAgentModelParams(prev => {
+          // Keep existing params when reopening with same selection already set.
+          if (prev.length) return prev
+          return defaultParamsForModel(preferred)
+        })
+      })
+      .catch(err => {
+        if (cancelled) return
+        setModels([])
+        setModelsLoading(false)
+        setModelsError(err instanceof Error ? err.message : 'Failed to load models')
+      })
+    return () => { cancelled = true }
+  }, [open])
 
   useEffect(() => {
     const q = searchQuery.trim()
@@ -56,6 +108,23 @@ export default function AgentModeCreateSession({ open, onClose, onCreated }: Pro
     return () => { cancelled = true }
   }, [searchQuery, broker, accountEnv])
 
+  const handleModelChange = useCallback((modelId: string) => {
+    setAgentModelId(modelId)
+    const model = models.find(m => m.id === modelId) || null
+    setAgentModelParams(defaultParamsForModel(model))
+  }, [models])
+
+  const handleVariantSelect = useCallback((variantDisplayName: string) => {
+    if (!selectedModel) return
+    const variant = selectedModel.variants?.find(v => v.display_name === variantDisplayName)
+    if (!variant) return
+    setAgentModelParams(
+      (variant.params || [])
+        .filter(p => p.id && p.value)
+        .map(p => ({ id: String(p.id), value: String(p.value) })),
+    )
+  }, [selectedModel])
+
   const handleSubmit = useCallback(async () => {
     setSubmitting(true)
     setError('')
@@ -73,6 +142,10 @@ export default function AgentModeCreateSession({ open, onClose, onCreated }: Pro
         input.token = selected.symboltoken
         input.exchange = selected.exchange
       }
+      if (agentModelId) {
+        input.agent_model = agentModelId
+        input.agent_model_params = agentModelParams.filter(p => p.id && p.value)
+      }
       const session: TradingSession = await createTradingSession(input)
       onCreated(session)
       onClose()
@@ -81,11 +154,28 @@ export default function AgentModeCreateSession({ open, onClose, onCreated }: Pro
     } finally {
       setSubmitting(false)
     }
-  }, [accountEnv, broker, maxCapital, onClose, onCreated, profitTarget, prompt, selected])
+  }, [
+    accountEnv,
+    agentModelId,
+    agentModelParams,
+    broker,
+    maxCapital,
+    onClose,
+    onCreated,
+    profitTarget,
+    prompt,
+    selected,
+  ])
 
   if (!open) return null
 
   const discoveryMode = !selected
+  const activeVariantName =
+    selectedModel?.variants?.find(v => {
+      const vp = (v.params || []).map(p => `${p.id}=${p.value}`).sort().join('|')
+      const cur = [...agentModelParams].map(p => `${p.id}=${p.value}`).sort().join('|')
+      return vp === cur
+    })?.display_name || ''
 
   return (
     <div
@@ -169,6 +259,82 @@ export default function AgentModeCreateSession({ open, onClose, onCreated }: Pro
             <p className="am-ts-field__hint">
               Demo is sandbox; live uses your real broker account when trading is enabled.
             </p>
+          </section>
+
+          <section className="am-ts-create__section">
+            <h3 className="am-ts-create__section-title">Cursor model</h3>
+            <p className="am-ts-field__hint">
+              Model and params used for agent runs in this session.
+            </p>
+            {modelsLoading ? (
+              <div className="am-ts-search-status">Loading models…</div>
+            ) : modelsError ? (
+              <div className="am-ts-create__error">{modelsError}</div>
+            ) : (
+              <>
+                <label className="am-ts-field">
+                  <span>Model</span>
+                  <select
+                    className="am-ts-input am-ts-select"
+                    value={agentModelId}
+                    onChange={e => handleModelChange(e.target.value)}
+                    disabled={!models.length}
+                  >
+                    {!models.length ? <option value="">No models available</option> : null}
+                    {models.map(m => (
+                      <option key={m.id} value={m.id}>
+                        {m.display_name || m.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {selectedModel?.description ? (
+                  <p className="am-ts-field__hint am-ts-model-desc">{selectedModel.description}</p>
+                ) : null}
+
+                {selectedModel?.variants?.length ? (
+                  <label className="am-ts-field">
+                    <span>Preset</span>
+                    <select
+                      className="am-ts-input am-ts-select"
+                      value={activeVariantName}
+                      onChange={e => handleVariantSelect(e.target.value)}
+                    >
+                      <option value="">Custom</option>
+                      {selectedModel.variants.map(v => (
+                        <option key={v.display_name} value={v.display_name}>
+                          {v.display_name}{v.is_default ? ' (default)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+
+                {selectedModel?.parameters?.length ? (
+                  <div className="am-ts-model-params">
+                    {selectedModel.parameters.map(param => (
+                      <label key={param.id} className="am-ts-field">
+                        <span>{param.display_name || param.id}</span>
+                        <select
+                          className="am-ts-input am-ts-select"
+                          value={paramValueFor(agentModelParams, param.id)}
+                          onChange={e => {
+                            setAgentModelParams(setParamValue(agentModelParams, param.id, e.target.value))
+                          }}
+                        >
+                          <option value="">—</option>
+                          {(param.values || []).map(v => (
+                            <option key={v.value} value={v.value}>
+                              {v.display_name || v.value}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))}
+                  </div>
+                ) : null}
+              </>
+            )}
           </section>
 
           <section className="am-ts-create__section am-ts-create__section--stock">

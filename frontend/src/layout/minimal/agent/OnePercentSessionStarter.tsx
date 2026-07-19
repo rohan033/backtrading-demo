@@ -14,6 +14,14 @@ import {
   type OnePercentSessionConfig,
   type OnePercentSessionDetail,
 } from '@/lib/onePercentSessions'
+import {
+  defaultParamsForModel,
+  listCursorAgentModels,
+  paramValueFor,
+  setParamValue,
+  type AgentModelParamSelection,
+  type CursorAgentModel,
+} from '@/lib/cursorAgentModels'
 import { fetchScreeners, type Screener } from '@/lib/screenerApi'
 import { buildShellUrl } from '../useUrlState'
 
@@ -80,6 +88,11 @@ export default function OnePercentSessionStarter({
   const [checking, setChecking] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+  const [models, setModels] = useState<CursorAgentModel[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState('')
+  const [agentModelId, setAgentModelId] = useState('')
+  const [agentModelParams, setAgentModelParams] = useState<AgentModelParamSelection[]>([])
 
   const focusSymbols = useMemo(() => parseFocusSymbols(focusSymbolsText), [focusSymbolsText])
   const effectiveSelectionMode: OnePercentSelectionMode = focusSymbols.length
@@ -89,6 +102,12 @@ export default function OnePercentSessionStarter({
       : 'deterministic'
   const usingFocusSymbols = focusSymbols.length > 0
   const showScreenerControls = !usingFocusSymbols
+  const showAgentModel = effectiveSelectionMode === 'agent'
+
+  const selectedModel = useMemo(
+    () => models.find(m => m.id === agentModelId) || null,
+    [models, agentModelId],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -114,6 +133,38 @@ export default function OnePercentSessionStarter({
   }, [])
 
   useEffect(() => {
+    if (!showAgentModel || isFrozen) return
+    let cancelled = false
+    setModelsLoading(true)
+    setModelsError('')
+    void listCursorAgentModels()
+      .then(rows => {
+        if (cancelled) return
+        setModels(rows)
+        setModelsLoading(false)
+        if (!rows.length) return
+        const preferred =
+          rows.find(m => m.id === 'composer-2.5') ||
+          rows.find(m => m.variants?.some(v => v.is_default)) ||
+          rows[0]
+        setAgentModelId(prev => {
+          if (prev && rows.some(m => m.id === prev)) return prev
+          return preferred.id
+        })
+        setAgentModelParams(prev => (prev.length ? prev : defaultParamsForModel(preferred)))
+      })
+      .catch(err => {
+        if (cancelled) return
+        setModels([])
+        setModelsLoading(false)
+        setModelsError(err instanceof Error ? err.message : 'Failed to load models')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isFrozen, showAgentModel])
+
+  useEffect(() => {
     if (!isFrozen) return
     const cfg = frozenConfig || runningSession?.config
     const env = (frozenAccountEnv || runningSession?.account_env || 'demo') as 'demo' | 'live'
@@ -130,6 +181,14 @@ export default function OnePercentSessionStarter({
     setScreenerMode(cfg.screener_mode === 'manual' ? 'manual' : 'auto')
     setQueryKeys(Array.isArray(cfg.query_keys) ? cfg.query_keys.map(String) : [])
     setScreenerIds(Array.isArray(cfg.screener_ids) ? cfg.screener_ids.map(String) : [])
+    setAgentModelId(cfg.agent_model || '')
+    setAgentModelParams(
+      Array.isArray(cfg.agent_model_params)
+        ? cfg.agent_model_params
+          .filter(p => p?.id && p?.value)
+          .map(p => ({ id: String(p.id), value: String(p.value) }))
+        : [],
+    )
   }, [frozenAccountEnv, frozenConfig, isFrozen, runningSession])
 
   const capitalNumber = Number(capital) || 0
@@ -157,6 +216,23 @@ export default function OnePercentSessionStarter({
     return () => window.clearTimeout(timer)
   }, [isFrozen, refreshEligibility])
 
+  const handleModelChange = useCallback((modelId: string) => {
+    setAgentModelId(modelId)
+    const model = models.find(m => m.id === modelId) || null
+    setAgentModelParams(defaultParamsForModel(model))
+  }, [models])
+
+  const handleVariantSelect = useCallback((variantDisplayName: string) => {
+    if (!selectedModel) return
+    const variant = selectedModel.variants?.find(v => v.display_name === variantDisplayName)
+    if (!variant) return
+    setAgentModelParams(
+      (variant.params || [])
+        .filter(p => p.id && p.value)
+        .map(p => ({ id: String(p.id), value: String(p.value) })),
+    )
+  }, [selectedModel])
+
   const manualHasSource = queryKeys.length > 0 || screenerIds.length > 0
   const canStart = !isFrozen
     && Boolean(eligibility?.can_start)
@@ -171,6 +247,13 @@ export default function OnePercentSessionStarter({
       label: `$${capitalNumber || 1000} · ${Number(targetPct) || 1}% target ($${target.toFixed(2)})`,
     }
   }, [capitalNumber, targetPct])
+
+  const activeVariantName =
+    selectedModel?.variants?.find(v => {
+      const vp = (v.params || []).map(p => `${p.id}=${p.value}`).sort().join('|')
+      const cur = [...agentModelParams].map(p => `${p.id}=${p.value}`).sort().join('|')
+      return vp === cur
+    })?.display_name || ''
 
   const handleStart = useCallback(async () => {
     if (isFrozen) return
@@ -195,6 +278,10 @@ export default function OnePercentSessionStarter({
         screener_ids: !usingFocusSymbols && screenerMode === 'manual' ? screenerIds : [],
         focus_symbols: focusSymbols,
       }
+      if (effectiveSelectionMode === 'agent' && agentModelId) {
+        input.agent_model = agentModelId
+        input.agent_model_params = agentModelParams.filter(p => p.id && p.value)
+      }
       const session = await createOnePercentSession(input)
       onCreated(session)
     } catch (err) {
@@ -205,6 +292,8 @@ export default function OnePercentSessionStarter({
     }
   }, [
     accountEnv,
+    agentModelId,
+    agentModelParams,
     capitalNumber,
     effectiveSelectionMode,
     focusSymbols,
@@ -261,6 +350,94 @@ export default function OnePercentSessionStarter({
               : 'Ranks screener hits by momentum/liquidity score and takes the top eToro name.'}
         </p>
       </div>
+
+      {showAgentModel ? (
+        <div className="opc-starter__model">
+          <span className="opc-starter__mode-label">Cursor model</span>
+          <p className="opc-starter__mode-hint">
+            Model and params used for AI stock selection in this session.
+          </p>
+          {modelsLoading && !isFrozen ? (
+            <p className="opc-starter__mode-hint">Loading models…</p>
+          ) : modelsError && !isFrozen ? (
+            <div className="opc-starter__error">{modelsError}</div>
+          ) : (
+            <>
+              <label className="opc-field opc-field--full">
+                <span>Model</span>
+                <select
+                  value={agentModelId}
+                  disabled={isFrozen || (!models.length && !agentModelId)}
+                  onChange={event => handleModelChange(event.target.value)}
+                >
+                  {!models.length && agentModelId ? (
+                    <option value={agentModelId}>{agentModelId}</option>
+                  ) : null}
+                  {!models.length && !agentModelId ? (
+                    <option value="">No models available</option>
+                  ) : null}
+                  {models.map(m => (
+                    <option key={m.id} value={m.id}>
+                      {m.display_name || m.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedModel?.description ? (
+                <p className="opc-starter__mode-hint">{selectedModel.description}</p>
+              ) : null}
+              {selectedModel?.variants?.length && !isFrozen ? (
+                <label className="opc-field opc-field--full">
+                  <span>Preset</span>
+                  <select
+                    value={activeVariantName}
+                    onChange={event => handleVariantSelect(event.target.value)}
+                  >
+                    <option value="">Custom</option>
+                    {selectedModel.variants.map(v => (
+                      <option key={v.display_name} value={v.display_name}>
+                        {v.display_name}{v.is_default ? ' (default)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              {(selectedModel?.parameters?.length || (isFrozen && agentModelParams.length > 0)) ? (
+                <div className="opc-starter__model-params">
+                  {selectedModel?.parameters?.length
+                    ? selectedModel.parameters.map(param => (
+                      <label key={param.id} className="opc-field">
+                        <span>{param.display_name || param.id}</span>
+                        <select
+                          value={paramValueFor(agentModelParams, param.id)}
+                          disabled={isFrozen}
+                          onChange={event => {
+                            setAgentModelParams(
+                              setParamValue(agentModelParams, param.id, event.target.value),
+                            )
+                          }}
+                        >
+                          <option value="">—</option>
+                          {(param.values || []).map(v => (
+                            <option key={v.value} value={v.value}>
+                              {v.display_name || v.value}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    ))
+                    : agentModelParams.map(param => (
+                      <label key={param.id} className="opc-field">
+                        <span>{param.id}</span>
+                        <input value={param.value} disabled />
+                      </label>
+                    ))}
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
 
       <label className="opc-field opc-field--full">
         <span>Specific stocks (optional)</span>

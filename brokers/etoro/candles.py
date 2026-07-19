@@ -134,12 +134,12 @@ def extract_etoro_candles(response: Any) -> list[dict[str, Any]]:
             candles.append(candle)
     deduped = {candle["time"]: candle for candle in candles}
     result = sorted(deduped.values(), key=lambda item: item["time"])
-    if result:
-        logger.debug(
-            "[eToro] Parsed %d candles (%d with volume > 0)",
-            len(result),
-            sum(1 for candle in result if float(candle.get("volume") or 0) > 0),
-        )
+    # if result:
+        # logger.debug(
+        #     "[eToro] Parsed %d candles (%d with volume > 0)",
+        #     len(result),
+        #     sum(1 for candle in result if float(candle.get("volume") or 0) > 0),
+        # )
     return result
 
 
@@ -265,26 +265,26 @@ async def aget_historical_candles_window(
 
     window = await _fetch("desc")
     if window:
-        logger.info(
-            "[eToro] Window candles start=%d end=%d interval=%s desc fetch=%d returned=%d",
-            start,
-            end,
-            interval,
-            fetch_count,
-            len(window),
-        )
+        # logger.info(
+        #     "[eToro] Window candles start=%d end=%d interval=%s desc fetch=%d returned=%d",
+        #     start,
+        #     end,
+        #     interval,
+        #     fetch_count,
+        #     len(window),
+        # )
         return window, interval
 
     window = await _fetch("asc")
     if window:
-        logger.info(
-            "[eToro] Window candles start=%d end=%d interval=%s asc fetch=%d returned=%d",
-            start,
-            end,
-            interval,
-            MAX_CANDLE_COUNT,
-            len(window),
-        )
+        # logger.info(
+        #     "[eToro] Window candles start=%d end=%d interval=%s asc fetch=%d returned=%d",
+        #     start,
+        #     end,
+        #     interval,
+        #     MAX_CANDLE_COUNT,
+        #     len(window),
+        # )
         return window, interval
 
     return [], interval
@@ -318,12 +318,12 @@ async def aget_historical_candles_before(
         if window:
             return window, used_interval
 
-    logger.info(
-        "[eToro] Historical candles before=%d minutes=%d count=%d returned=0",
-        end,
-        safe_minutes,
-        safe_count,
-    )
+    # logger.info(
+    #     "[eToro] Historical candles before=%d minutes=%d count=%d returned=0",
+    #     end,
+    #     safe_minutes,
+    #     safe_count,
+    # )
     return [], interval
 
 
@@ -343,11 +343,11 @@ async def aget_historical_candles(
     )
     response = await client.arequest("GET", path)
     candles = extract_etoro_candles(response)
-    logger.info(
-        "[eToro] Historical candles instrument=%s interval=%s count=%d returned=%d",
-        instrument_id,
-        interval,
-        safe_count,
-        len(candles),
-    )
+    # logger.info(
+    #     "[eToro] Historical candles instrument=%s interval=%s count=%d returned=%d",
+    #     instrument_id,
+    #     interval,
+    #     safe_count,
+    #     len(candles),
+    # )
     return candles

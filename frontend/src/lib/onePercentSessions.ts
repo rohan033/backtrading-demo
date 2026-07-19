@@ -14,6 +14,8 @@ export type OnePercentSessionConfig = {
   query_keys: string[]
   screener_ids: string[]
   focus_symbols: string[]
+  agent_model?: string | null
+  agent_model_params?: Array<{ id: string; value: string }>
 }
 
 export type OnePercentPreset = {
@@ -96,6 +98,8 @@ export type CreateOnePercentSessionInput = {
   query_keys?: string[]
   screener_ids?: string[]
   focus_symbols?: string[]
+  agent_model?: string | null
+  agent_model_params?: Array<{ id: string; value: string }>
 }
 
 const API = '/api/control/one-percent-sessions'

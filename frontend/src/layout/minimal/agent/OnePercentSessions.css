@@ -469,6 +469,33 @@
   line-height: 1.4;
 }
 
+.opc-starter__model {
+  margin: 0 0 12px;
+  padding: 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fafbfc;
+}
+
+.opc-starter__model .opc-starter__mode-hint {
+  margin-top: 0;
+  margin-bottom: 8px;
+}
+
+.opc-starter__model-params {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+@media (max-width: 520px) {
+  .opc-starter__model-params {
+    grid-template-columns: 1fr;
+  }
+}
+
+
 .opc-starter__focus-note {
   margin: 0 0 10px;
   padding: 6px 8px;

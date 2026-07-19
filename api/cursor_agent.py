@@ -300,6 +300,9 @@ class CursorAgentService:
     async def health(self) -> dict[str, Any]:
         return await self._bridge.health()
 
+    async def list_models(self) -> list[dict[str, Any]]:
+        return await self._bridge.list_models()
+
     async def stream_chat(
         self,
         *,
@@ -314,6 +317,8 @@ class CursorAgentService:
         cancel_event: asyncio.Event | None = None,
         active_run: dict[str, Any] | None = None,
         message_source: str | None = None,
+        model_id: Optional[str] = None,
+        model_params: list[dict[str, str]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         if not self.configured:
             yield {"type": "error", "phase": "config", "message": CURSOR_CONFIG_HINT}
@@ -372,6 +377,8 @@ class CursorAgentService:
             cancel_event=cancel_event,
             active_run=active_run,
             message_source=message_source,
+            model_id=model_id,
+            model_params=model_params,
         ):
             if ws is not None and ws.client_state.name != "CONNECTED":
                 if cancel_event is not None:
@@ -522,6 +529,19 @@ router = APIRouter(prefix="/api/control/cursor-agent", tags=["cursor-agent"])
 async def cursor_agent_health():
     load_cursor_api_env()
     return {"status": True, "data": await cursor_agent_service.health()}
+
+
+@router.get("/models")
+async def cursor_agent_models():
+    """List Cursor SDK models and parameter definitions for UI selection."""
+    from fastapi import HTTPException
+
+    load_cursor_api_env()
+    try:
+        models = await cursor_agent_service.list_models()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"status": True, "data": models}
 
 
 async def handle_cursor_agent_websocket(ws: WebSocket) -> None:

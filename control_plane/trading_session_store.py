@@ -70,6 +70,8 @@ class TradingSessionStore:
                 strategy_type TEXT,
                 engine_id TEXT,
                 total_pnl REAL NOT NULL DEFAULT 0,
+                agent_model TEXT,
+                agent_model_params_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -103,12 +105,19 @@ class TradingSessionStore:
                 ON trading_session_events(session_id, id);
             """
         )
+        # Backward-compatible columns for older DBs.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(trading_sessions)").fetchall()}
+        if "agent_model" not in cols:
+            conn.execute("ALTER TABLE trading_sessions ADD COLUMN agent_model TEXT")
+        if "agent_model_params_json" not in cols:
+            conn.execute("ALTER TABLE trading_sessions ADD COLUMN agent_model_params_json TEXT")
         conn.commit()
         conn.close()
 
     def _session_row(self, row: sqlite3.Row | None) -> dict[str, Any] | None:
         if not row:
             return None
+        keys = set(row.keys())
         return {
             "id": row["id"],
             "state": row["state"],
@@ -124,6 +133,11 @@ class TradingSessionStore:
             "strategy_type": row["strategy_type"],
             "engine_id": row["engine_id"],
             "total_pnl": row["total_pnl"],
+            "agent_model": row["agent_model"] if "agent_model" in keys else None,
+            "agent_model_params": _json_loads(
+                row["agent_model_params_json"] if "agent_model_params_json" in keys else None,
+                [],
+            ),
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
         }
@@ -147,6 +161,8 @@ class TradingSessionStore:
         symbol: str | None = None,
         token: str | None = None,
         exchange: str | None = None,
+        agent_model: str | None = None,
+        agent_model_params: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         session_id = str(uuid.uuid4())
         now = _now_utc()
@@ -154,6 +170,16 @@ class TradingSessionStore:
         tok = str(token or "").strip() or None
         exch = str(exchange or "").strip() or None
         env = "live" if (account_env or "demo").lower() == "live" else "demo"
+        model = str(agent_model or "").strip() or None
+        params = agent_model_params if isinstance(agent_model_params, list) else []
+        cleaned_params: list[dict[str, str]] = []
+        for row in params:
+            if not isinstance(row, dict):
+                continue
+            pid = str(row.get("id") or "").strip()
+            value = str(row.get("value") or "").strip()
+            if pid and value:
+                cleaned_params.append({"id": pid, "value": value})
         conn = self._connect()
         conn.execute(
             """
@@ -161,8 +187,9 @@ class TradingSessionStore:
                 id, state, environment, broker, account_env,
                 max_capital, profit_target, symbol, token, exchange,
                 stopped_reason, strategy_type, engine_id, total_pnl,
+                agent_model, agent_model_params_json,
                 created_at, updated_at
-            ) VALUES (?, 'explore', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?)
+            ) VALUES (?, 'explore', ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 0, ?, ?, ?, ?)
             """,
             (
                 session_id,
@@ -174,6 +201,8 @@ class TradingSessionStore:
                 sym,
                 tok,
                 exch,
+                model,
+                _json_dumps(cleaned_params),
                 now,
                 now,
             ),

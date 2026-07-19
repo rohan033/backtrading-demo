@@ -44,6 +44,8 @@ class TradingSessionEngine:
             symbol=req.get("symbol"),
             token=req.get("token"),
             exchange=req.get("exchange"),
+            agent_model=req.get("agent_model"),
+            agent_model_params=req.get("agent_model_params"),
         )
         self.store.append_event(
             session["id"],
@@ -54,6 +56,8 @@ class TradingSessionEngine:
                 "max_capital": session["max_capital"],
                 "profit_target": session["profit_target"],
                 "symbol": session.get("symbol"),
+                "agent_model": session.get("agent_model"),
+                "agent_model_params": session.get("agent_model_params") or [],
             },
         )
         # Seed an initial user instruction before entering explore so the

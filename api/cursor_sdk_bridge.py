@@ -39,6 +39,46 @@ def _truthy_env(name: str) -> bool:
     return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def to_jsonable(obj: Any) -> Any:
+    """Recursively convert dataclasses / NamedTuples / objects into JSON-serializable data."""
+    import dataclasses
+    from collections.abc import Mapping
+
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {f.name: to_jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
+
+    if hasattr(obj, "_asdict"):
+        return {k: to_jsonable(v) for k, v in obj._asdict().items()}
+
+    if isinstance(obj, Mapping):
+        return {k: to_jsonable(v) for k, v in obj.items()}
+
+    if isinstance(obj, (list, tuple, set)):
+        return [to_jsonable(v) for v in obj]
+
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+
+    if hasattr(obj, "__dict__"):
+        return {k: to_jsonable(v) for k, v in vars(obj).items()}
+
+    return str(obj)
+
+
+def _normalize_model_params(raw: Any) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    if not isinstance(raw, list):
+        return out
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        param_id = str(row.get("id") or "").strip()
+        value = str(row.get("value") or "").strip()
+        if param_id and value:
+            out.append({"id": param_id, "value": value})
+    return out
+
+
 def _sdk_mode(*, message_source: str | None = None) -> str:
     if message_source == "agent_monitor":
         mode = os.getenv(CURSOR_AGENT_MONITOR_MODE_ENV, "").strip().lower()
@@ -49,42 +89,52 @@ def _sdk_mode(*, message_source: str | None = None) -> str:
     return mode if mode in VALID_SDK_MODES else "agent"
 
 
-def _sdk_model_selection(model_id: str):
+def _sdk_model_selection(
+    model_id: str,
+    *,
+    params_override: list[dict[str, str]] | None = None,
+):
     from cursor_sdk import ModelParameterValue, ModelSelection
 
     params: list[ModelParameterValue] = []
-    raw_params = os.getenv(CURSOR_AGENT_MODEL_PARAMS_ENV, "").strip()
-    if raw_params:
-        try:
-            parsed = json.loads(raw_params)
-            if isinstance(parsed, list):
-                for row in parsed:
-                    if not isinstance(row, dict):
-                        continue
-                    param_id = str(row.get("id") or "").strip()
-                    value = str(row.get("value") or "").strip()
-                    if param_id and value:
-                        params.append(ModelParameterValue(id=param_id, value=value))
-        except json.JSONDecodeError:
-            log.warning("[CURSOR_SDK] invalid %s JSON — ignoring", CURSOR_AGENT_MODEL_PARAMS_ENV)
+    if params_override is not None:
+        for row in _normalize_model_params(params_override):
+            params.append(ModelParameterValue(id=row["id"], value=row["value"]))
+    else:
+        raw_params = os.getenv(CURSOR_AGENT_MODEL_PARAMS_ENV, "").strip()
+        if raw_params:
+            try:
+                parsed = json.loads(raw_params)
+                for row in _normalize_model_params(parsed):
+                    params.append(ModelParameterValue(id=row["id"], value=row["value"]))
+            except json.JSONDecodeError:
+                log.warning("[CURSOR_SDK] invalid %s JSON — ignoring", CURSOR_AGENT_MODEL_PARAMS_ENV)
 
-    thinking = os.getenv(CURSOR_AGENT_THINKING_ENV, "").strip().lower()
-    if thinking and thinking not in {"off", "false", "0", "none"}:
-        params.append(ModelParameterValue(id="thinking", value=thinking))
+        thinking = os.getenv(CURSOR_AGENT_THINKING_ENV, "").strip().lower()
+        if thinking and thinking not in {"off", "false", "0", "none"}:
+            params.append(ModelParameterValue(id="thinking", value=thinking))
 
-    if _truthy_env(CURSOR_AGENT_DEEP_RESEARCH_ENV):
-        params.append(ModelParameterValue(id="deep_research", value="true"))
+        if _truthy_env(CURSOR_AGENT_DEEP_RESEARCH_ENV):
+            params.append(ModelParameterValue(id="deep_research", value="true"))
 
+    resolved_id = (model_id or "").strip() or DEFAULT_MODEL
     if not params:
-        return model_id
-    return ModelSelection(id=model_id, params=tuple(params))
+        return resolved_id
+    return ModelSelection(id=resolved_id, params=tuple(params))
 
 
-def _build_send_options(*, mcp_servers: dict[str, Any] | None, message_source: str | None):
+def _build_send_options(
+    *,
+    mcp_servers: dict[str, Any] | None,
+    message_source: str | None,
+    model_id: str | None = None,
+    model_params: list[dict[str, str]] | None = None,
+):
     from cursor_sdk import SendOptions
 
     mode = _sdk_mode(message_source=message_source)
-    model = _sdk_model_selection(os.getenv(CURSOR_AGENT_MODEL_ENV, DEFAULT_MODEL).strip() or DEFAULT_MODEL)
+    resolved_model = (model_id or "").strip() or os.getenv(CURSOR_AGENT_MODEL_ENV, DEFAULT_MODEL).strip() or DEFAULT_MODEL
+    model = _sdk_model_selection(resolved_model, params_override=model_params)
     kwargs: dict[str, Any] = {"mode": mode, "model": model}
     if mcp_servers is not None:
         kwargs["mcp_servers"] = mcp_servers
@@ -266,6 +316,15 @@ class CursorSdkBridge:
             "active_sessions": active_sessions,
         }
 
+    async def list_models(self) -> list[dict[str, Any]]:
+        """Return Cursor SDK models as JSON-serializable dicts."""
+        if not self.configured:
+            raise RuntimeError(CURSOR_CONFIG_HINT)
+        client = await self._require_client()
+        api_key = os.environ[CURSOR_API_KEY_ENV].strip()
+        models = await client.list_models(api_key=api_key)
+        return to_jsonable(models)
+
     async def stream_run(
         self,
         *,
@@ -276,6 +335,8 @@ class CursorSdkBridge:
         cancel_event: asyncio.Event | None = None,
         active_run: dict[str, Any] | None = None,
         message_source: str | None = None,
+        model_id: str | None = None,
+        model_params: list[dict[str, str]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Run a fully-formed prompt through Cursor SDK and yield generic events."""
         if not self.configured:
@@ -290,6 +351,7 @@ class CursorSdkBridge:
         client = await self._require_client()
         created_new_agent = not agent_id
         run = None
+        resolved_model_id = (model_id or "").strip() or self.model()
 
         try:
             agent = await self._get_or_create_agent(
@@ -298,6 +360,8 @@ class CursorSdkBridge:
                 agent_id,
                 mcp_servers=mcp_servers,
                 message_source=message_source,
+                model_id=resolved_model_id,
+                model_params=model_params,
             )
         except CursorAgentError as exc:
             log.error("[CURSOR_SDK] Agent startup failed session=%s: %s", session_name, exc)
@@ -317,6 +381,8 @@ class CursorSdkBridge:
             send_options = _build_send_options(
                 mcp_servers=mcp_servers,
                 message_source=message_source,
+                model_id=resolved_model_id,
+                model_params=model_params,
             )
             run = await agent.send(message, send_options)
             if active_run is not None:
@@ -326,7 +392,8 @@ class CursorSdkBridge:
                 "type": "start",
                 "agent_id": agent.agent_id,
                 "run_id": run.id,
-                "model": self.model(),
+                "model": resolved_model_id,
+                "model_params": _normalize_model_params(model_params) if model_params is not None else None,
                 "sdk_mode": _sdk_mode(message_source=message_source),
                 "new_agent": created_new_agent,
                 "session_name": session_name,
@@ -451,14 +518,16 @@ class CursorSdkBridge:
         *,
         mcp_servers: dict[str, Any] | None,
         message_source: str | None = None,
+        model_id: str | None = None,
+        model_params: list[dict[str, str]] | None = None,
     ):
         from cursor_sdk import AgentOptions
 
         api_key = os.environ[CURSOR_API_KEY_ENV].strip()
-        model_id = os.getenv(CURSOR_AGENT_MODEL_ENV, DEFAULT_MODEL).strip() or DEFAULT_MODEL
+        resolved_model = (model_id or "").strip() or os.getenv(CURSOR_AGENT_MODEL_ENV, DEFAULT_MODEL).strip() or DEFAULT_MODEL
         options = AgentOptions(
             api_key=api_key,
-            model=_sdk_model_selection(model_id),
+            model=_sdk_model_selection(resolved_model, params_override=model_params),
             local=LocalAgentOptions(cwd=self.workspace()),
             mode=_sdk_mode(message_source=message_source),
             mcp_servers=mcp_servers,

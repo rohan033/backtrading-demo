@@ -35,6 +35,8 @@ class CreateOnePercentSessionRequest(BaseModel):
     query_keys: list[str] = Field(default_factory=list)
     screener_ids: list[str] = Field(default_factory=list)
     focus_symbols: list[str] = Field(default_factory=list)
+    agent_model: str | None = None
+    agent_model_params: list[dict[str, str]] = Field(default_factory=list)
 
 
 class StopOnePercentSessionRequest(BaseModel):
@@ -106,6 +108,8 @@ async def create_session(req: CreateOnePercentSessionRequest):
                 "query_keys": req.query_keys,
                 "screener_ids": req.screener_ids,
                 "focus_symbols": req.focus_symbols,
+                "agent_model": req.agent_model,
+                "agent_model_params": req.agent_model_params,
             },
         )
     except ValueError as exc:

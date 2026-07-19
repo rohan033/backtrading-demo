@@ -1180,6 +1180,52 @@
   color: #666;
 }
 
+.ms-create-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ms-create-section {
+  padding: 10px 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #fafbfc;
+  color: #111;
+  color-scheme: light;
+}
+
+.ms-create-section__head {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.ms-create-section__title {
+  margin: 0;
+  color: #135f99;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ms-create-section__hint {
+  margin: 3px 0 0;
+  color: #4a5568;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.ms-create-section__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-content: start;
+}
+
 .ms-schedule-section {
   padding: 6px 8px;
   border: 1px solid var(--ms-border, #303030);
