@@ -210,43 +210,43 @@ export default function SettingsPage() {
     : `/api/trades-pnl/report.csv?status=closed&account_env=${environmentFilter}`
 
   return (
-    <div className="st-root">
-      <aside className="st-nav" aria-label="Settings sections">
-        <div className="st-nav__heading">
+    <div className="set-root">
+      <aside className="set-nav" aria-label="Settings sections">
+        <div className="set-nav__heading">
           <Settings2 aria-hidden="true" />
           <div>
             <h1>Settings</h1>
             <p>Workspace controls</p>
           </div>
         </div>
-        <button type="button" className="st-nav__item st-nav__item--active" aria-current="page">
-          <span className="st-nav__icon"><Activity aria-hidden="true" /></span>
+        <button type="button" className="set-nav__item set-nav__item--active" aria-current="page">
+          <span className="set-nav__icon"><Activity aria-hidden="true" /></span>
           <span>
             <strong>Order activity</strong>
             <small>Momentum P&amp;L</small>
           </span>
         </button>
-        <p className="st-nav__footnote">More workspace settings will appear here.</p>
+        <p className="set-nav__footnote">More workspace settings will appear here.</p>
       </aside>
 
-      <section className="st-content" aria-labelledby="order-activity-title">
-        <header className="st-content__header">
+      <section className="set-content" aria-labelledby="order-activity-title">
+        <header className="set-content__header">
           <div>
-            <div className="st-eyebrow">Momentum strategy</div>
+            <div className="set-eyebrow">Momentum strategy</div>
             <h2 id="order-activity-title">Order activity</h2>
             <p>P&amp;L and execution history for trades opened by Momentum.</p>
           </div>
-          <div className="st-header-actions">
+          <div className="set-header-actions">
             <button
               type="button"
-              className="st-button"
+              className="set-button"
               onClick={() => void loadTrades(true)}
               disabled={refreshing}
             >
-              <RefreshCw className={refreshing ? 'st-spin' : ''} aria-hidden="true" />
+              <RefreshCw className={refreshing ? 'set-spin' : ''} aria-hidden="true" />
               {refreshing ? 'Refreshing' : 'Refresh'}
             </button>
-            <a className="st-button st-button--primary" href={downloadUrl}>
+            <a className="set-button set-button--primary" href={downloadUrl}>
               <Download aria-hidden="true" />
               Export CSV
             </a>
@@ -254,7 +254,7 @@ export default function SettingsPage() {
         </header>
 
         {error ? (
-          <div className="st-error" role="alert">
+          <div className="set-error" role="alert">
             <div>
               <strong>Could not load order activity</strong>
               <span>{error}</span>
@@ -263,43 +263,43 @@ export default function SettingsPage() {
           </div>
         ) : null}
 
-        <div className="st-metrics" aria-label="Momentum trade summary">
-          <article className="st-metric st-metric--pnl">
+        <div className="set-metrics" aria-label="Momentum trade summary">
+          <article className="set-metric set-metric--pnl">
             <span>Realized P&amp;L</span>
-            <strong className={visibleSummary.realized_pnl > 0 ? 'st-positive' : visibleSummary.realized_pnl < 0 ? 'st-negative' : ''}>
+            <strong className={visibleSummary.realized_pnl > 0 ? 'set-positive' : visibleSummary.realized_pnl < 0 ? 'set-negative' : ''}>
               {formatMoney(visibleSummary.realized_pnl)}
             </strong>
             <small>Across {visibleSummary.closed_trades} closed trade{visibleSummary.closed_trades === 1 ? '' : 's'}</small>
           </article>
-          <article className="st-metric">
+          <article className="set-metric">
             <span>Finalized trades</span>
             <strong>{visibleSummary.closed_trades}</strong>
             <small>Momentum and Positions UI</small>
           </article>
-          <article className="st-metric">
+          <article className="set-metric">
             <span>Win rate</span>
             <strong>{visibleSummary.win_rate == null ? '—' : `${(visibleSummary.win_rate * 100).toFixed(1)}%`}</strong>
             <small>{visibleSummary.wins} wins · {visibleSummary.losses} losses</small>
           </article>
-          <article className="st-metric">
+          <article className="set-metric">
             <span>Outcomes</span>
             <strong>{visibleSummary.wins} / {visibleSummary.losses}</strong>
             <small>Profitable / losing</small>
           </article>
         </div>
 
-        <div className="st-ledger">
-          <div className="st-ledger__toolbar">
+        <div className="set-ledger">
+          <div className="set-ledger__toolbar">
             <div>
               <h3>Trade ledger</h3>
               <span>{visibleTrades.length} finalized record{visibleTrades.length === 1 ? '' : 's'}</span>
             </div>
-            <div className="st-filter" role="group" aria-label="Filter trades by account environment">
+            <div className="set-filter" role="group" aria-label="Filter trades by account environment">
               {(['all', 'live', 'demo'] as const).map(environment => (
                 <button
                   type="button"
                   key={environment}
-                  className={environmentFilter === environment ? 'st-filter__active' : ''}
+                  className={environmentFilter === environment ? 'set-filter__active' : ''}
                   aria-pressed={environmentFilter === environment}
                   onClick={() => setEnvironmentFilter(environment)}
                 >
@@ -310,20 +310,20 @@ export default function SettingsPage() {
           </div>
 
           {loading ? (
-            <div className="st-loading" aria-busy="true" aria-label="Loading order activity">
+            <div className="set-loading" aria-busy="true" aria-label="Loading order activity">
               {Array.from({ length: 4 }).map((_, index) => <span key={index} />)}
             </div>
           ) : visibleTrades.length ? (
-            <div className="st-table-wrap">
-              <table className="st-table">
+            <div className="set-table-wrap">
+              <table className="set-table">
                 <thead>
                   <tr>
                     <th>Ticker name</th>
                     <th>Source</th>
-                    <th className="st-num">Buy</th>
-                    <th className="st-num">Sell</th>
-                    <th className="st-num">Profit amount</th>
-                    <th className="st-num">Profit percent</th>
+                    <th className="set-num">Buy</th>
+                    <th className="set-num">Sell</th>
+                    <th className="set-num">Profit amount</th>
+                    <th className="set-num">Profit percent</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -333,19 +333,19 @@ export default function SettingsPage() {
                       return (
                         <tr key={trade.id}>
                           <td>
-                            <strong className="st-symbol">{trade.tradingsymbol || trade.symbol || 'Unknown'}</strong>
+                            <strong className="set-symbol">{trade.tradingsymbol || trade.symbol || 'Unknown'}</strong>
                           </td>
                           <td>
-                            <span className={`st-source st-source--${trade.source === 'momentum-trade' ? 'momentum' : 'positions'}`}>
+                            <span className={`set-source set-source--${trade.source === 'momentum-trade' ? 'momentum' : 'positions'}`}>
                               {trade.source === 'momentum-trade' ? 'Momentum' : 'Positions page'}
                             </span>
                           </td>
-                          <td className="st-num">{formatMoney(trade.entry_price, trade.broker)}</td>
-                          <td className="st-num">{formatMoney(trade.exit_price, trade.broker)}</td>
-                          <td className={`st-num st-pnl ${trade.pnl != null && trade.pnl > 0 ? 'st-positive' : trade.pnl != null && trade.pnl < 0 ? 'st-negative' : ''}`}>
+                          <td className="set-num">{formatMoney(trade.entry_price, trade.broker)}</td>
+                          <td className="set-num">{formatMoney(trade.exit_price, trade.broker)}</td>
+                          <td className={`set-num set-pnl ${trade.pnl != null && trade.pnl > 0 ? 'set-positive' : trade.pnl != null && trade.pnl < 0 ? 'set-negative' : ''}`}>
                             <strong>{formatMoney(trade.pnl, trade.broker)}</strong>
                           </td>
-                          <td className={`st-num st-pnl ${trade.pnl_pct != null && trade.pnl_pct > 0 ? 'st-positive' : trade.pnl_pct != null && trade.pnl_pct < 0 ? 'st-negative' : ''}`}>
+                          <td className={`set-num set-pnl ${trade.pnl_pct != null && trade.pnl_pct > 0 ? 'set-positive' : trade.pnl_pct != null && trade.pnl_pct < 0 ? 'set-negative' : ''}`}>
                             <strong>{formatPct(trade.pnl_pct)}</strong>
                           </td>
                         </tr>
@@ -359,21 +359,21 @@ export default function SettingsPage() {
                     return (
                       <Fragment key={`session-${row.sessionId}`}>
                         <tr
-                          className={`st-session-row${expanded ? ' st-session-row--open' : ''}`}
+                          className={`set-session-row${expanded ? ' set-session-row--open' : ''}`}
                         >
                           <td>
                             <button
                               type="button"
-                              className="st-session-toggle"
+                              className="set-session-toggle"
                               aria-expanded={expanded}
                               onClick={() => toggleSession(row.sessionId)}
                             >
-                              <span className="st-session-toggle__chevron" aria-hidden="true">
+                              <span className="set-session-toggle__chevron" aria-hidden="true">
                                 {expanded ? '▾' : '▸'}
                               </span>
                               <span>
-                                <strong className="st-symbol">{label}</strong>
-                                <span className="st-session-toggle__meta">
+                                <strong className="set-symbol">{label}</strong>
+                                <span className="set-session-toggle__meta">
                                   {row.trades.length} trade{row.trades.length === 1 ? '' : 's'} · {row.accountEnv.toUpperCase()}
                                 </span>
                               </span>
@@ -382,40 +382,40 @@ export default function SettingsPage() {
                           <td>
                             <button
                               type="button"
-                              className="st-source st-source--onepc st-source--session"
+                              className="set-source set-source--onepc set-source--session"
                               title={row.sessionId}
                               onClick={() => toggleSession(row.sessionId)}
                             >
                               1% · {shortSessionId(row.sessionId)}
                             </button>
                           </td>
-                          <td className="st-num">—</td>
-                          <td className="st-num">—</td>
-                          <td className={`st-num st-pnl ${row.pnl > 0 ? 'st-positive' : row.pnl < 0 ? 'st-negative' : ''}`}>
+                          <td className="set-num">—</td>
+                          <td className="set-num">—</td>
+                          <td className={`set-num set-pnl ${row.pnl > 0 ? 'set-positive' : row.pnl < 0 ? 'set-negative' : ''}`}>
                             <strong>{formatMoney(row.pnl, row.broker)}</strong>
                           </td>
-                          <td className="st-num">—</td>
+                          <td className="set-num">—</td>
                         </tr>
                         {expanded
                           ? row.trades.map(trade => (
-                              <tr key={trade.id} className="st-session-child">
+                              <tr key={trade.id} className="set-session-child">
                                 <td>
-                                  <strong className="st-symbol">{trade.tradingsymbol || trade.symbol || 'Unknown'}</strong>
+                                  <strong className="set-symbol">{trade.tradingsymbol || trade.symbol || 'Unknown'}</strong>
                                   {trade.attempt_id ? (
-                                    <span className="st-session-child__attempt">
+                                    <span className="set-session-child__attempt">
                                       attempt {shortSessionId(trade.attempt_id)}
                                     </span>
                                   ) : null}
                                 </td>
                                 <td>
-                                  <span className="st-source st-source--onepc">1% trade</span>
+                                  <span className="set-source set-source--onepc">1% trade</span>
                                 </td>
-                                <td className="st-num">{formatMoney(trade.entry_price, trade.broker)}</td>
-                                <td className="st-num">{formatMoney(trade.exit_price, trade.broker)}</td>
-                                <td className={`st-num st-pnl ${trade.pnl != null && trade.pnl > 0 ? 'st-positive' : trade.pnl != null && trade.pnl < 0 ? 'st-negative' : ''}`}>
+                                <td className="set-num">{formatMoney(trade.entry_price, trade.broker)}</td>
+                                <td className="set-num">{formatMoney(trade.exit_price, trade.broker)}</td>
+                                <td className={`set-num set-pnl ${trade.pnl != null && trade.pnl > 0 ? 'set-positive' : trade.pnl != null && trade.pnl < 0 ? 'set-negative' : ''}`}>
                                   <strong>{formatMoney(trade.pnl, trade.broker)}</strong>
                                 </td>
-                                <td className={`st-num st-pnl ${trade.pnl_pct != null && trade.pnl_pct > 0 ? 'st-positive' : trade.pnl_pct != null && trade.pnl_pct < 0 ? 'st-negative' : ''}`}>
+                                <td className={`set-num set-pnl ${trade.pnl_pct != null && trade.pnl_pct > 0 ? 'set-positive' : trade.pnl_pct != null && trade.pnl_pct < 0 ? 'set-negative' : ''}`}>
                                   <strong>{formatPct(trade.pnl_pct)}</strong>
                                 </td>
                               </tr>
@@ -428,8 +428,8 @@ export default function SettingsPage() {
               </table>
             </div>
           ) : (
-            <div className="st-empty">
-              <span className="st-empty__icon"><Activity aria-hidden="true" /></span>
+            <div className="set-empty">
+              <span className="set-empty__icon"><Activity aria-hidden="true" /></span>
               <strong>No finalized {environmentFilter === 'all' ? '' : `${environmentFilter} `}trades yet</strong>
               <p>Completed Momentum trades and closes from the Positions page will appear here.</p>
             </div>
