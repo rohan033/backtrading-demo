@@ -15,6 +15,7 @@ type Props = {
   activeSessionId: string
   loading: boolean
   listError?: string
+  onRetryLoad?: () => void
   onSelect: (sessionId: string) => void
   onCreated: (session: OnePercentSessionDetail) => void
   onSessionUpdate: (session: OnePercentSession) => void
@@ -28,6 +29,7 @@ export default function OnePercentTradesPanel({
   activeSessionId,
   loading,
   listError,
+  onRetryLoad,
   onSelect,
   onCreated,
   onSessionUpdate,
@@ -63,7 +65,16 @@ export default function OnePercentTradesPanel({
             ) : null}
           </div>
           <div className="opc-shell__sessions-body">
-            {listError ? <div className="am-thread-list-error">{listError}</div> : null}
+            {listError ? (
+              <div className="am-thread-list-error opc-list-error">
+                <span>{listError}</span>
+                {onRetryLoad ? (
+                  <button type="button" className="opc-shell__sessions-clear" onClick={onRetryLoad}>
+                    Retry
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             {loading ? (
               <div className="am-empty-note">Loading…</div>
             ) : sessions.length ? (

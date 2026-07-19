@@ -53,108 +53,304 @@ function pct(value: unknown): string {
   return `${prefix}${num.toFixed(2)}%`
 }
 
-function absPct(value: unknown): string {
-  const num = typeof value === 'number' ? value : Number(value)
-  if (!Number.isFinite(num)) return '—'
-  return `${Math.abs(num).toFixed(2)}%`
-}
-
 function pnlClass(value: unknown): string {
   const num = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(num) || num === 0) return ''
   return num > 0 ? 'opc-pos' : 'opc-neg'
 }
 
-function eventPhase(eventType: string): string {
-  switch (eventType) {
-    case 'session_created':
-      return 'Created'
-    case 'verifying_balance':
-      return 'Balance'
-    case 'balance_verified':
-      return 'Balance'
-    case 'screening_started':
-      return 'Search'
-    case 'candidates_found':
-      return 'Candidates'
-    case 'stock_selected':
-      return 'Selected'
-    case 'order_configured':
-      return 'Bracket'
-    case 'order_placed':
-      return 'Ordered'
-    case 'entry_filled':
-      return 'Filled'
-    case 'position_snapshot':
-      return 'Live'
-    case 'attempt_completed':
-      return 'Attempt'
-    case 'session_finished':
-      return 'Finished'
-    case 'order_failed':
-    case 'screening_failed':
-      return 'Error'
-    default:
-      return eventType.replace(/_/g, ' ')
-  }
+function reasoningBulletsFromPayload(payload: Record<string, unknown>): string[] {
+  const raw = payload.reasoning_bullets
+  if (!Array.isArray(raw)) return []
+  return raw.map(item => String(item || '').trim()).filter(Boolean).slice(0, 4)
 }
 
-function eventStatusLine(event: OnePercentSessionEvent): string {
-  const payload = asRecord(event.payload)
-  switch (event.event_type) {
-    case 'session_created': {
-      const config = asRecord(payload.config)
-      return `${String(payload.account_env || 'demo').toUpperCase()} · capital ${money(config.capital)} · target ${pct(config.target_pct)} · TP ${absPct(config.take_profit_pct)} / SL ${absPct(config.stop_loss_pct)}`
-    }
-    case 'verifying_balance':
-      return `Need ${money(payload.required_capital)} on ${String(payload.account_env || 'demo').toUpperCase()}`
-    case 'balance_verified':
-      return `Available ${money(payload.available_cash)} · need ${money(payload.required_capital)}${payload.sufficient === true ? ' · OK' : ''}`
-    case 'screening_started':
-      return `Attempt ${String(payload.attempt_number ?? '—')}/${String(payload.max_attempts ?? '—')} · TradingView S&P/Nasdaq`
-    case 'candidates_found': {
-      const candidates = Array.isArray(payload.candidates) ? payload.candidates : []
-      const top = candidates.slice(0, 4).map(item => String(asRecord(item).symbol || '')).filter(Boolean)
-      return `${String(payload.query_name || 'Screener')} · ${String(payload.total_found ?? candidates.length)} hits${top.length ? ` · ${top.join(', ')}` : ''}`
-    }
-    case 'stock_selected':
-      return `${String(payload.symbol || '—')} @ ${money(payload.current_price)} · score ${payload.score != null ? Number(payload.score).toFixed(1) : '—'}`
-    case 'order_configured':
-      return `${String(payload.symbol || '—')} · est entry ${money(payload.entry_price)} · TP ${money(payload.take_profit_price)} (${absPct(payload.take_profit_pct)}) · SL ${money(payload.stop_loss_price)} (${absPct(payload.stop_loss_pct)})`
-    case 'order_placed':
-      return `${String(payload.symbol || '—')} · qty ${String(payload.quantity ?? '—')} · est entry ${money(payload.entry_price)} · order ${String(payload.order_id || '—')}`
-    case 'entry_filled':
-      return `${String(payload.symbol || '—')} · buy ${money(payload.buy ?? payload.entry_price)} · qty ${String(payload.quantity ?? '—')} · position filled`
-    case 'position_snapshot':
-      return `${String(payload.symbol || '—')} · ${money(payload.current_price)} · buy ${money(payload.buy ?? payload.entry_price)} · P&L ${money(payload.estimated_pnl)} (${pct(payload.estimated_pnl_pct)})`
-    case 'attempt_completed':
-      return `${String(payload.symbol || '—')} · buy ${money(payload.buy ?? payload.entry_price)} → sell ${money(payload.sell)} · ${money(payload.profit_amount)} (${pct(payload.profit_pct)}) · ${String(payload.close_reason || 'closed')}`
-    case 'session_finished':
-      return `${String(payload.outcome || 'finished')} · P&L ${money(payload.cumulative_pnl)} vs target ${money(payload.target_dollars)} · ${String(payload.attempt_count ?? '—')} attempts${payload.reason ? ` · ${String(payload.reason)}` : ''}`
-    case 'order_failed':
-    case 'screening_failed':
-      return String(payload.error || 'Failed')
-    default: {
-      const entries = Object.entries(payload).slice(0, 4)
-      if (!entries.length) return '—'
-      return entries.map(([key, value]) => `${key}=${typeof value === 'object' ? '…' : String(value)}`).join(' · ')
-    }
-  }
+type PickStatusRowData = {
+  key: string
+  name: string
+  ok: boolean
+  reason: string
+  bullets: string[]
+  confidence: number | null
+  sources: Array<Record<string, unknown>>
 }
 
-function EventRow({ event }: { event: OnePercentSessionEvent }) {
-  const tone = event.event_type.includes('fail') || event.event_type === 'session_finished'
-    ? event.event_type.includes('fail')
-      ? 'opc-row--error'
-      : 'opc-row--final'
-    : event.event_type === 'position_snapshot' || event.event_type === 'order_placed'
-      ? 'opc-row--live'
-      : ''
+function buildPickStatusRows(events: OnePercentSessionEvent[]): PickStatusRowData[] {
+  const rows: PickStatusRowData[] = []
+  const seen = new Set<string>()
+
+  const push = (row: PickStatusRowData) => {
+    if (seen.has(row.key)) return
+    seen.add(row.key)
+    rows.push(row)
+  }
+
+  for (const event of events) {
+    const payload = asRecord(event.payload)
+    const bullets = reasoningBulletsFromPayload(payload)
+    const confidence = payload.confidence != null && Number.isFinite(Number(payload.confidence))
+      ? Number(payload.confidence)
+      : null
+    const sources = Array.isArray(payload.sources)
+      ? payload.sources.filter(item => item && typeof item === 'object') as Array<Record<string, unknown>>
+      : []
+
+    if (event.event_type === 'candidates_found') {
+      const unresolved = Array.isArray(payload.unresolved) ? payload.unresolved : []
+      for (const item of unresolved) {
+        const row = asRecord(item)
+        const symbol = String(row.symbol || '').trim()
+        if (!symbol) continue
+        push({
+          key: `unresolved:${symbol}`,
+          name: symbol,
+          ok: false,
+          reason: String(row.reason || 'Not tradeable on eToro'),
+          bullets: [],
+          confidence: null,
+          sources: [],
+        })
+      }
+      continue
+    }
+
+    if (event.event_type === 'stock_selected') {
+      const symbol = String(payload.symbol || '').trim()
+      const name = String(payload.name || symbol || '—').trim()
+      const label = symbol && name && name !== symbol ? `${symbol} · ${name}` : (symbol || name)
+      push({
+        key: `selected:${event.id}`,
+        name: label,
+        ok: true,
+        reason: '',
+        bullets,
+        confidence,
+        sources,
+      })
+      continue
+    }
+
+    if (event.event_type === 'agent_no_place') {
+      const symbol = String(payload.symbol || '').trim() || 'Selection'
+      push({
+        key: `noplace:${event.id}`,
+        name: symbol,
+        ok: false,
+        reason: bullets[0]
+          || (confidence != null ? `AI declined (conf ${confidence.toFixed(0)})` : 'AI declined to place'),
+        bullets,
+        confidence,
+        sources,
+      })
+      continue
+    }
+
+    if (
+      event.event_type === 'order_failed'
+      || event.event_type === 'screening_failed'
+      || event.event_type === 'agent_selection_failed'
+    ) {
+      const symbol = String(payload.symbol || '').trim() || 'Session'
+      push({
+        key: `fail:${event.id}`,
+        name: symbol,
+        ok: false,
+        reason: String(payload.error || payload.reason || 'Failed'),
+        bullets: [],
+        confidence: null,
+        sources: [],
+      })
+      continue
+    }
+
+    if (event.event_type === 'session_finished') {
+      const outcome = String(payload.outcome || '')
+      const reason = String(payload.reason || '').trim()
+      if (
+        outcome === 'no_candidates'
+        || outcome === 'agent_no_place'
+        || outcome === 'screening_failed'
+        || outcome === 'sizing_failed'
+        || outcome === 'order_failed'
+      ) {
+        const symbol = String(payload.symbol || payload.active_symbol || 'Session').trim()
+        push({
+          key: `finished:${event.id}`,
+          name: symbol,
+          ok: false,
+          reason: reason || outcome.replace(/_/g, ' '),
+          bullets: [],
+          confidence: null,
+          sources: [],
+        })
+      }
+    }
+  }
+
+  return rows
+}
+
+function ReasoningAccordion({
+  bullets,
+  confidence,
+  sources,
+  defaultOpen = true,
+}: {
+  bullets: string[]
+  confidence?: number | null
+  sources?: Array<Record<string, unknown>>
+  defaultOpen?: boolean
+}) {
+  if (!bullets.length) return null
+  const sourceLabels = (sources || [])
+    .map(item => String(item.label || '').trim())
+    .filter(Boolean)
   return (
-    <div className={`opc-row ${tone}`.trim()}>
-      <span className="opc-row__phase">{eventPhase(event.event_type)}</span>
-      <span className="opc-row__status">{eventStatusLine(event)}</span>
-      <span className="opc-row__time">{new Date(event.created_at).toLocaleTimeString()}</span>
+    <details className="opc-reason" open={defaultOpen}>
+      <summary className="opc-reason__summary">
+        Why selected
+        {confidence != null && Number.isFinite(confidence) ? (
+          <em>conf {confidence.toFixed(0)}</em>
+        ) : null}
+      </summary>
+      <ul className="opc-reason__list">
+        {bullets.map((bullet, index) => (
+          <li key={`${index}-${bullet.slice(0, 24)}`}>{bullet}</li>
+        ))}
+      </ul>
+      {sourceLabels.length ? (
+        <div className="opc-reason__sources">
+          Sources: {sourceLabels.join(' · ')}
+        </div>
+      ) : null}
+    </details>
+  )
+}
+
+function PickStatusRow({ row }: { row: PickStatusRowData }) {
+  return (
+    <div className={`opc-pick ${row.ok ? 'opc-pick--ok' : 'opc-pick--bad'}`.trim()}>
+      <div className="opc-pick__main">
+        <span className={`opc-pick__icon ${row.ok ? 'opc-pick__icon--ok' : 'opc-pick__icon--bad'}`} aria-hidden>
+          {row.ok ? '✓' : '✕'}
+        </span>
+        <div className="opc-pick__body">
+          <strong className="opc-pick__name">{row.name}</strong>
+          {!row.ok && row.reason ? (
+            <span className="opc-pick__reason">{row.reason}</span>
+          ) : null}
+        </div>
+      </div>
+      {row.bullets.length ? (
+        <ReasoningAccordion
+          bullets={row.bullets}
+          confidence={row.confidence}
+          sources={row.sources}
+          defaultOpen={row.ok}
+        />
+      ) : null}
+    </div>
+  )
+}
+
+type OrderMonitorRowData = {
+  symbol: string
+  orderId: string | null
+  positionId: string | null
+  status: string
+  lastCheckAt: string | null
+  filled: boolean
+}
+
+function buildOrderMonitorRow(
+  events: OnePercentSessionEvent[],
+  session: OnePercentSession | null,
+): OrderMonitorRowData | null {
+  let orderId: string | null = session?.active_order_id ? String(session.active_order_id) : null
+  let positionId: string | null = session?.active_position_id ? String(session.active_position_id) : null
+  let symbol = String(session?.active_symbol || '')
+  let lastCheckAt: string | null = null
+  let filled = false
+  let seenOrder = false
+
+  for (const event of events) {
+    const payload = asRecord(event.payload)
+    if (event.event_type === 'order_placed') {
+      seenOrder = true
+      orderId = String(payload.order_id || orderId || '') || null
+      symbol = String(payload.symbol || symbol || '')
+      if (!lastCheckAt) lastCheckAt = event.created_at
+    }
+    if (event.event_type === 'entry_filled') {
+      seenOrder = true
+      filled = true
+      orderId = String(payload.order_id || orderId || '') || null
+      positionId = String(payload.position_id || positionId || '') || null
+      symbol = String(payload.symbol || symbol || '')
+      lastCheckAt = event.created_at
+    }
+    if (event.event_type === 'position_snapshot') {
+      seenOrder = true
+      filled = filled || Boolean(payload.position_id || positionId)
+      orderId = String(payload.order_id || orderId || '') || null
+      positionId = String(payload.position_id || positionId || '') || null
+      symbol = String(payload.symbol || symbol || '')
+      lastCheckAt = event.created_at
+    }
+    if (event.event_type === 'attempt_completed' || event.event_type === 'order_failed') {
+      if (payload.order_id) orderId = String(payload.order_id)
+      if (payload.position_id) positionId = String(payload.position_id)
+      if (payload.symbol) symbol = String(payload.symbol)
+      lastCheckAt = event.created_at
+      seenOrder = true
+    }
+  }
+
+  if (!seenOrder && !orderId) return null
+
+  const state = String(session?.state || '')
+  let status = 'Order placed'
+  if (state === 'monitoring') status = filled || positionId ? 'Monitoring position' : 'Waiting for fill'
+  else if (state === 'placing') status = 'Placing order'
+  else if (state === 'evaluating') status = 'Evaluating close'
+  else if (state === 'finished' || state === 'stopped') status = state === 'stopped' ? 'Stopped' : 'Closed'
+  else if (filled || positionId) status = 'Filled'
+
+  return {
+    symbol: symbol || '—',
+    orderId,
+    positionId,
+    status,
+    lastCheckAt,
+    filled: Boolean(filled || positionId),
+  }
+}
+
+function OrderMonitorRow({ row }: { row: OrderMonitorRowData }) {
+  const lastCheck = row.lastCheckAt
+    ? new Date(row.lastCheckAt).toLocaleTimeString()
+    : '—'
+  return (
+    <div className={`opc-order ${row.filled ? 'opc-order--live' : ''}`.trim()}>
+      <div className="opc-order__head">
+        <span className="opc-order__badge">{row.filled ? 'Filled' : 'Ordered'}</span>
+        <strong className="opc-order__symbol">{row.symbol}</strong>
+        <span className="opc-order__status">{row.status}</span>
+      </div>
+      <div className="opc-order__ids">
+        <span>
+          <em>Order</em>
+          <strong>{row.orderId || '—'}</strong>
+        </span>
+        <span>
+          <em>Position</em>
+          <strong>{row.positionId || 'pending'}</strong>
+        </span>
+        <span>
+          <em>Last check</em>
+          <strong>{lastCheck}</strong>
+        </span>
+      </div>
     </div>
   )
 }
@@ -229,19 +425,27 @@ function StickyStockBar({
         <span>{name}</span>
       </div>
       <div className="opc-sticky__metrics">
-        <span>
-          Live{' '}
-          <strong className={`opc-sticky__live ${liveTone}`.trim()}>
-            {money(current)}
-          </strong>
-          {live.connected ? <em>ws</em> : <em>poll</em>}
+        <span className="opc-pill">
+          <em>Live</em>
+          <strong className={`opc-sticky__live ${liveTone}`.trim()}>{money(current)}</strong>
+          <i>{live.connected ? 'ws' : 'poll'}</i>
         </span>
-        <span>Buy <strong>{money(entry)}</strong></span>
-        <span>TP <strong>{money(payload.take_profit_price)}</strong></span>
-        <span>SL <strong>{money(payload.stop_loss_price)}</strong></span>
-        <span className={pnlClass(estPnl)}>
-          P&amp;L <strong className={pnlClass(estPnl)}>{money(estPnl)}</strong>{' '}
-          <em className={pnlClass(estPnlPct)}>{pct(estPnlPct)}</em>
+        <span className="opc-pill">
+          <em>Buy</em>
+          <strong>{money(entry)}</strong>
+        </span>
+        <span className="opc-pill">
+          <em>TP</em>
+          <strong>{money(payload.take_profit_price)}</strong>
+        </span>
+        <span className="opc-pill">
+          <em>SL</em>
+          <strong>{money(payload.stop_loss_price)}</strong>
+        </span>
+        <span className={`opc-pill opc-pill--pnl ${pnlClass(estPnl)}`.trim()}>
+          <em>P&amp;L</em>
+          <strong className={pnlClass(estPnl)}>{money(estPnl)}</strong>
+          <i className={pnlClass(estPnlPct)}>{pct(estPnlPct)}</i>
         </span>
       </div>
       <div className="opc-sticky__meta">
@@ -358,18 +562,8 @@ export default function OnePercentSessionWorkspace({
     enabled: Boolean(feedSymbol) && !isTerminalOnePercentState(detail?.state),
   })
 
-  const timelineEvents = useMemo(() => {
-    let latestSnapshotId: number | null = null
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      if (events[i].event_type === 'position_snapshot') {
-        latestSnapshotId = events[i].id
-        break
-      }
-    }
-    return events.filter(event => (
-      event.event_type !== 'position_snapshot' || event.id === latestSnapshotId
-    ))
-  }, [events])
+  const pickRows = useMemo(() => buildPickStatusRows(events), [events])
+  const orderRow = useMemo(() => buildOrderMonitorRow(events, detail), [detail, events])
 
   const handleStop = useCallback(async () => {
     setStopping(true)
@@ -438,10 +632,13 @@ export default function OnePercentSessionWorkspace({
       ) : null}
 
       <div className="opc-workspace__timeline opc-workspace__timeline--rows">
-        {timelineEvents.length ? (
-          timelineEvents.map(event => <EventRow key={event.id} event={event} />)
+        {pickRows.length || orderRow ? (
+          <>
+            {pickRows.map(row => <PickStatusRow key={row.key} row={row} />)}
+            {orderRow ? <OrderMonitorRow row={orderRow} /> : null}
+          </>
         ) : (
-          <div className="am-empty-note">Waiting for session events…</div>
+          <div className="am-empty-note">Waiting for a pick…</div>
         )}
       </div>
     </div>

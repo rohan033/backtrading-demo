@@ -34,6 +34,7 @@ class CreateOnePercentSessionRequest(BaseModel):
     screener_mode: str = "auto"
     query_keys: list[str] = Field(default_factory=list)
     screener_ids: list[str] = Field(default_factory=list)
+    focus_symbols: list[str] = Field(default_factory=list)
 
 
 class StopOnePercentSessionRequest(BaseModel):
@@ -104,6 +105,7 @@ async def create_session(req: CreateOnePercentSessionRequest):
                 "screener_mode": req.screener_mode,
                 "query_keys": req.query_keys,
                 "screener_ids": req.screener_ids,
+                "focus_symbols": req.focus_symbols,
             },
         )
     except ValueError as exc:

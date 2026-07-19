@@ -37,6 +37,7 @@ DEFAULT_CONFIG = {
     "screener_mode": "auto",
     "query_keys": [],
     "screener_ids": [],
+    "focus_symbols": [],
 }
 
 
@@ -120,6 +121,27 @@ def normalize_config(raw: dict[str, Any] | None = None) -> dict[str, Any]:
     if screener_mode == "manual" and not query_keys and not screener_ids:
         screener_mode = "auto"
 
+    focus_symbols: list[str] = []
+    raw_focus = data.get("focus_symbols")
+    if isinstance(raw_focus, str):
+        raw_focus = [part for part in raw_focus.replace(";", ",").split(",")]
+    if not isinstance(raw_focus, list):
+        raw_focus = []
+    for item in raw_focus:
+        sym = str(item or "").strip().upper()
+        if not sym:
+            continue
+        # Keep equity-friendly base ticker (AAPL / AAPL.US → AAPL for resolve).
+        base = sym.split(".", 1)[0].strip()
+        if base and base not in focus_symbols:
+            focus_symbols.append(base)
+        if len(focus_symbols) >= 8:
+            break
+
+    # Specific stocks always go through AI agent analysis (no screener rank pick).
+    if focus_symbols:
+        selection_mode = "agent"
+
     return {
         "capital": capital,
         "target_pct": target_pct,
@@ -128,9 +150,10 @@ def normalize_config(raw: dict[str, Any] | None = None) -> dict[str, Any]:
         "max_attempts": max_attempts,
         "selection_mode": selection_mode,
         "min_score": min_score,
-        "screener_mode": screener_mode,
-        "query_keys": query_keys,
-        "screener_ids": screener_ids,
+        "screener_mode": screener_mode if not focus_symbols else "auto",
+        "query_keys": [] if focus_symbols else query_keys,
+        "screener_ids": [] if focus_symbols else screener_ids,
+        "focus_symbols": focus_symbols,
         "target_dollars": round(capital * target_pct / 100.0, 2),
     }
 

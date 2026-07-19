@@ -9,6 +9,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from control_plane.execution_sources import EXECUTION_SOURCE_ONE_PERCENT_SESSION
+from control_plane.one_percent_agent_selection import (
+    resolve_focus_symbol_candidates,
+    select_with_agent,
+)
 from control_plane.one_percent_candidates import (
     compute_attempt_brackets,
     find_tradeable_candidates,
@@ -421,13 +425,22 @@ class OnePercentSessionEngine:
             )
             return
 
-        # Screening
+        # Screening / focus symbols
         self.store.set_state(session_id, "screening")
         exclude = {
             str(a.get("symbol") or a.get("tradingsymbol") or "").upper()
             for a in self.store.list_attempts(session_id)
             if a.get("symbol") or a.get("tradingsymbol")
         }
+        focus_symbols = [
+            str(s).strip().upper()
+            for s in (config.get("focus_symbols") or [])
+            if str(s).strip()
+        ]
+        selection_mode = str(config.get("selection_mode") or "deterministic").strip().lower()
+        if focus_symbols:
+            selection_mode = "agent"
+
         self.store.append_event(
             session_id,
             "screening_started",
@@ -436,19 +449,27 @@ class OnePercentSessionEngine:
                 "attempt_number": next_attempt,
                 "max_attempts": max_attempts,
                 "exclude_symbols": sorted(s for s in exclude if s),
+                "selection_mode": selection_mode,
+                "focus_symbols": focus_symbols,
             },
         )
         try:
-            config = session.get("config") or {}
-            screened = await find_tradeable_candidates(
-                account_env=session["account_env"],
-                exclude_symbols=exclude,
-                screener_mode=str(config.get("screener_mode") or "auto"),
-                query_keys=list(config.get("query_keys") or []),
-                screener_ids=list(config.get("screener_ids") or []),
-                min_score=float(config.get("min_score") or 0),
-                limit=12,
-            )
+            if focus_symbols:
+                screened = await resolve_focus_symbol_candidates(
+                    focus_symbols,
+                    account_env=session["account_env"],
+                    exclude_symbols=exclude,
+                )
+            else:
+                screened = await find_tradeable_candidates(
+                    account_env=session["account_env"],
+                    exclude_symbols=exclude,
+                    screener_mode=str(config.get("screener_mode") or "auto"),
+                    query_keys=list(config.get("query_keys") or []),
+                    screener_ids=list(config.get("screener_ids") or []),
+                    min_score=float(config.get("min_score") or 0),
+                    limit=12,
+                )
         except Exception as exc:
             self.store.append_event(
                 session_id,
@@ -475,6 +496,8 @@ class OnePercentSessionEngine:
                 "query_names": screened.get("query_names"),
                 "min_score": screened.get("min_score"),
                 "sources": screened.get("sources"),
+                "selection_mode": selection_mode,
+                "focus_symbols": focus_symbols,
                 "total_found": screened.get("total_found"),
                 "candidates": [
                     {
@@ -494,12 +517,86 @@ class OnePercentSessionEngine:
             await self._finish_session(
                 session,
                 outcome="no_candidates",
-                reason="No eToro-tradeable candidates found",
+                reason=(
+                    "No eToro-tradeable focus symbols found"
+                    if focus_symbols
+                    else "No eToro-tradeable candidates found"
+                ),
             )
             return
 
-        # Select top candidate
-        selected = candidates[0]
+        # Select candidate (algo top score vs AI agent research)
+        selected: dict[str, Any] | None = None
+        reasoning_bullets: list[str] = []
+        selection_meta: dict[str, Any] = {
+            "selection_mode": selection_mode,
+            "decision_source": "deterministic",
+            "confidence": None,
+            "place": True,
+            "sources": [],
+        }
+
+        if selection_mode in {"agent", "hybrid"}:
+            self.store.set_state(session_id, "selecting")
+            decision = await select_with_agent(
+                session_id=session_id,
+                store=self.store,
+                session=session,
+                candidates=candidates[:6],
+                require_place_gate=bool(focus_symbols),
+            )
+            selection_meta.update({
+                "decision_source": decision.get("decision_source") or "agent",
+                "confidence": decision.get("confidence"),
+                "place": bool(decision.get("place")),
+                "sources": decision.get("sources") or [],
+            })
+            reasoning_bullets = list(decision.get("reasoning_bullets") or [])[:4]
+            selected = decision.get("selected") if isinstance(decision.get("selected"), dict) else None
+            if not selected and selection_mode == "hybrid" and not focus_symbols:
+                selected = candidates[0]
+                selection_meta["decision_source"] = "hybrid_fallback"
+                selection_meta["place"] = True
+                if not reasoning_bullets:
+                    reasoning_bullets = [
+                        "Hybrid fallback: agent did not place — using highest screener score.",
+                    ]
+            if not selected or not selection_meta.get("place"):
+                declined_symbol = str(
+                    (decision.get("symbol") if isinstance(decision, dict) else None)
+                    or (candidates[0].get("symbol") if candidates else "")
+                    or "Selection"
+                )
+                self.store.append_event(
+                    session_id,
+                    "agent_no_place",
+                    state="selecting",
+                    payload={
+                        "attempt_number": next_attempt,
+                        "symbol": declined_symbol,
+                        "confidence": selection_meta.get("confidence"),
+                        "reasoning_bullets": reasoning_bullets,
+                        "sources": selection_meta.get("sources"),
+                        "focus_symbols": focus_symbols,
+                    },
+                )
+                await self._finish_session(
+                    session,
+                    outcome="agent_no_place",
+                    reason=(
+                        f"AI agent declined to place "
+                        f"(confidence {selection_meta.get('confidence')})"
+                    ),
+                )
+                return
+        else:
+            selected = candidates[0]
+            reasoning_bullets = [
+                "Highest deterministic momentum/liquidity score among eToro-available names.",
+            ]
+            selection_meta["sources"] = [{"label": "Screener", "detail": screened.get("query_name") or "rank"}]
+
+        assert selected is not None
         self.store.set_state(session_id, "selecting", extra={"active_symbol": selected.get("symbol")})
         self.store.append_event(
             session_id,
@@ -518,7 +615,12 @@ class OnePercentSessionEngine:
                 "logo50x50": selected.get("logo50x50"),
                 "logo150x150": selected.get("logo150x150"),
                 "query_name": screened.get("query_name"),
-                "reason": "Highest deterministic momentum/liquidity score among eToro-available names",
+                "selection_mode": selection_mode,
+                "decision_source": selection_meta.get("decision_source"),
+                "confidence": selection_meta.get("confidence"),
+                "reasoning_bullets": reasoning_bullets,
+                "sources": selection_meta.get("sources"),
+                "reason": reasoning_bullets[0] if reasoning_bullets else "Selected",
             },
         )
 

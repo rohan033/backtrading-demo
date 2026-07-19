@@ -58,7 +58,28 @@ export type CreateTradingSessionInput = {
 }
 
 async function parseJson<T>(res: Response): Promise<T> {
-  const body = await res.json()
+  const text = await res.text()
+  let body: {
+    status?: boolean
+    data?: T
+    detail?: string
+    message?: string
+  } = {}
+  if (text.trim()) {
+    try {
+      body = JSON.parse(text) as typeof body
+    } catch {
+      throw new Error(
+        res.ok
+          ? 'Invalid JSON from control plane'
+          : 'Control plane unavailable — wait for make dev to finish starting, then refresh.',
+      )
+    }
+  } else if (!res.ok) {
+    throw new Error(
+      'Control plane unavailable — wait for make dev to finish starting, then refresh.',
+    )
+  }
   if (!res.ok || body.status === false) {
     throw new Error(body.message || body.detail || res.statusText || 'Request failed')
   }

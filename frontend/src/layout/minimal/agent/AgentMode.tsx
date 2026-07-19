@@ -70,15 +70,25 @@ export default function AgentMode() {
   const refreshSessions = useCallback(async () => {
     setLoading(true)
     setError('')
-    try {
-      const [rows, onePercentRows] = await Promise.all([
-        listTradingSessions(),
-        listOnePercentSessions(),
-      ])
-      setSessions(rows)
-      setOnePercentSessions(onePercentRows)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load sessions'
+    const results = await Promise.allSettled([
+      listTradingSessions(),
+      listOnePercentSessions(),
+    ])
+    const [tradingResult, onePercentResult] = results
+    if (tradingResult.status === 'fulfilled') {
+      setSessions(tradingResult.value)
+    }
+    if (onePercentResult.status === 'fulfilled') {
+      setOnePercentSessions(onePercentResult.value)
+    }
+
+    const failures = [tradingResult, onePercentResult].filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    )
+    if (failures.length === 2) {
+      const message = failures[0].reason instanceof Error
+        ? failures[0].reason.message
+        : 'Failed to load sessions'
       setError(message === 'Not Found'
         ? 'Trading sessions API is unavailable — restart the control plane (make dev).'
         : message)
@@ -92,9 +102,13 @@ export default function AgentMode() {
           one_percent_session: '',
         }, { replace: true })
       }
-    } finally {
-      setLoading(false)
+    } else if (failures.length === 1) {
+      const message = failures[0].reason instanceof Error
+        ? failures[0].reason.message
+        : 'Failed to load some sessions'
+      setError(message)
     }
+    setLoading(false)
   }, [activeOnePercentSessionId, activeSessionId, navigate, subpanel])
 
   const refreshActiveSession = useCallback(async () => {
@@ -302,6 +316,7 @@ export default function AgentMode() {
           activeSessionId={activeOnePercentSessionId}
           loading={loading}
           listError={error}
+          onRetryLoad={() => void refreshSessions()}
           onSelect={selectOnePercentSession}
           onCreated={handleOnePercentCreated}
           onSessionUpdate={handleOnePercentUpdate}

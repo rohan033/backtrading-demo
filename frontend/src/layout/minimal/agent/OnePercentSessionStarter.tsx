@@ -9,6 +9,7 @@ import {
   type OnePercentEligibility,
   type OnePercentPreset,
   type OnePercentScreenerMode,
+  type OnePercentSelectionMode,
   type OnePercentSession,
   type OnePercentSessionConfig,
   type OnePercentSessionDetail,
@@ -42,6 +43,16 @@ function toggleInList(list: string[], value: string): string[] {
   return list.includes(value) ? list.filter(item => item !== value) : [...list, value]
 }
 
+function parseFocusSymbols(raw: string): string[] {
+  const out: string[] = []
+  for (const part of raw.replace(/;/g, ',').split(/[,\s]+/)) {
+    const sym = part.trim().toUpperCase().split('.', 1)[0]
+    if (sym && !out.includes(sym)) out.push(sym)
+    if (out.length >= 8) break
+  }
+  return out
+}
+
 export default function OnePercentSessionStarter({
   onCreated,
   frozen = false,
@@ -58,6 +69,8 @@ export default function OnePercentSessionStarter({
   const [stopLossPct, setStopLossPct] = useState(DEFAULTS.stopLossPct)
   const [maxAttempts, setMaxAttempts] = useState(DEFAULTS.maxAttempts)
   const [minScore, setMinScore] = useState(DEFAULTS.minScore)
+  const [selectionMode, setSelectionMode] = useState<OnePercentSelectionMode>('deterministic')
+  const [focusSymbolsText, setFocusSymbolsText] = useState('')
   const [screenerMode, setScreenerMode] = useState<OnePercentScreenerMode>('auto')
   const [queryKeys, setQueryKeys] = useState<string[]>([])
   const [screenerIds, setScreenerIds] = useState<string[]>([])
@@ -67,6 +80,15 @@ export default function OnePercentSessionStarter({
   const [checking, setChecking] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
+
+  const focusSymbols = useMemo(() => parseFocusSymbols(focusSymbolsText), [focusSymbolsText])
+  const effectiveSelectionMode: OnePercentSelectionMode = focusSymbols.length
+    ? 'agent'
+    : selectionMode === 'agent'
+      ? 'agent'
+      : 'deterministic'
+  const usingFocusSymbols = focusSymbols.length > 0
+  const showScreenerControls = !usingFocusSymbols
 
   useEffect(() => {
     let cancelled = false
@@ -103,6 +125,8 @@ export default function OnePercentSessionStarter({
     setStopLossPct(String(cfg.stop_loss_pct ?? 2))
     setMaxAttempts(String(cfg.max_attempts ?? 3))
     setMinScore(String(cfg.min_score ?? 0))
+    setSelectionMode(cfg.selection_mode === 'agent' || cfg.selection_mode === 'hybrid' ? 'agent' : 'deterministic')
+    setFocusSymbolsText(Array.isArray(cfg.focus_symbols) ? cfg.focus_symbols.join(', ') : '')
     setScreenerMode(cfg.screener_mode === 'manual' ? 'manual' : 'auto')
     setQueryKeys(Array.isArray(cfg.query_keys) ? cfg.query_keys.map(String) : [])
     setScreenerIds(Array.isArray(cfg.screener_ids) ? cfg.screener_ids.map(String) : [])
@@ -138,7 +162,7 @@ export default function OnePercentSessionStarter({
     && Boolean(eligibility?.can_start)
     && !checking
     && !submitting
-    && (screenerMode === 'auto' || manualHasSource)
+    && (usingFocusSymbols || screenerMode === 'auto' || manualHasSource)
 
   const summary = useMemo(() => {
     const target = ((Number(targetPct) || 1) / 100) * (capitalNumber || 1000)
@@ -150,7 +174,7 @@ export default function OnePercentSessionStarter({
 
   const handleStart = useCallback(async () => {
     if (isFrozen) return
-    if (screenerMode === 'manual' && !manualHasSource) {
+    if (!usingFocusSymbols && screenerMode === 'manual' && !manualHasSource) {
       setError('Pick at least one built-in preset or saved screener')
       return
     }
@@ -164,11 +188,12 @@ export default function OnePercentSessionStarter({
         take_profit_pct: Number(takeProfitPct) || 1.5,
         stop_loss_pct: Number(stopLossPct) || 2,
         max_attempts: Number(maxAttempts) || 3,
-        selection_mode: 'deterministic',
+        selection_mode: effectiveSelectionMode,
         min_score: Number(minScore) || 0,
-        screener_mode: screenerMode,
-        query_keys: screenerMode === 'manual' ? queryKeys : [],
-        screener_ids: screenerMode === 'manual' ? screenerIds : [],
+        screener_mode: usingFocusSymbols ? 'auto' : screenerMode,
+        query_keys: !usingFocusSymbols && screenerMode === 'manual' ? queryKeys : [],
+        screener_ids: !usingFocusSymbols && screenerMode === 'manual' ? screenerIds : [],
+        focus_symbols: focusSymbols,
       }
       const session = await createOnePercentSession(input)
       onCreated(session)
@@ -181,6 +206,8 @@ export default function OnePercentSessionStarter({
   }, [
     accountEnv,
     capitalNumber,
+    effectiveSelectionMode,
+    focusSymbols,
     isFrozen,
     manualHasSource,
     maxAttempts,
@@ -193,6 +220,7 @@ export default function OnePercentSessionStarter({
     stopLossPct,
     takeProfitPct,
     targetPct,
+    usingFocusSymbols,
   ])
 
   const screenerHref = buildShellUrl({ tab: 'screener' })
@@ -203,6 +231,54 @@ export default function OnePercentSessionStarter({
         <div className="opc-starter__frozen-banner">
           Config locked while session is running
         </div>
+      ) : null}
+
+      <div className="opc-starter__mode" role="group" aria-label="Stock selection mode">
+        <span className="opc-starter__mode-label">Stock pick</span>
+        <div className="opc-starter__mode-toggle">
+          <button
+            type="button"
+            className={`opc-mode-btn${effectiveSelectionMode === 'deterministic' && !usingFocusSymbols ? ' opc-mode-btn--active' : ''}`}
+            disabled={isFrozen || usingFocusSymbols}
+            onClick={() => setSelectionMode('deterministic')}
+          >
+            Algo selection
+          </button>
+          <button
+            type="button"
+            className={`opc-mode-btn${effectiveSelectionMode === 'agent' ? ' opc-mode-btn--active' : ''}`}
+            disabled={isFrozen}
+            onClick={() => setSelectionMode('agent')}
+          >
+            AI agent
+          </button>
+        </div>
+        <p className="opc-starter__mode-hint">
+          {usingFocusSymbols
+            ? 'Specific stocks force AI agent analysis with place / no-place confidence, then auto-order if approved.'
+            : effectiveSelectionMode === 'agent'
+              ? 'AI researches top screener hits (news, pre-market, sector/index mood) before picking.'
+              : 'Ranks screener hits by momentum/liquidity score and takes the top eToro name.'}
+        </p>
+      </div>
+
+      <label className="opc-field opc-field--full">
+        <span>Specific stocks (optional)</span>
+        <input
+          value={focusSymbolsText}
+          disabled={isFrozen}
+          onChange={event => {
+            setFocusSymbolsText(event.target.value)
+            if (event.target.value.trim()) setSelectionMode('agent')
+          }}
+          placeholder="e.g. AAPL, NVDA, MSFT"
+          title="Comma-separated tickers. Skips screener; AI decides place vs no-place."
+        />
+      </label>
+      {usingFocusSymbols ? (
+        <p className="opc-starter__focus-note">
+          Screener skipped · analyzing {focusSymbols.join(', ')} only
+        </p>
       ) : null}
 
       <div className="opc-starter__grid opc-starter__grid--panel">
@@ -262,30 +338,34 @@ export default function OnePercentSessionStarter({
             inputMode="numeric"
           />
         </label>
-        <label className="opc-field">
-          <span>Min confidence score</span>
-          <input
-            value={minScore}
-            disabled={isFrozen}
-            onChange={event => setMinScore(event.target.value)}
-            inputMode="decimal"
-            title="Skip candidates below this rank score"
-          />
-        </label>
-        <label className="opc-field">
-          <span>Screener source</span>
-          <select
-            value={screenerMode}
-            disabled={isFrozen}
-            onChange={event => setScreenerMode(event.target.value as OnePercentScreenerMode)}
-          >
-            <option value="auto">Auto by market phase</option>
-            <option value="manual">Manual multiselect</option>
-          </select>
-        </label>
+        {showScreenerControls ? (
+          <>
+            <label className="opc-field">
+              <span>Min confidence score</span>
+              <input
+                value={minScore}
+                disabled={isFrozen}
+                onChange={event => setMinScore(event.target.value)}
+                inputMode="decimal"
+                title="Skip candidates below this rank score"
+              />
+            </label>
+            <label className="opc-field">
+              <span>Screener source</span>
+              <select
+                value={screenerMode}
+                disabled={isFrozen}
+                onChange={event => setScreenerMode(event.target.value as OnePercentScreenerMode)}
+              >
+                <option value="auto">Auto by market phase</option>
+                <option value="manual">Manual multiselect</option>
+              </select>
+            </label>
+          </>
+        ) : null}
       </div>
 
-      {screenerMode === 'manual' ? (
+      {showScreenerControls && screenerMode === 'manual' ? (
         <div className="opc-starter__screeners">
           <div className="opc-starter__screeners-head">
             <strong>Built-in presets</strong>
@@ -340,7 +420,7 @@ export default function OnePercentSessionStarter({
             <p className="opc-starter__warn">Select at least one preset or saved screener.</p>
           ) : null}
         </div>
-      ) : (
+      ) : showScreenerControls ? (
         <div className="opc-starter__screeners opc-starter__screeners--auto">
           <p>
             Auto picks a preset from market phase (pre-market → gainers, regular → trending,
@@ -350,7 +430,7 @@ export default function OnePercentSessionStarter({
             Create / edit screeners
           </a>
         </div>
-      )}
+      ) : null}
 
       {!isFrozen ? (
         <div className="opc-starter__eligibility">
@@ -399,30 +479,8 @@ export default function OnePercentSessionStarter({
     </div>
   )
 
-  if (embedded) {
-    return (
-      <div className={`opc-starter opc-starter--panel${isFrozen ? ' opc-starter--frozen' : ''}`}>
-        <div className="opc-starter__hero opc-starter__hero--panel">
-          <div>
-            <div className="opc-starter__eyebrow">Daily target session</div>
-            <strong>1% on $1,000</strong>
-            <p>Screen → pick → bracket → recover across attempts.</p>
-          </div>
-        </div>
-        {form}
-      </div>
-    )
-  }
-
   return (
-    <div className={`opc-starter${isFrozen ? ' opc-starter--frozen' : ''}`}>
-      <div className="opc-starter__hero">
-        <div>
-          <div className="opc-starter__eyebrow">Daily target session</div>
-          <strong>1% on $1,000</strong>
-          <p>Screen → pick → bracket trade → recover losses across up to 3 attempts.</p>
-        </div>
-      </div>
+    <div className={`opc-starter${embedded ? ' opc-starter--panel' : ''}${isFrozen ? ' opc-starter--frozen' : ''}`}>
       {form}
     </div>
   )

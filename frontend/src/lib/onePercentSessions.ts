@@ -13,6 +13,7 @@ export type OnePercentSessionConfig = {
   screener_mode: OnePercentScreenerMode
   query_keys: string[]
   screener_ids: string[]
+  focus_symbols: string[]
 }
 
 export type OnePercentPreset = {
@@ -94,16 +95,33 @@ export type CreateOnePercentSessionInput = {
   screener_mode?: OnePercentScreenerMode
   query_keys?: string[]
   screener_ids?: string[]
+  focus_symbols?: string[]
 }
 
 const API = '/api/control/one-percent-sessions'
 
 async function parseJson<T>(res: Response): Promise<T> {
-  const body = await res.json().catch(() => ({})) as {
+  const text = await res.text()
+  let body: {
     status?: boolean
     data?: T
     detail?: string
     message?: string
+  } = {}
+  if (text.trim()) {
+    try {
+      body = JSON.parse(text) as typeof body
+    } catch {
+      throw new Error(
+        res.ok
+          ? 'Invalid JSON from control plane'
+          : 'Control plane unavailable — wait for make dev to finish starting, then refresh.',
+      )
+    }
+  } else if (!res.ok) {
+    throw new Error(
+      'Control plane unavailable — wait for make dev to finish starting, then refresh.',
+    )
   }
   if (!res.ok || body.status === false) {
     const detail = body.detail
