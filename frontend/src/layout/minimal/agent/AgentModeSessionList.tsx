@@ -27,14 +27,14 @@ export default function AgentModeSessionList({
   return (
     <aside className="am-column">
       <div className="am-column-header am-column-header--with-action">
-        <span>Sessions</span>
+        <span>AI trades</span>
         <button
           type="button"
           className="am-thread-add"
           onClick={onCreate}
           disabled={creating}
-          aria-label={creating ? 'Creating session' : 'New session'}
-          title="New session"
+          aria-label={creating ? 'Creating session' : 'New AI trade session'}
+          title="New AI trade session"
         >
           {creating ? '…' : '+'}
         </button>
@@ -42,7 +42,7 @@ export default function AgentModeSessionList({
       <div className="am-column-body am-thread-panel">
         {listError ? <div className="am-thread-list-error">{listError}</div> : null}
         {loading ? (
-          <div className="am-empty-note">Loading sessions…</div>
+          <div className="am-empty-note">Loading AI trades…</div>
         ) : sessions.length ? (
           <table className="am-thread-table">
             <tbody>
@@ -92,7 +92,7 @@ export default function AgentModeSessionList({
             </tbody>
           </table>
         ) : (
-          <div className="am-empty-note">No sessions yet. Tap + to start one.</div>
+          <div className="am-empty-note">No AI trades yet. Tap + to start a session.</div>
         )}
       </div>
     </aside>

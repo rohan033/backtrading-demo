@@ -92,6 +92,8 @@ class ScreenerDefinition:
     limit: int = 50
     offset: int = 0
     market: str = "america"
+    # TradingView index symbols, e.g. ("SYML:SP;SPX", "SYML:NASDAQ;NDX")
+    indexes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +105,7 @@ class ScreenerDefinition:
             "limit": int(self.limit),
             "offset": int(self.offset),
             "market": self.market or "america",
+            "indexes": list(self.indexes or []),
         }
 
     @classmethod
@@ -131,6 +134,14 @@ class ScreenerDefinition:
         market = str(raw.get("market") or "america").strip() or "america"
         if not re.match(r"^[a-z0-9_]+$", market):
             raise ScreenerQueryError(f"Invalid market: {market!r}")
+        indexes: list[str] = []
+        for item in raw.get("indexes") or []:
+            idx = str(item or "").strip()
+            if not idx:
+                continue
+            if not re.match(r"^[A-Za-z0-9:_;.-]+$", idx):
+                raise ScreenerQueryError(f"Invalid index: {idx!r}")
+            indexes.append(idx)
         return cls(
             columns=columns,
             filters=filters,
@@ -140,6 +151,7 @@ class ScreenerDefinition:
             limit=limit,
             offset=offset,
             market=market,
+            indexes=indexes,
         )
 
 
@@ -596,6 +608,9 @@ def definition_to_dsl(defn: ScreenerDefinition | dict[str, Any]) -> str:
         "",
         f"query = (Query({defn.market!r})" if defn.market != "america" else "query = (Query()",
     ]
+    if defn.indexes:
+        idx_args = ", ".join(repr(i) for i in defn.indexes)
+        lines.append(f"    .set_index({idx_args})")
     cols = ", ".join(repr(c) for c in defn.columns)
     lines.append(f"    .select({cols})")
     if defn.filters:
@@ -699,6 +714,8 @@ def build_query(defn: ScreenerDefinition | dict[str, Any]):
     if isinstance(defn, dict):
         defn = ScreenerDefinition.from_dict(defn)
     q = Query(defn.market)
+    if defn.indexes:
+        q = q.set_index(*defn.indexes)
     q = q.select(*defn.columns)
     if defn.filters:
         q = q.where(*[_build_column_filter(f) for f in defn.filters])
@@ -797,3 +814,184 @@ PRE_MARKET_GAINERS_DEFINITION = ScreenerDefinition(
     market="america",
 )
 PRE_MARKET_GAINERS_NAME = "Pre Market gainers"
+
+# 1% session queries — S&P 500 / Nasdaq-100 liquid names only (no pennies).
+ONE_PERCENT_INDEXES = ("SYML:SP;SPX", "SYML:NASDAQ;NDX")
+
+ONE_PERCENT_PREMARKET_GAINERS = ScreenerDefinition(
+    columns=[
+        "name",
+        "close",
+        "premarket_change",
+        "premarket_volume",
+        "volume",
+        "average_volume_10d_calc",
+        "market_cap_basic",
+        "price_earnings_ttm",
+        "exchange",
+    ],
+    filters=[
+        FilterCond(left="premarket_change", operation="greater", right=0.5),
+        FilterCond(left="premarket_volume", operation="greater", right=100_000),
+        FilterCond(left="close", operation="greater", right=20),
+        FilterCond(left="close", operation="less", right=800),
+        FilterCond(left="market_cap_basic", operation="greater", right=10_000_000_000),
+        FilterCond(left="average_volume_10d_calc", operation="greater", right=1_000_000),
+    ],
+    order_by="premarket_change",
+    ascending=False,
+    limit=40,
+    market="america",
+    indexes=list(ONE_PERCENT_INDEXES),
+)
+
+ONE_PERCENT_TOP_TRENDING = ScreenerDefinition(
+    columns=[
+        "name",
+        "close",
+        "change",
+        "volume",
+        "relative_volume_10d_calc",
+        "average_volume_10d_calc",
+        "market_cap_basic",
+        "Volatility.D",
+        "exchange",
+    ],
+    filters=[
+        FilterCond(left="change", operation="greater", right=0.4),
+        FilterCond(left="relative_volume_10d_calc", operation="greater", right=1.2),
+        FilterCond(left="volume", operation="greater", right=500_000),
+        FilterCond(left="close", operation="greater", right=20),
+        FilterCond(left="close", operation="less", right=800),
+        FilterCond(left="market_cap_basic", operation="greater", right=10_000_000_000),
+        FilterCond(left="average_volume_10d_calc", operation="greater", right=1_000_000),
+    ],
+    order_by="relative_volume_10d_calc",
+    ascending=False,
+    limit=40,
+    market="america",
+    indexes=list(ONE_PERCENT_INDEXES),
+)
+
+ONE_PERCENT_HOT_STOCKS = ScreenerDefinition(
+    columns=[
+        "name",
+        "close",
+        "change",
+        "volume",
+        "Perf.W",
+        "Perf.1M",
+        "average_volume_10d_calc",
+        "market_cap_basic",
+        "Recommend.All",
+        "exchange",
+    ],
+    filters=[
+        FilterCond(left="change", operation="greater", right=0.3),
+        FilterCond(left="Perf.W", operation="greater", right=1),
+        FilterCond(left="volume", operation="greater", right=500_000),
+        FilterCond(left="close", operation="greater", right=20),
+        FilterCond(left="close", operation="less", right=800),
+        FilterCond(left="market_cap_basic", operation="greater", right=10_000_000_000),
+        FilterCond(left="average_volume_10d_calc", operation="greater", right=1_000_000),
+    ],
+    order_by="Perf.W",
+    ascending=False,
+    limit=40,
+    market="america",
+    indexes=list(ONE_PERCENT_INDEXES),
+)
+
+ONE_PERCENT_TOP_TECH_30M = ScreenerDefinition(
+    columns=[
+        "name",
+        "close",
+        "change",
+        "volume",
+        "relative_volume_10d_calc",
+        "average_volume_10d_calc",
+        "market_cap_basic",
+        "sector",
+        "Perf.W",
+        "exchange",
+    ],
+    filters=[
+        FilterCond(left="change", operation="greater", right=0.3),
+        FilterCond(left="relative_volume_10d_calc", operation="greater", right=1.5),
+        FilterCond(left="volume", operation="greater", right=500_000),
+        FilterCond(left="close", operation="greater", right=20),
+        FilterCond(left="close", operation="less", right=800),
+        FilterCond(left="market_cap_basic", operation="greater", right=10_000_000_000),
+        FilterCond(left="average_volume_10d_calc", operation="greater", right=1_000_000),
+    ],
+    filter_group=FilterGroup(
+        operator="or",
+        conditions=[
+            FilterCond(left="sector", operation="equal", right="Technology Services"),
+            FilterCond(left="sector", operation="equal", right="Electronic Technology"),
+        ],
+    ),
+    order_by="relative_volume_10d_calc",
+    ascending=False,
+    limit=40,
+    market="america",
+    indexes=list(ONE_PERCENT_INDEXES),
+)
+
+# Back-compat aliases for older code / configs.
+ONE_PERCENT_PREMARKET_MOMENTUM = ONE_PERCENT_PREMARKET_GAINERS
+ONE_PERCENT_INTRADAY_REL_VOLUME = ONE_PERCENT_TOP_TRENDING
+ONE_PERCENT_BREAKOUT_CONTINUATION = ONE_PERCENT_HOT_STOCKS
+
+ONE_PERCENT_QUERY_PRESETS = {
+    "premarket_gainers": {
+        "name": "Pre-market gainers",
+        "description": "S&P/Nasdaq names with strong pre-market % move and volume",
+        "definition": ONE_PERCENT_PREMARKET_GAINERS,
+        "phase": "premarket",
+    },
+    "top_trending": {
+        "name": "Top trending",
+        "description": "Intraday relative-volume leaders on S&P/Nasdaq",
+        "definition": ONE_PERCENT_TOP_TRENDING,
+        "phase": "regular",
+    },
+    "hot_stocks": {
+        "name": "Hot stocks",
+        "description": "Breakout / weekly continuation heat on S&P/Nasdaq",
+        "definition": ONE_PERCENT_HOT_STOCKS,
+        "phase": "regular",
+    },
+    "top_tech_30m": {
+        "name": "Top techs (short-horizon)",
+        "description": "Technology Services names with elevated relative volume and change",
+        "definition": ONE_PERCENT_TOP_TECH_30M,
+        "phase": "regular",
+    },
+    # Legacy keys → same defs (normalize_config remaps; keep for in-flight sessions).
+    "premarket_momentum": {
+        "name": "Pre-market gainers",
+        "description": "S&P/Nasdaq names with strong pre-market % move and volume",
+        "definition": ONE_PERCENT_PREMARKET_GAINERS,
+        "phase": "premarket",
+    },
+    "intraday_rel_volume": {
+        "name": "Top trending",
+        "description": "Intraday relative-volume leaders on S&P/Nasdaq",
+        "definition": ONE_PERCENT_TOP_TRENDING,
+        "phase": "regular",
+    },
+    "breakout_continuation": {
+        "name": "Hot stocks",
+        "description": "Breakout / weekly continuation heat on S&P/Nasdaq",
+        "definition": ONE_PERCENT_HOT_STOCKS,
+        "phase": "regular",
+    },
+}
+
+ONE_PERCENT_PRESET_UI_KEYS = (
+    "premarket_gainers",
+    "top_trending",
+    "hot_stocks",
+    "top_tech_30m",
+)

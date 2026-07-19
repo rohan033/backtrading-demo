@@ -182,7 +182,7 @@ export default function AgentModeSessionWorkspace({
           <div className="am-ts-header__left">
             {onOpenSessions ? (
               <button type="button" className="am-ts-nav-btn" onClick={onOpenSessions}>
-                Sessions
+                AI trades
               </button>
             ) : null}
             {onCreateSession ? (

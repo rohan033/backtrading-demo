@@ -166,6 +166,94 @@ class EtoroTradingClient(EtoroClient, TickClient):
                 return portfolio
         return {}
 
+    async def aget_trade_history(
+        self,
+        *,
+        min_date: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Closed trades from trade/history (exact openRate/closeRate/netProfit).
+
+        Demo: GET /trading/info/trade/demo/history
+        Real: GET /trading/info/trade/history
+        """
+        from datetime import date, timedelta
+
+        if not min_date:
+            min_date = (date.today() - timedelta(days=2)).isoformat()
+
+        params = {"minDate": min_date, "page": int(page), "pageSize": int(page_size)}
+        # Real: /trading/info/trade/history
+        # Demo: /trading/info/trade/demo/history
+        if self.account_env == "demo":
+            paths = [
+                "/trading/info/trade/demo/history",
+                "/trading/info/demo/trade/history",
+            ]
+        else:
+            paths = [
+                "/trading/info/trade/history",
+                f"{self.info_base_path()}/trade/history",
+            ]
+        last_error: Exception | None = None
+        for path in paths:
+            try:
+                response = await self.arequest("GET", path, params=params)
+                if isinstance(response, list):
+                    return [row for row in response if isinstance(row, dict)]
+                if isinstance(response, dict):
+                    for key in ("trades", "history", "items", "data"):
+                        rows = response.get(key)
+                        if isinstance(rows, list):
+                            return [row for row in rows if isinstance(row, dict)]
+                return []
+            except Exception as exc:
+                last_error = exc
+                logger.debug("[eToro] trade/history %s failed: %s", path, exc)
+        if last_error is not None:
+            raise last_error
+        return []
+
+    async def afind_closed_trade(
+        self,
+        *,
+        position_id: str | int | None = None,
+        order_id: str | int | None = None,
+        min_date: str | None = None,
+        page_size: int = 50,
+        max_pages: int = 3,
+    ) -> dict[str, Any] | None:
+        """Find a closed trade row matching positionId and/or opening orderId."""
+        want_pid = str(position_id) if position_id not in (None, "") else None
+        want_oid = str(order_id) if order_id not in (None, "") else None
+        if not want_pid and not want_oid:
+            return None
+
+        for page in range(1, max_pages + 1):
+            rows = await self.aget_trade_history(
+                min_date=min_date,
+                page=page,
+                page_size=page_size,
+            )
+            if not rows:
+                break
+            for row in rows:
+                pid = str(
+                    row.get("positionId")
+                    or row.get("positionID")
+                    or row.get("PositionID")
+                    or ""
+                )
+                oid = str(row.get("orderId") or row.get("orderID") or row.get("OrderID") or "")
+                if want_pid and pid == want_pid:
+                    return row
+                if want_oid and oid == want_oid:
+                    return row
+            if len(rows) < page_size:
+                break
+        return None
+
     async def aget_available_cash(self) -> float:
         """Return USD cash available to open new positions.
 

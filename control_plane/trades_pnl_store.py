@@ -88,6 +88,18 @@ class TradesPnlStore:
                 ON trades_pnl(status);
             """
         )
+        # Optional linkage for 1% session attempts (older DBs may lack these columns).
+        existing = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(trades_pnl)").fetchall()
+        }
+        if "session_id" not in existing:
+            conn.execute("ALTER TABLE trades_pnl ADD COLUMN session_id TEXT")
+        if "attempt_id" not in existing:
+            conn.execute("ALTER TABLE trades_pnl ADD COLUMN attempt_id TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trades_pnl_session ON trades_pnl(session_id)"
+        )
         conn.commit()
         conn.close()
 
@@ -99,6 +111,8 @@ class TradesPnlStore:
             "execution_id": data.get("execution_id"),
             "order_id": data.get("order_id"),
             "position_id": data.get("position_id"),
+            "session_id": data.get("session_id"),
+            "attempt_id": data.get("attempt_id"),
             "source": data.get("source") or "momentum",
             "broker": data.get("broker") or "etoro",
             "account_env": data.get("account_env") or "demo",
@@ -140,6 +154,8 @@ class TradesPnlStore:
         entry_price: float | None = None,
         take_profit_price: float | None = None,
         stop_loss_price: float | None = None,
+        session_id: str | None = None,
+        attempt_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Insert a new open trade. Idempotent per execution_id (updates if seen)."""
         now = _now_utc()
@@ -163,9 +179,9 @@ class TradesPnlStore:
                     id, execution_id, order_id, position_id, source, broker, account_env,
                     symbol, tradingsymbol, symboltoken, exchange, side,
                     quantity, capital, entry_price, take_profit_price, stop_loss_price,
-                    status, opened_at, updated_at
+                    status, opened_at, updated_at, session_id, attempt_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)
                 """,
                 (
                     row_id,
@@ -187,6 +203,8 @@ class TradesPnlStore:
                     _num(stop_loss_price),
                     now,
                     now,
+                    _clean(session_id),
+                    _clean(attempt_id),
                 ),
             )
         else:
@@ -203,6 +221,8 @@ class TradesPnlStore:
                     entry_price = COALESCE(?, entry_price),
                     take_profit_price = COALESCE(?, take_profit_price),
                     stop_loss_price = COALESCE(?, stop_loss_price),
+                    session_id = COALESCE(?, session_id),
+                    attempt_id = COALESCE(?, attempt_id),
                     updated_at = ?
                 WHERE execution_id = ?
                 """,
@@ -216,6 +236,8 @@ class TradesPnlStore:
                     _num(entry_price),
                     _num(take_profit_price),
                     _num(stop_loss_price),
+                    _clean(session_id),
+                    _clean(attempt_id),
                     now,
                     exec_id,
                 ),

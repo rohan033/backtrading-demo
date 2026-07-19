@@ -35,7 +35,7 @@ export default function AgentModeThreadsDrawer({
       <aside
         className="am-drawer"
         onClick={event => event.stopPropagation()}
-        aria-label="Sessions"
+        aria-label="AI trades"
       >
         <AgentModeSessionList
           sessions={sessions}

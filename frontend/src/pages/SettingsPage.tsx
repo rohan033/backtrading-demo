@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
 import { Activity, Download, RefreshCw, Settings2 } from 'lucide-react'
 import './SettingsPage.css'
 
@@ -8,6 +8,8 @@ type MomentumTrade = {
   id: string
   execution_id: string | null
   order_id: string | null
+  session_id?: string | null
+  attempt_id?: string | null
   source: string
   broker: string
   account_env: string
@@ -24,6 +26,70 @@ type MomentumTrade = {
   close_reason: string | null
   opened_at: string
   closed_at: string | null
+}
+
+type LedgerRow =
+  | { kind: 'trade'; trade: MomentumTrade }
+  | {
+      kind: 'session'
+      sessionId: string
+      trades: MomentumTrade[]
+      pnl: number
+      accountEnv: string
+      broker: string
+      symbols: string[]
+    }
+
+function shortSessionId(sessionId: string): string {
+  const clean = sessionId.trim()
+  if (clean.length <= 12) return clean
+  return `${clean.slice(0, 8)}…${clean.slice(-4)}`
+}
+
+function formatPct(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+}
+
+function buildLedgerRows(trades: MomentumTrade[]): LedgerRow[] {
+  const rows: LedgerRow[] = []
+  const sessionBuckets = new Map<string, MomentumTrade[]>()
+  const sessionOrder: string[] = []
+
+  for (const trade of trades) {
+    if (trade.source === '1pc_session' && trade.session_id) {
+      const key = trade.session_id
+      if (!sessionBuckets.has(key)) {
+        sessionBuckets.set(key, [])
+        sessionOrder.push(key)
+      }
+      sessionBuckets.get(key)!.push(trade)
+      continue
+    }
+    rows.push({ kind: 'trade', trade })
+  }
+
+  for (const sessionId of sessionOrder) {
+    const sessionTrades = sessionBuckets.get(sessionId) || []
+    const symbols = Array.from(
+      new Set(
+        sessionTrades
+          .map(trade => trade.tradingsymbol || trade.symbol || '')
+          .filter(Boolean),
+      ),
+    )
+    rows.push({
+      kind: 'session',
+      sessionId,
+      trades: sessionTrades,
+      pnl: sessionTrades.reduce((total, trade) => total + (trade.pnl || 0), 0),
+      accountEnv: sessionTrades[0]?.account_env || 'demo',
+      broker: sessionTrades[0]?.broker || 'etoro',
+      symbols,
+    })
+  }
+
+  return rows
 }
 
 type MomentumSummary = {
@@ -69,6 +135,8 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
+
+  const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({})
 
   const loadTrades = useCallback(async (refresh = false) => {
     if (refresh) setRefreshing(true)
@@ -116,6 +184,12 @@ export default function SettingsPage() {
       : trades.filter(trade => trade.account_env.toLowerCase() === environmentFilter),
     [environmentFilter, trades],
   )
+
+  const ledgerRows = useMemo(() => buildLedgerRows(visibleTrades), [visibleTrades])
+
+  const toggleSession = useCallback((sessionId: string) => {
+    setExpandedSessions(prev => ({ ...prev, [sessionId]: !prev[sessionId] }))
+  }, [])
 
   const visibleSummary = useMemo(() => {
     const wins = visibleTrades.filter(trade => (trade.pnl || 0) > 0).length
@@ -253,28 +327,103 @@ export default function SettingsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleTrades.map(trade => (
-                    <tr key={trade.id}>
-                      <td>
-                        <strong className="st-symbol">{trade.tradingsymbol || trade.symbol || 'Unknown'}</strong>
-                      </td>
-                      <td>
-                        <span className={`st-source st-source--${trade.source === 'momentum-trade' ? 'momentum' : 'positions'}`}>
-                          {trade.source === 'momentum-trade' ? 'Momentum' : 'Positions page'}
-                        </span>
-                      </td>
-                      <td className="st-num">{formatMoney(trade.entry_price, trade.broker)}</td>
-                      <td className="st-num">{formatMoney(trade.exit_price, trade.broker)}</td>
-                      <td className={`st-num st-pnl ${trade.pnl != null && trade.pnl > 0 ? 'st-positive' : trade.pnl != null && trade.pnl < 0 ? 'st-negative' : ''}`}>
-                        <strong>{formatMoney(trade.pnl, trade.broker)}</strong>
-                      </td>
-                      <td className={`st-num st-pnl ${trade.pnl_pct != null && trade.pnl_pct > 0 ? 'st-positive' : trade.pnl_pct != null && trade.pnl_pct < 0 ? 'st-negative' : ''}`}>
-                        <strong>
-                          {trade.pnl_pct == null ? '—' : `${trade.pnl_pct >= 0 ? '+' : ''}${trade.pnl_pct.toFixed(2)}%`}
-                        </strong>
-                      </td>
-                    </tr>
-                  ))}
+                  {ledgerRows.map(row => {
+                    if (row.kind === 'trade') {
+                      const trade = row.trade
+                      return (
+                        <tr key={trade.id}>
+                          <td>
+                            <strong className="st-symbol">{trade.tradingsymbol || trade.symbol || 'Unknown'}</strong>
+                          </td>
+                          <td>
+                            <span className={`st-source st-source--${trade.source === 'momentum-trade' ? 'momentum' : 'positions'}`}>
+                              {trade.source === 'momentum-trade' ? 'Momentum' : 'Positions page'}
+                            </span>
+                          </td>
+                          <td className="st-num">{formatMoney(trade.entry_price, trade.broker)}</td>
+                          <td className="st-num">{formatMoney(trade.exit_price, trade.broker)}</td>
+                          <td className={`st-num st-pnl ${trade.pnl != null && trade.pnl > 0 ? 'st-positive' : trade.pnl != null && trade.pnl < 0 ? 'st-negative' : ''}`}>
+                            <strong>{formatMoney(trade.pnl, trade.broker)}</strong>
+                          </td>
+                          <td className={`st-num st-pnl ${trade.pnl_pct != null && trade.pnl_pct > 0 ? 'st-positive' : trade.pnl_pct != null && trade.pnl_pct < 0 ? 'st-negative' : ''}`}>
+                            <strong>{formatPct(trade.pnl_pct)}</strong>
+                          </td>
+                        </tr>
+                      )
+                    }
+
+                    const expanded = Boolean(expandedSessions[row.sessionId])
+                    const label = row.symbols.length
+                      ? row.symbols.slice(0, 3).join(', ') + (row.symbols.length > 3 ? ` +${row.symbols.length - 3}` : '')
+                      : '1% session'
+                    return (
+                      <Fragment key={`session-${row.sessionId}`}>
+                        <tr
+                          className={`st-session-row${expanded ? ' st-session-row--open' : ''}`}
+                        >
+                          <td>
+                            <button
+                              type="button"
+                              className="st-session-toggle"
+                              aria-expanded={expanded}
+                              onClick={() => toggleSession(row.sessionId)}
+                            >
+                              <span className="st-session-toggle__chevron" aria-hidden="true">
+                                {expanded ? '▾' : '▸'}
+                              </span>
+                              <span>
+                                <strong className="st-symbol">{label}</strong>
+                                <span className="st-session-toggle__meta">
+                                  {row.trades.length} trade{row.trades.length === 1 ? '' : 's'} · {row.accountEnv.toUpperCase()}
+                                </span>
+                              </span>
+                            </button>
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="st-source st-source--onepc st-source--session"
+                              title={row.sessionId}
+                              onClick={() => toggleSession(row.sessionId)}
+                            >
+                              1% · {shortSessionId(row.sessionId)}
+                            </button>
+                          </td>
+                          <td className="st-num">—</td>
+                          <td className="st-num">—</td>
+                          <td className={`st-num st-pnl ${row.pnl > 0 ? 'st-positive' : row.pnl < 0 ? 'st-negative' : ''}`}>
+                            <strong>{formatMoney(row.pnl, row.broker)}</strong>
+                          </td>
+                          <td className="st-num">—</td>
+                        </tr>
+                        {expanded
+                          ? row.trades.map(trade => (
+                              <tr key={trade.id} className="st-session-child">
+                                <td>
+                                  <strong className="st-symbol">{trade.tradingsymbol || trade.symbol || 'Unknown'}</strong>
+                                  {trade.attempt_id ? (
+                                    <span className="st-session-child__attempt">
+                                      attempt {shortSessionId(trade.attempt_id)}
+                                    </span>
+                                  ) : null}
+                                </td>
+                                <td>
+                                  <span className="st-source st-source--onepc">1% trade</span>
+                                </td>
+                                <td className="st-num">{formatMoney(trade.entry_price, trade.broker)}</td>
+                                <td className="st-num">{formatMoney(trade.exit_price, trade.broker)}</td>
+                                <td className={`st-num st-pnl ${trade.pnl != null && trade.pnl > 0 ? 'st-positive' : trade.pnl != null && trade.pnl < 0 ? 'st-negative' : ''}`}>
+                                  <strong>{formatMoney(trade.pnl, trade.broker)}</strong>
+                                </td>
+                                <td className={`st-num st-pnl ${trade.pnl_pct != null && trade.pnl_pct > 0 ? 'st-positive' : trade.pnl_pct != null && trade.pnl_pct < 0 ? 'st-negative' : ''}`}>
+                                  <strong>{formatPct(trade.pnl_pct)}</strong>
+                                </td>
+                              </tr>
+                            ))
+                          : null}
+                      </Fragment>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>

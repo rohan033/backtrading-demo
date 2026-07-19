@@ -453,6 +453,72 @@
   color: #79520f;
 }
 
+.st-source--onepc {
+  border-color: #8ab07a;
+  background: #eef8ea;
+  color: #2f6b28;
+}
+
+.st-source--session {
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.st-source--session:hover {
+  background: #e2f3db;
+}
+
+.st-session-row {
+  background: #f7fbf5;
+}
+
+.st-session-row:hover,
+.st-session-row--open {
+  background: #eef8ea;
+}
+
+.st-session-toggle {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.st-session-toggle__chevron {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: #2f6b28;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.st-session-toggle__meta,
+.st-session-child__attempt {
+  display: block;
+  margin-top: 3px;
+  color: #4a5568;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.st-session-child td:first-child {
+  padding-left: 36px;
+}
+
+.st-session-child {
+  background: #fbfcfb;
+}
+
 .st-cell-meta {
   margin-top: 3px;
   color: #4a5568;
