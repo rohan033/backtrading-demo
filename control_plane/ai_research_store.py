@@ -631,16 +631,34 @@ class AiResearchStore:
         conn.close()
         return payload
 
-    def list_agent_trade_logs(self, session_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    def list_agent_trade_logs(
+        self,
+        session_id: str,
+        *,
+        limit: int = 100,
+        start_at: str | None = None,
+        end_at: str | None = None,
+    ) -> list[dict[str, Any]]:
         conn = self._connect()
+        where = ["session_id = ?"]
+        params: list[Any] = [session_id]
+        start = str(start_at or "").strip()
+        end = str(end_at or "").strip()
+        if start:
+            where.append("created_at >= ?")
+            params.append(start)
+        if end:
+            where.append("created_at <= ?")
+            params.append(end)
+        params.append(max(1, min(int(limit), 500)))
         rows = conn.execute(
-            """
+            f"""
             SELECT * FROM agent_trade_logs
-            WHERE session_id = ?
+            WHERE {' AND '.join(where)}
             ORDER BY created_at DESC
             LIMIT ?
             """,
-            (session_id, max(1, min(int(limit), 500))),
+            tuple(params),
         ).fetchall()
         conn.close()
         result: list[dict[str, Any]] = []

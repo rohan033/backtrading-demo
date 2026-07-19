@@ -40,6 +40,8 @@ type LedgerRow =
       symbols: string[]
     }
 
+type DatePreset = 'all' | 'last_7d' | 'last_30d' | 'last_week' | 'last_month' | 'x_days' | 'custom'
+
 function shortSessionId(sessionId: string): string {
   const clean = sessionId.trim()
   if (clean.length <= 12) return clean
@@ -49,6 +51,61 @@ function shortSessionId(sessionId: string): string {
 function formatPct(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return '—'
   return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+}
+
+function formatDateTime(value: string | null): string {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleString([], { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function toDateInputValue(date: Date): string {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function startOfDay(dateLike: string): Date | null {
+  if (!dateLike) return null
+  const date = new Date(`${dateLike}T00:00:00`)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function endOfDay(dateLike: string): Date | null {
+  if (!dateLike) return null
+  const date = new Date(`${dateLike}T23:59:59.999`)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function tradeTimestamp(trade: MomentumTrade): number {
+  const raw = trade.closed_at || trade.opened_at
+  const ms = new Date(raw).getTime()
+  return Number.isNaN(ms) ? 0 : ms
+}
+
+function tradeProfitPct(trade: MomentumTrade): number | null {
+  if (trade.pnl_pct != null && Number.isFinite(trade.pnl_pct)) return trade.pnl_pct
+  const pnl = Number(trade.pnl)
+  const capital = Number(trade.capital)
+  if (!Number.isFinite(pnl) || !Number.isFinite(capital) || capital <= 0) return null
+  return (pnl / capital) * 100
+}
+
+function formatMoney(value: number | null, broker = 'etoro') {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: broker.toLowerCase() === 'angel' ? 'INR' : 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value)
+}
+
+function pnlTone(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value) || value === 0) return ''
+  return value > 0 ? 'set-pos' : 'set-neg'
 }
 
 function buildLedgerRows(trades: MomentumTrade[]): LedgerRow[] {
@@ -118,14 +175,47 @@ const EMPTY_SUMMARY: MomentumSummary = {
   win_rate: null,
 }
 
-function formatMoney(value: number | null, broker = 'etoro') {
-  if (value == null || !Number.isFinite(value)) return '—'
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: broker.toLowerCase() === 'angel' ? 'INR' : 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value)
+function NestedTradeTable({ trades }: { trades: MomentumTrade[] }) {
+  return (
+    <div className="set-nested">
+      <table className="set-nested-table">
+        <thead>
+          <tr>
+            <th>Ticker</th>
+            <th className="set-num">Buy</th>
+            <th className="set-num">Sell</th>
+            <th className="set-num">Profit</th>
+            <th className="set-num">Profit %</th>
+            <th>Opened</th>
+            <th>Closed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {trades.map(trade => {
+            const pct = tradeProfitPct(trade)
+            return (
+              <tr key={trade.id}>
+                <td>
+                  <strong className="set-sym">{trade.tradingsymbol || trade.symbol || '—'}</strong>
+                  {trade.attempt_id ? (
+                    <span className="set-meta">attempt {shortSessionId(trade.attempt_id)}</span>
+                  ) : null}
+                </td>
+                <td className="set-num">{formatMoney(trade.entry_price, trade.broker)}</td>
+                <td className="set-num">{formatMoney(trade.exit_price, trade.broker)}</td>
+                <td className={`set-num ${pnlTone(trade.pnl)}`}>
+                  {formatMoney(trade.pnl, trade.broker)}
+                </td>
+                <td className={`set-num ${pnlTone(pct)}`}>{formatPct(pct)}</td>
+                <td>{formatDateTime(trade.opened_at)}</td>
+                <td>{formatDateTime(trade.closed_at)}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 export default function SettingsPage() {
@@ -135,8 +225,12 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
-
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({})
+  const [expandedTrades, setExpandedTrades] = useState<Record<string, boolean>>({})
+  const [datePreset, setDatePreset] = useState<DatePreset>('last_30d')
+  const [xDays, setXDays] = useState('14')
+  const [fromDate, setFromDate] = useState('')
+  const [toDate, setToDate] = useState(() => toDateInputValue(new Date()))
 
   const loadTrades = useCallback(async (refresh = false) => {
     if (refresh) setRefreshing(true)
@@ -178,27 +272,53 @@ export default function SettingsPage() {
     void loadTrades()
   }, [loadTrades])
 
-  const visibleTrades = useMemo(
-    () => environmentFilter === 'all'
-      ? trades
-      : trades.filter(trade => trade.account_env.toLowerCase() === environmentFilter),
-    [environmentFilter, trades],
-  )
+  const visibleTrades = useMemo(() => {
+    const now = new Date()
+    let rangeStart: Date | null = null
+    let rangeEnd: Date | null = null
+    if (datePreset === 'last_7d' || datePreset === 'last_week') {
+      rangeEnd = now
+      rangeStart = new Date(now.getTime() - 7 * 86400_000)
+    } else if (datePreset === 'last_30d') {
+      rangeEnd = now
+      rangeStart = new Date(now.getTime() - 30 * 86400_000)
+    } else if (datePreset === 'last_month') {
+      const firstCurrent = new Date(now.getFullYear(), now.getMonth(), 1)
+      rangeEnd = new Date(firstCurrent.getTime() - 1)
+      rangeStart = new Date(firstCurrent.getFullYear(), firstCurrent.getMonth() - 1, 1)
+    } else if (datePreset === 'x_days') {
+      const days = Math.max(1, Math.min(3650, Number(xDays) || 1))
+      rangeEnd = now
+      rangeStart = new Date(now.getTime() - days * 86400_000)
+    } else if (datePreset === 'custom') {
+      rangeStart = startOfDay(fromDate)
+      rangeEnd = endOfDay(toDate)
+    }
+
+    return trades.filter(trade => {
+      if (environmentFilter !== 'all' && trade.account_env.toLowerCase() !== environmentFilter) return false
+      if (!rangeStart && !rangeEnd) return true
+      const stamp = tradeTimestamp(trade)
+      if (!stamp) return false
+      if (rangeStart && stamp < rangeStart.getTime()) return false
+      if (rangeEnd && stamp > rangeEnd.getTime()) return false
+      return true
+    })
+  }, [datePreset, environmentFilter, fromDate, toDate, trades, xDays])
 
   const ledgerRows = useMemo(() => buildLedgerRows(visibleTrades), [visibleTrades])
-
-  const toggleSession = useCallback((sessionId: string) => {
-    setExpandedSessions(prev => ({ ...prev, [sessionId]: !prev[sessionId] }))
-  }, [])
 
   const visibleSummary = useMemo(() => {
     const wins = visibleTrades.filter(trade => (trade.pnl || 0) > 0).length
     const losses = visibleTrades.filter(trade => (trade.pnl || 0) < 0).length
+    const realizedPnl = visibleTrades.reduce((total, trade) => total + (trade.pnl || 0), 0)
+    const usedCapital = visibleTrades.reduce((total, trade) => total + Math.max(0, trade.capital || 0), 0)
     return {
       ...summary,
       total_trades: visibleTrades.length,
       closed_trades: visibleTrades.length,
-      realized_pnl: visibleTrades.reduce((total, trade) => total + (trade.pnl || 0), 0),
+      realized_pnl: realizedPnl,
+      realized_pct: usedCapital > 0 ? (realizedPnl / usedCapital) * 100 : null,
       wins,
       losses,
       win_rate: visibleTrades.length ? wins / visibleTrades.length : null,
@@ -230,28 +350,103 @@ export default function SettingsPage() {
       </aside>
 
       <section className="set-content" aria-labelledby="order-activity-title">
-        <header className="set-content__header">
-          <div>
-            <div className="set-eyebrow">Momentum strategy</div>
+        <div className="set-toolbar">
+          <div className="set-toolbar__title">
+            <span className="set-eyebrow">Momentum</span>
             <h2 id="order-activity-title">Order activity</h2>
-            <p>P&amp;L and execution history for trades opened by Momentum.</p>
           </div>
-          <div className="set-header-actions">
-            <button
-              type="button"
-              className="set-button"
-              onClick={() => void loadTrades(true)}
-              disabled={refreshing}
-            >
-              <RefreshCw className={refreshing ? 'set-spin' : ''} aria-hidden="true" />
-              {refreshing ? 'Refreshing' : 'Refresh'}
-            </button>
-            <a className="set-button set-button--primary" href={downloadUrl}>
-              <Download aria-hidden="true" />
-              Export CSV
-            </a>
+          <div className="set-toolbar__spacer" />
+          <div className="set-env" role="group" aria-label="Account environment">
+            {(['all', 'live', 'demo'] as const).map(environment => (
+              <button
+                type="button"
+                key={environment}
+                className={environmentFilter === environment ? 'set-env__active' : ''}
+                aria-pressed={environmentFilter === environment}
+                onClick={() => setEnvironmentFilter(environment)}
+              >
+                {environment[0].toUpperCase() + environment.slice(1)}
+              </button>
+            ))}
           </div>
-        </header>
+          <label className="set-date">
+            <span>Date</span>
+            <select value={datePreset} onChange={event => setDatePreset(event.target.value as DatePreset)}>
+              <option value="all">All</option>
+              <option value="last_7d">7d</option>
+              <option value="last_30d">30d</option>
+              <option value="last_week">Week</option>
+              <option value="last_month">Month</option>
+              <option value="x_days">X days</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          {datePreset === 'x_days' ? (
+            <label className="set-date">
+              <span>X</span>
+              <input
+                type="number"
+                min={1}
+                max={3650}
+                value={xDays}
+                onChange={event => setXDays(event.target.value)}
+              />
+            </label>
+          ) : null}
+          {datePreset === 'custom' ? (
+            <>
+              <label className="set-date">
+                <span>From</span>
+                <input type="date" value={fromDate} onChange={event => setFromDate(event.target.value)} />
+              </label>
+              <label className="set-date">
+                <span>To</span>
+                <input type="date" value={toDate} onChange={event => setToDate(event.target.value)} />
+              </label>
+            </>
+          ) : null}
+          <button
+            type="button"
+            className="set-btn"
+            onClick={() => void loadTrades(true)}
+            disabled={refreshing}
+          >
+            <RefreshCw className={refreshing ? 'set-spin' : ''} aria-hidden="true" />
+            {refreshing ? 'Refreshing' : 'Refresh'}
+          </button>
+          <a className="set-btn set-btn--primary" href={downloadUrl}>
+            <Download aria-hidden="true" />
+            CSV
+          </a>
+        </div>
+
+        <div className="set-summary" aria-label="Order activity summary">
+          <div className="set-summary__label">
+            <span className="set-eyebrow">Order activity</span>
+            <strong>Summary</strong>
+          </div>
+          <div className="set-summary__pills">
+            <span className={`set-stat-pill set-stat-pill--pnl ${pnlTone(visibleSummary.realized_pnl)}`.trim()}>
+              <em>PnL (Amount)</em>
+              <strong>{formatMoney(visibleSummary.realized_pnl)}</strong>
+            </span>
+            <span className={`set-stat-pill set-stat-pill--pnl ${pnlTone(visibleSummary.realized_pct)}`.trim()}>
+              <em>PnL (Percent)</em>
+              <strong>{formatPct(visibleSummary.realized_pct)}</strong>
+            </span>
+            <span className="set-stat-pill">
+              <em>Trades</em>
+              <strong>{visibleSummary.closed_trades}</strong>
+            </span>
+            <span className="set-stat-pill set-stat-pill--wide">
+              <em>Win rate</em>
+              <strong>
+                {visibleSummary.win_rate == null ? '—' : `${(visibleSummary.win_rate * 100).toFixed(1)}%`}
+                <i>{visibleSummary.wins}W / {visibleSummary.losses}L</i>
+              </strong>
+            </span>
+          </div>
+        </div>
 
         {error ? (
           <div className="set-error" role="alert">
@@ -263,175 +458,124 @@ export default function SettingsPage() {
           </div>
         ) : null}
 
-        <div className="set-metrics" aria-label="Momentum trade summary">
-          <article className="set-metric set-metric--pnl">
-            <span>Realized P&amp;L</span>
-            <strong className={visibleSummary.realized_pnl > 0 ? 'set-positive' : visibleSummary.realized_pnl < 0 ? 'set-negative' : ''}>
-              {formatMoney(visibleSummary.realized_pnl)}
-            </strong>
-            <small>Across {visibleSummary.closed_trades} closed trade{visibleSummary.closed_trades === 1 ? '' : 's'}</small>
-          </article>
-          <article className="set-metric">
-            <span>Finalized trades</span>
-            <strong>{visibleSummary.closed_trades}</strong>
-            <small>Momentum and Positions UI</small>
-          </article>
-          <article className="set-metric">
-            <span>Win rate</span>
-            <strong>{visibleSummary.win_rate == null ? '—' : `${(visibleSummary.win_rate * 100).toFixed(1)}%`}</strong>
-            <small>{visibleSummary.wins} wins · {visibleSummary.losses} losses</small>
-          </article>
-          <article className="set-metric">
-            <span>Outcomes</span>
-            <strong>{visibleSummary.wins} / {visibleSummary.losses}</strong>
-            <small>Profitable / losing</small>
-          </article>
-        </div>
-
-        <div className="set-ledger">
-          <div className="set-ledger__toolbar">
-            <div>
-              <h3>Trade ledger</h3>
-              <span>{visibleTrades.length} finalized record{visibleTrades.length === 1 ? '' : 's'}</span>
-            </div>
-            <div className="set-filter" role="group" aria-label="Filter trades by account environment">
-              {(['all', 'live', 'demo'] as const).map(environment => (
-                <button
-                  type="button"
-                  key={environment}
-                  className={environmentFilter === environment ? 'set-filter__active' : ''}
-                  aria-pressed={environmentFilter === environment}
-                  onClick={() => setEnvironmentFilter(environment)}
-                >
-                  {environment[0].toUpperCase() + environment.slice(1)}
-                </button>
-              ))}
-            </div>
-          </div>
-
+        <div className="set-body">
           {loading ? (
-            <div className="set-loading" aria-busy="true" aria-label="Loading order activity">
-              {Array.from({ length: 4 }).map((_, index) => <span key={index} />)}
-            </div>
-          ) : visibleTrades.length ? (
-            <div className="set-table-wrap">
-              <table className="set-table">
-                <thead>
-                  <tr>
-                    <th>Ticker name</th>
-                    <th>Source</th>
-                    <th className="set-num">Buy</th>
-                    <th className="set-num">Sell</th>
-                    <th className="set-num">Profit amount</th>
-                    <th className="set-num">Profit percent</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ledgerRows.map(row => {
-                    if (row.kind === 'trade') {
-                      const trade = row.trade
-                      return (
-                        <tr key={trade.id}>
-                          <td>
-                            <strong className="set-symbol">{trade.tradingsymbol || trade.symbol || 'Unknown'}</strong>
-                          </td>
-                          <td>
-                            <span className={`set-source set-source--${trade.source === 'momentum-trade' ? 'momentum' : 'positions'}`}>
-                              {trade.source === 'momentum-trade' ? 'Momentum' : 'Positions page'}
-                            </span>
-                          </td>
-                          <td className="set-num">{formatMoney(trade.entry_price, trade.broker)}</td>
-                          <td className="set-num">{formatMoney(trade.exit_price, trade.broker)}</td>
-                          <td className={`set-num set-pnl ${trade.pnl != null && trade.pnl > 0 ? 'set-positive' : trade.pnl != null && trade.pnl < 0 ? 'set-negative' : ''}`}>
-                            <strong>{formatMoney(trade.pnl, trade.broker)}</strong>
-                          </td>
-                          <td className={`set-num set-pnl ${trade.pnl_pct != null && trade.pnl_pct > 0 ? 'set-positive' : trade.pnl_pct != null && trade.pnl_pct < 0 ? 'set-negative' : ''}`}>
-                            <strong>{formatPct(trade.pnl_pct)}</strong>
-                          </td>
-                        </tr>
-                      )
-                    }
-
-                    const expanded = Boolean(expandedSessions[row.sessionId])
-                    const label = row.symbols.length
-                      ? row.symbols.slice(0, 3).join(', ') + (row.symbols.length > 3 ? ` +${row.symbols.length - 3}` : '')
-                      : '1% session'
-                    return (
-                      <Fragment key={`session-${row.sessionId}`}>
-                        <tr
-                          className={`set-session-row${expanded ? ' set-session-row--open' : ''}`}
-                        >
-                          <td>
-                            <button
-                              type="button"
-                              className="set-session-toggle"
-                              aria-expanded={expanded}
-                              onClick={() => toggleSession(row.sessionId)}
-                            >
-                              <span className="set-session-toggle__chevron" aria-hidden="true">
-                                {expanded ? '▾' : '▸'}
-                              </span>
-                              <span>
-                                <strong className="set-symbol">{label}</strong>
-                                <span className="set-session-toggle__meta">
-                                  {row.trades.length} trade{row.trades.length === 1 ? '' : 's'} · {row.accountEnv.toUpperCase()}
-                                </span>
-                              </span>
-                            </button>
-                          </td>
-                          <td>
-                            <button
-                              type="button"
-                              className="set-source set-source--onepc set-source--session"
-                              title={row.sessionId}
-                              onClick={() => toggleSession(row.sessionId)}
-                            >
-                              1% · {shortSessionId(row.sessionId)}
-                            </button>
-                          </td>
-                          <td className="set-num">—</td>
-                          <td className="set-num">—</td>
-                          <td className={`set-num set-pnl ${row.pnl > 0 ? 'set-positive' : row.pnl < 0 ? 'set-negative' : ''}`}>
-                            <strong>{formatMoney(row.pnl, row.broker)}</strong>
-                          </td>
-                          <td className="set-num">—</td>
-                        </tr>
-                        {expanded
-                          ? row.trades.map(trade => (
-                              <tr key={trade.id} className="set-session-child">
-                                <td>
-                                  <strong className="set-symbol">{trade.tradingsymbol || trade.symbol || 'Unknown'}</strong>
-                                  {trade.attempt_id ? (
-                                    <span className="set-session-child__attempt">
-                                      attempt {shortSessionId(trade.attempt_id)}
-                                    </span>
-                                  ) : null}
-                                </td>
-                                <td>
-                                  <span className="set-source set-source--onepc">1% trade</span>
-                                </td>
-                                <td className="set-num">{formatMoney(trade.entry_price, trade.broker)}</td>
-                                <td className="set-num">{formatMoney(trade.exit_price, trade.broker)}</td>
-                                <td className={`set-num set-pnl ${trade.pnl != null && trade.pnl > 0 ? 'set-positive' : trade.pnl != null && trade.pnl < 0 ? 'set-negative' : ''}`}>
-                                  <strong>{formatMoney(trade.pnl, trade.broker)}</strong>
-                                </td>
-                                <td className={`set-num set-pnl ${trade.pnl_pct != null && trade.pnl_pct > 0 ? 'set-positive' : trade.pnl_pct != null && trade.pnl_pct < 0 ? 'set-negative' : ''}`}>
-                                  <strong>{formatPct(trade.pnl_pct)}</strong>
-                                </td>
-                              </tr>
-                            ))
-                          : null}
-                      </Fragment>
-                    )
-                  })}
-                </tbody>
-              </table>
+            <div className="set-empty">Loading order activity…</div>
+          ) : !visibleTrades.length ? (
+            <div className="set-empty">
+              <strong>No finalized {environmentFilter === 'all' ? '' : `${environmentFilter} `}trades</strong>
+              <p>Completed Momentum and Positions closes will appear here.</p>
             </div>
           ) : (
-            <div className="set-empty">
-              <span className="set-empty__icon"><Activity aria-hidden="true" /></span>
-              <strong>No finalized {environmentFilter === 'all' ? '' : `${environmentFilter} `}trades yet</strong>
-              <p>Completed Momentum trades and closes from the Positions page will appear here.</p>
+            <div className="set-table-scroll">
+              <div className="set-table-card">
+                <table className="set-table">
+                  <thead>
+                    <tr className="set-thead-row">
+                      <th className="set-th set-th--chevron" />
+                      <th className="set-th">Ticker</th>
+                      <th className="set-th">Source</th>
+                      <th className="set-th set-th--num">Profit</th>
+                      <th className="set-th set-th--num">Profit %</th>
+                      <th className="set-th">Opened</th>
+                      <th className="set-th">Closed</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ledgerRows.map(row => {
+                      if (row.kind === 'trade') {
+                        const trade = row.trade
+                        const pct = tradeProfitPct(trade)
+                        const expanded = Boolean(expandedTrades[trade.id])
+                        return (
+                          <Fragment key={trade.id}>
+                            <tr
+                              className={`set-table-row${expanded ? ' set-table-row--open' : ''}`}
+                              onClick={() => setExpandedTrades(prev => ({ ...prev, [trade.id]: !prev[trade.id] }))}
+                            >
+                              <td className="set-td set-td--chevron">
+                                <span className="set-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+                              </td>
+                              <td className="set-td">
+                                <strong className="set-sym">{trade.tradingsymbol || trade.symbol || '—'}</strong>
+                              </td>
+                              <td className="set-td">
+                                <span className={`set-pill set-pill--${trade.source === 'momentum-trade' ? 'momentum' : 'positions'}`}>
+                                  {trade.source === 'momentum-trade' ? 'Momentum' : 'Positions'}
+                                </span>
+                              </td>
+                              <td className={`set-td set-td--num ${pnlTone(trade.pnl)}`}>
+                                {formatMoney(trade.pnl, trade.broker)}
+                              </td>
+                              <td className={`set-td set-td--num ${pnlTone(pct)}`}>
+                                {formatPct(pct)}
+                              </td>
+                              <td className="set-td">{formatDateTime(trade.opened_at)}</td>
+                              <td className="set-td">{formatDateTime(trade.closed_at)}</td>
+                            </tr>
+                            {expanded ? (
+                              <tr className="set-nested-row">
+                                <td colSpan={7}>
+                                  <NestedTradeTable trades={[trade]} />
+                                </td>
+                              </tr>
+                            ) : null}
+                          </Fragment>
+                        )
+                      }
+
+                      const expanded = Boolean(expandedSessions[row.sessionId])
+                      const label = row.symbols.length
+                        ? row.symbols.slice(0, 3).join(', ') + (row.symbols.length > 3 ? ` +${row.symbols.length - 3}` : '')
+                        : '1% session'
+                      const sessionCapital = row.trades.reduce((total, trade) => total + Math.max(0, trade.capital || 0), 0)
+                      const sessionPct = sessionCapital > 0 ? (row.pnl / sessionCapital) * 100 : null
+                      return (
+                        <Fragment key={`session-${row.sessionId}`}>
+                          <tr
+                            className={`set-table-row set-table-row--session${expanded ? ' set-table-row--open' : ''}`}
+                            onClick={() => setExpandedSessions(prev => ({ ...prev, [row.sessionId]: !prev[row.sessionId] }))}
+                          >
+                            <td className="set-td set-td--chevron">
+                              <span className="set-chevron" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+                            </td>
+                            <td className="set-td">
+                              <strong className="set-sym">{label}</strong>
+                              <span className="set-meta">
+                                {row.trades.length} trade{row.trades.length === 1 ? '' : 's'} · {row.accountEnv.toUpperCase()}
+                              </span>
+                            </td>
+                            <td className="set-td">
+                              <span className="set-pill set-pill--onepc" title={row.sessionId}>
+                                1% · {shortSessionId(row.sessionId)}
+                              </span>
+                            </td>
+                            <td className={`set-td set-td--num ${pnlTone(row.pnl)}`}>
+                              {formatMoney(row.pnl, row.broker)}
+                            </td>
+                            <td className={`set-td set-td--num ${pnlTone(sessionPct)}`}>
+                              {formatPct(sessionPct)}
+                            </td>
+                            <td className="set-td">
+                              {formatDateTime(row.trades[row.trades.length - 1]?.opened_at ?? null)}
+                            </td>
+                            <td className="set-td">
+                              {formatDateTime(row.trades[0]?.closed_at ?? null)}
+                            </td>
+                          </tr>
+                          {expanded ? (
+                            <tr className="set-nested-row">
+                              <td colSpan={7}>
+                                <NestedTradeTable trades={row.trades} />
+                              </td>
+                            </tr>
+                          ) : null}
+                        </Fragment>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>

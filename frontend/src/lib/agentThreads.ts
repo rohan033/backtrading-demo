@@ -218,8 +218,20 @@ export async function updateAgentThread(
   return parseJson(res)
 }
 
-export async function listAgentTradeLogs(threadId: string): Promise<AgentTradeLog[]> {
-  const res = await fetch(`${API}/threads/${encodeURIComponent(threadId)}/pnl`)
+export async function listAgentTradeLogs(
+  threadId: string,
+  options: {
+    limit?: number
+    startDate?: string
+    endDate?: string
+  } = {},
+): Promise<AgentTradeLog[]> {
+  const params = new URLSearchParams()
+  params.set('limit', String(options.limit ?? 500))
+  if (options.startDate) params.set('start_date', options.startDate)
+  if (options.endDate) params.set('end_date', options.endDate)
+  const qs = params.toString()
+  const res = await fetch(`${API}/threads/${encodeURIComponent(threadId)}/pnl?${qs}`)
   return parseJson(res)
 }
 

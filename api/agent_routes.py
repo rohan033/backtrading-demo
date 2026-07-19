@@ -117,8 +117,18 @@ def list_agent_thread_messages(thread_id: str, limit: int = 50, before: Optional
     operation_id="list_agent_thread_pnl",
     summary="List logged trade PnL rows for an agent thread",
 )
-def list_agent_thread_pnl(thread_id: str, limit: int = 100):
+def list_agent_thread_pnl(
+    thread_id: str,
+    limit: int = 100,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
     store = get_ai_research_store()
     _require_agent_thread(store, thread_id)
-    rows = store.list_agent_trade_logs(thread_id, limit=limit)
+    rows = store.list_agent_trade_logs(
+        thread_id,
+        limit=limit,
+        start_at=start_date,
+        end_at=end_date,
+    )
     return {"status": True, "data": rows}
