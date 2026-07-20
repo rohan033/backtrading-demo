@@ -18,27 +18,37 @@ export default function StrategyScheduleSection({
       <section
         className={`ms-schedule-section${scheduleEnabled ? ' ms-schedule-section--on' : ''}`}
       >
-        <div className="ms-schedule-section__row">
-          <div className="ms-schedule-section__copy">
-            <span className="ms-schedule-section__title">Schedule</span>
-            <span className="ms-schedule-section__hint">
-              {scheduleEnabled
-                ? `Auto-start at market open (${marketOpenLabel})`
-                : `Optional · save as draft and deploy manually`}
-            </span>
-          </div>
-          <label className="ms-schedule-section__toggle">
-            <input
-              type="checkbox"
-              checked={scheduleEnabled}
-              onChange={e => onScheduleEnabledChange(e.target.checked)}
-            />
-            <span>Scheduled</span>
-          </label>
-        </div>
+        <label className="ms-schedule-section__check">
+          <span
+            className={`ms-schedule-section__box${scheduleEnabled ? ' ms-schedule-section__box--on' : ''}`}
+            aria-hidden="true"
+          >
+            {scheduleEnabled ? (
+              <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
+                <path
+                  d="M2 5.5L4.5 8L9 3"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            ) : null}
+          </span>
+          <input
+            type="checkbox"
+            className="ms-schedule-section__input"
+            checked={scheduleEnabled}
+            onChange={e => onScheduleEnabledChange(e.target.checked)}
+          />
+          <span className="ms-schedule-section__label-text">Schedule for Later</span>
+        </label>
 
         {scheduleEnabled ? (
           <div className="ms-schedule-section__body">
+            <p className="ms-schedule-section__hint">
+              Auto-start at market open ({marketOpenLabel})
+            </p>
             <div>
               <div className="ms-schedule-section__label-row">
                 <span className="ms-schedule-section__label">Trading day</span>
@@ -96,7 +106,7 @@ export default function StrategyScheduleSection({
             checked={scheduleEnabled}
             onChange={e => onScheduleEnabledChange(e.target.checked)}
           />
-          Scheduled
+          Schedule for Later
         </label>
       </div>
 

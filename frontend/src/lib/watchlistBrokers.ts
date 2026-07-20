@@ -112,9 +112,10 @@ export async function searchWatchlistSymbol(
 }
 
 /**
- * Picks the best broker hit for a free-text ticker. Prefers an exact
- * trading-symbol match, then the symbol whose root (before the `-EQ` style
- * suffix) matches, and otherwise falls back to the first result.
+ * Picks the best broker hit for a free-text ticker or numeric instrument ID.
+ * Prefers an exact trading-symbol match, then instrument-token / ID match,
+ * then the symbol whose root (before the `-EQ` style suffix) matches, and
+ * otherwise falls back to the first result.
  */
 export function pickWatchlistSymbolMatch(
   results: WatchlistSymbolHit[],
@@ -125,6 +126,8 @@ export function pickWatchlistSymbolMatch(
   if (!target) return null
   const exact = results.find(r => r.tradingsymbol.toUpperCase() === target)
   if (exact) return exact
+  const byToken = results.find(r => String(r.symboltoken).toUpperCase() === target)
+  if (byToken) return byToken
   const root = results.find(r => r.tradingsymbol.toUpperCase().split('-')[0] === target)
   if (root) return root
   return results[0]

@@ -1227,6 +1227,8 @@
 }
 
 .ms-schedule-section {
+  width: fit-content;
+  max-width: 100%;
   padding: 6px 8px;
   border: 1px solid var(--ms-border, #303030);
   border-radius: 6px;
@@ -1235,55 +1237,60 @@
 }
 
 .ms-schedule-section--on {
+  width: 100%;
   background: #f3f8ff;
-  border-color: #4a90d9;
+  border-color: #16a34a;
 }
 
-.ms-schedule-section__row {
-  display: flex;
+.ms-schedule-section__check {
+  position: relative;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
   gap: 8px;
+  cursor: pointer;
+  user-select: none;
 }
 
-.ms-schedule-section__copy {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-  flex-wrap: wrap;
+.ms-schedule-section__input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  pointer-events: none;
 }
 
-.ms-schedule-section__title {
+.ms-schedule-section__box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border: 1.5px solid #999;
+  border-radius: 4px;
+  background: #fff;
+  color: #fff;
+}
+
+.ms-schedule-section__box--on {
+  border-color: #16a34a;
+  background: #16a34a;
+  color: #fff;
+}
+
+.ms-schedule-section__label-text {
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   color: var(--ms-text, #202020);
   white-space: nowrap;
 }
 
 .ms-schedule-section__hint {
+  margin: 0 0 6px;
   font-size: 10px;
   line-height: 1.3;
   color: #4a5568;
-}
-
-.ms-schedule-section__toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 0;
-  padding: 2px 8px;
-  border: 1px solid var(--ms-border, #303030);
-  border-radius: 999px;
-  background: #fff;
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--ms-text, #202020);
-  cursor: pointer;
-}
-
-.ms-schedule-section__toggle input {
-  margin: 0;
 }
 
 .ms-schedule-section__body {

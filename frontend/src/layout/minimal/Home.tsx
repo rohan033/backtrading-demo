@@ -1377,7 +1377,7 @@ export default function Home() {
             type="search"
             className="hm-search-input"
             value={query}
-            placeholder="Search stock ticker or name"
+            placeholder={broker === 'etoro' ? 'Search symbol or instrument ID…' : 'Search stock ticker or name'}
             onChange={event => setQuery(event.target.value)}
             onKeyDown={event => {
               if (event.key === 'Enter') void tryQuickSelect()
@@ -1394,7 +1394,10 @@ export default function Home() {
                 >
                   <div className="hm-search-hit__sym">{hit.tradingsymbol}</div>
                   <div className="hm-search-hit__meta">
-                    {hit.exchange} · {hit.instrumentDisplayName || hit.name || hit.tradingsymbol}
+                    {hit.exchange}
+                    {broker === 'etoro' ? ` · ID ${hit.symboltoken}` : ''}
+                    {' · '}
+                    {hit.instrumentDisplayName || hit.name || hit.tradingsymbol}
                   </div>
                 </button>
               ))}

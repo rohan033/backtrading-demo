@@ -33,6 +33,7 @@ import {
 } from './lib/watchlistFeedReuse'
 import { buildLocalTradingDayOptions, loadTradingDayOptions } from './lib/tradingSchedule'
 import { EXECUTION_SOURCE_USER } from './lib/executionSources'
+import { lookupEtoroInstrumentById } from './lib/watchlistBrokers'
 
 const CONTROL_API = '/api/control'
 const CONTROL_MARKET_WS = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws/control/market`
@@ -2619,10 +2620,11 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
   }, [ltp, closePriceManual, selectedStock])
 
   const search = async () => {
-    if (!query.trim()) return
+    const q = query.trim()
+    if (!q) return
     setError('')
     const params = new URLSearchParams({
-      q: query.trim(),
+      q,
       broker: form.broker,
       account_env: form.account_env,
       exchange: form.broker === 'etoro' ? 'ETORO' : 'NSE',
@@ -2634,24 +2636,45 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
       const res = await fetch(url)
       const data = await res.json().catch(() => null)
       console.info('[CreateExecution] Search response', { ok: res.ok, status: res.status, data })
-      if (!res.ok || !data?.status) {
-        const message = data?.message || data?.detail || `Search failed with HTTP ${res.status}`
-        setError(message)
-        setResults([])
-        return
+
+      // Match watchlist/Home: text search often returns status:false for bare
+      // numeric instrument IDs — treat that as empty hits and fall through to
+      // the display-by-ID lookup instead of surfacing the API error.
+      let hits = (res.ok && data?.status) ? (data.data || []) : []
+      const textSearchFailed = !res.ok || !data?.status
+
+      if (
+        form.broker === 'etoro'
+        && !form.use_fake_client
+        && /^\d+$/.test(q)
+        && !hits.some(hit => String(hit.symboltoken) === q)
+      ) {
+        const byId = await lookupEtoroInstrumentById(q, form.account_env)
+        if (byId) hits = [byId, ...hits]
       }
-      setResults(data.data || [])
-      if (!(data.data || []).length) {
+
+      if (!hits.length) {
+        if (textSearchFailed && form.broker !== 'etoro') {
+          setError(data?.message || data?.detail || `Search failed with HTTP ${res.status}`)
+          setResults([])
+          return
+        }
         let hint = ''
         if (form.use_fake_client) {
           hint = ' Fake client only includes a small mock symbol list (e.g. BTC, ETH, AAPL, TSLA, INFY-EQ).'
         } else if (form.broker === 'etoro') {
-          hint = ' Check eToro credentials and that the selected environment (Demo/Live) is configured.'
-        } else if (/btc|eth|crypto|usd|eur/i.test(query.trim()) && form.broker === 'angel') {
+          hint = textSearchFailed && data?.message
+            ? ` ${data.message}`
+            : ' Check eToro credentials and that the selected environment (Demo/Live) is configured.'
+        } else if (/btc|eth|crypto|usd|eur/i.test(q) && form.broker === 'angel') {
           hint = ' Angel search only covers NSE/BSE symbols — switch Broker to eToro for crypto and global instruments.'
         }
-        setError(`No results found for "${query.trim()}".${hint}`)
+        setError(`No results found for "${q}".${hint}`)
+        setResults([])
+        return
       }
+
+      setResults(hits)
     } catch (err) {
       console.error('[CreateExecution] Search request failed', err)
       setError(err.message || 'Search request failed')
@@ -2923,7 +2946,7 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
                   value={query}
                   onChange={e => setQuery(e.target.value)}
                   onKeyDown={e => e.key === 'Enter' && search()}
-                  placeholder="Search stock"
+                  placeholder={form.broker === 'etoro' ? 'Search symbol or instrument ID…' : 'Search stock'}
                   className="flex-1 px-3 py-2 bg-card border border-border rounded text-xs text-text-primary outline-none focus:border-accent placeholder:text-text-secondary"
                 />
                 <button onClick={search} className="px-4 py-2 bg-accent text-white rounded text-xs font-bold">Search</button>
@@ -3024,6 +3047,21 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
               Use fake broker client
             </label>
           </CreateFormSection>
+
+          <StrategyScheduleSection
+            variant={variant}
+            scheduleEnabled={scheduleEnabled}
+            onScheduleEnabledChange={checked => {
+              setScheduleEnabled(checked)
+              if (!checked) setError('')
+            }}
+            scheduledDate={scheduledDate}
+            onScheduledDateChange={setScheduledDate}
+            tradingDayOptions={visibleTradingDayOptions}
+            scheduleHint={scheduleHint}
+            loading={scheduleOptionsLoading}
+            broker={form.broker}
+          />
         </div>
 
         <div className={variant === 'minimal' ? 'ms-preview-sticky' : 'sticky top-4 self-start z-[2] max-h-[calc(100dvh-24px)] overflow-y-auto'}>
@@ -3049,23 +3087,6 @@ export function CreateExecutionPanel({ duplicateDraft, onCreated, onStarted, onC
             profitTargetAmount={profitTargetAmount}
           />
         </div>
-      </div>
-
-      <div className={variant === 'minimal' ? 'mt-3 mb-1' : 'mt-5 mb-1'}>
-        <StrategyScheduleSection
-          variant={variant}
-          scheduleEnabled={scheduleEnabled}
-          onScheduleEnabledChange={checked => {
-            setScheduleEnabled(checked)
-            if (!checked) setError('')
-          }}
-          scheduledDate={scheduledDate}
-          onScheduledDateChange={setScheduledDate}
-          tradingDayOptions={visibleTradingDayOptions}
-          scheduleHint={scheduleHint}
-          loading={scheduleOptionsLoading}
-          broker={form.broker}
-        />
       </div>
 
       {error && (
