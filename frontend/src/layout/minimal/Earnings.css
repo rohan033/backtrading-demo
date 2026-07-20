@@ -125,6 +125,38 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  gap: 0;
+}
+
+/* Calendar sections should size to content — flex:1 + min-height:0
+   was crushing Reported and clipping the first table row under the title. */
+.er-body > .hm-r-section {
+  flex: 0 0 auto;
+  min-height: auto;
+}
+
+.er-body > .hm-r-section .hm-r-table-scroll {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: none;
+  overflow: visible;
+  padding: 0 8px 8px;
+}
+
+.er-body > .hm-r-section .hm-r-table-card {
+  overflow: visible;
+}
+
+.er-body > .hm-r-section .hm-r-table thead {
+  position: static;
+}
+
+.er-body > .hm-r-section .hm-r-section__title {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 10px 10px 6px;
+  border-bottom: 1px solid #e0e0e0;
 }
 
 .er-section + .er-section {

@@ -1453,6 +1453,25 @@
   flex-direction: column;
 }
 
+.hm-info-body .hm-r-section {
+  flex: 0 0 auto;
+  min-height: auto;
+}
+
+.hm-info-body .hm-r-section .hm-r-table-scroll {
+  flex: 0 0 auto;
+  overflow: visible;
+  padding: 0 8px 8px;
+}
+
+.hm-info-body .hm-r-section .hm-r-table-card {
+  overflow: visible;
+}
+
+.hm-info-body .hm-r-section .hm-r-table thead {
+  position: static;
+}
+
 .hm-info-body .ms-news-panel {
   height: auto;
   min-height: 100%;
