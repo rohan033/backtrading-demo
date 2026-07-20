@@ -1362,6 +1362,9 @@ export default function Home() {
   }`
 
   const newsSymbol = selection ? finnhubSymbol(selection.tradingsymbol) : ''
+  const yahooFinanceUrl = newsSymbol
+    ? `https://finance.yahoo.com/quote/${encodeURIComponent(newsSymbol)}/`
+    : ''
 
   return (
     <div className="hm-root">
@@ -1482,6 +1485,20 @@ export default function Home() {
                         </div>
                         <div className="hm-chart-subtitle">
                           {selection.tradingsymbol} · {broker === 'etoro' ? 'eToro' : 'Angel One'}
+                          {yahooFinanceUrl ? (
+                            <>
+                              {' · '}
+                              <a
+                                className="hm-yahoo-link"
+                                href={yahooFinanceUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title={`Open ${newsSymbol} on Yahoo Finance`}
+                              >
+                                Yahoo Finance
+                              </a>
+                            </>
+                          ) : null}
                         </div>
                       </div>
                     </div>

@@ -494,7 +494,18 @@
   margin-top: 1px;
   font-size: 10px;
   line-height: 1.2;
-  color: #777;
+  color: #4a5568;
+}
+
+.hm-yahoo-link {
+  color: #135f99;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.hm-yahoo-link:hover {
+  color: #0b3d66;
 }
 
 .hm-stream-badge {

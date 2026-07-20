@@ -504,6 +504,15 @@ export default function ScreenerPage() {
     <div className="scr-root">
       <div className="scr-toolbar">
         <span className="scr-toolbar-title">Screener</span>
+        <a
+          className="scr-helpful-link"
+          href="https://www.thestockcatalyst.com/NYSEPMMovers#autoreload"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="NYSE pre-market movers (Stock Catalyst)"
+        >
+          Helpful: NYSE PM Movers
+        </a>
         <div className="scr-pills" role="tablist" aria-label="Saved screeners">
           {screeners.map(item => {
             const active = item.id === selectedId
