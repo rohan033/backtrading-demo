@@ -98,6 +98,7 @@ function WatchlistSymbolMultiselect({
   accountEnv,
   slotsLeft,
   onToggle,
+  onToggleWatchlist,
   onClear,
 }: {
   options: WatchlistOption[]
@@ -108,6 +109,7 @@ function WatchlistSymbolMultiselect({
   accountEnv: string
   slotsLeft: number
   onToggle: (ticker: string) => void
+  onToggleWatchlist: (watchlistId: string, roots: string[]) => void
   onClear: () => void
 }) {
   const [open, setOpen] = useState(false)
@@ -225,36 +227,55 @@ function WatchlistSymbolMultiselect({
             <p className="opc-ms__empty">No symbols match “{query.trim()}”.</p>
           ) : (
             <div className="opc-ms__groups">
-              {grouped.map(([watchlistId, group]) => (
-                <section key={watchlistId} className="opc-ms__group">
-                  <div className="opc-ms__group-head">
-                    <strong>{group.name}</strong>
-                    <span>{group.items.length}</span>
-                  </div>
-                  <ul className="opc-ms__options">
-                    {group.items.map(option => {
-                      const checked = selected.includes(option.root)
-                      const atCap = !checked && slotsLeft <= 0
-                      return (
-                        <li key={`${watchlistId}:${option.root}`}>
-                          <label className={`opc-ms__option${atCap ? ' opc-ms__option--disabled' : ''}`}>
-                            <input
-                              type="checkbox"
-                              disabled={disabled || atCap}
-                              checked={checked}
-                              onChange={() => onToggle(option.root)}
-                            />
-                            <span>
-                              <em>{option.root}</em>
-                              {option.label !== option.root ? <small>{option.label}</small> : null}
-                            </span>
-                          </label>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </section>
-              ))}
+              {grouped.map(([watchlistId, group]) => {
+                const roots = group.items.map(item => item.root)
+                const selectedCount = roots.filter(root => selected.includes(root)).length
+                const allSelected = roots.length > 0 && selectedCount === roots.length
+                const someSelected = selectedCount > 0 && !allSelected
+                return (
+                  <section key={watchlistId} className="opc-ms__group">
+                    <label className="opc-ms__group-head">
+                      <span className="opc-ms__group-title">
+                        <input
+                          type="checkbox"
+                          disabled={disabled || (!allSelected && slotsLeft <= 0 && !someSelected)}
+                          checked={allSelected}
+                          ref={el => {
+                            if (el) el.indeterminate = someSelected
+                          }}
+                          onChange={() => onToggleWatchlist(watchlistId, roots)}
+                        />
+                        <strong>{group.name}</strong>
+                      </span>
+                      <span>
+                        {selectedCount}/{group.items.length}
+                      </span>
+                    </label>
+                    <ul className="opc-ms__options">
+                      {group.items.map(option => {
+                        const checked = selected.includes(option.root)
+                        const atCap = !checked && slotsLeft <= 0
+                        return (
+                          <li key={`${watchlistId}:${option.root}`}>
+                            <label className={`opc-ms__option${atCap ? ' opc-ms__option--disabled' : ''}`}>
+                              <input
+                                type="checkbox"
+                                disabled={disabled || atCap}
+                                checked={checked}
+                                onChange={() => onToggle(option.root)}
+                              />
+                              <span>
+                                <em>{option.root}</em>
+                                {option.label !== option.root ? <small>{option.label}</small> : null}
+                              </span>
+                            </label>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </section>
+                )
+              })}
             </div>
           )}
           {slotsLeft === 0 ? (
@@ -309,14 +330,9 @@ export default function OnePercentSessionStarter({
     () => mergeFocusSymbols(watchlistSymbols, typedFocusSymbols),
     [typedFocusSymbols, watchlistSymbols],
   )
-  const effectiveSelectionMode: OnePercentSelectionMode = focusSymbols.length
-    ? 'agent'
-    : selectionMode === 'agent'
-      ? 'agent'
-      : 'deterministic'
   const usingFocusSymbols = focusSymbols.length > 0
   const showScreenerControls = !usingFocusSymbols
-  const showAgentModel = effectiveSelectionMode === 'agent'
+  const showAgentModel = selectionMode === 'agent'
   const focusSlotsLeft = Math.max(0, FOCUS_SYMBOL_LIMIT - focusSymbols.length)
 
   const etoroWatchlists = useMemo(
@@ -525,8 +541,20 @@ export default function OnePercentSessionStarter({
       if (prev.includes(root)) return prev.filter(item => item !== root)
       const merged = mergeFocusSymbols(prev, typedFocusSymbols, [root])
       if (!merged.includes(root)) return prev
-      setSelectionMode('agent')
       return [...prev, root]
+    })
+  }, [typedFocusSymbols])
+
+  const toggleWatchlist = useCallback((watchlistId: string, roots: string[]) => {
+    const uniqueRoots = [...new Set(roots.map(r => r.trim().toUpperCase().split('.', 1)[0]).filter(Boolean))]
+    if (!uniqueRoots.length) return
+    setWatchlistSymbols(prev => {
+      const allSelected = uniqueRoots.every(root => prev.includes(root))
+      if (allSelected) {
+        const drop = new Set(uniqueRoots)
+        return prev.filter(sym => !drop.has(sym))
+      }
+      return mergeFocusSymbols(prev, typedFocusSymbols, uniqueRoots)
     })
   }, [typedFocusSymbols])
 
@@ -568,14 +596,14 @@ export default function OnePercentSessionStarter({
         take_profit_pct: Number(takeProfitPct) || 1.5,
         stop_loss_pct: Number(stopLossPct) || 2,
         max_attempts: Number(maxAttempts) || 3,
-        selection_mode: effectiveSelectionMode,
+        selection_mode: selectionMode,
         min_score: Number(minScore) || 0,
         screener_mode: usingFocusSymbols ? 'auto' : screenerMode,
         query_keys: !usingFocusSymbols && screenerMode === 'manual' ? queryKeys : [],
         screener_ids: !usingFocusSymbols && screenerMode === 'manual' ? screenerIds : [],
         focus_symbols: focusSymbols,
       }
-      if (effectiveSelectionMode === 'agent' && agentModelId) {
+      if (selectionMode === 'agent' && agentModelId) {
         input.agent_model = agentModelId
         input.agent_model_params = agentModelParams.filter(p => p.id && p.value)
       }
@@ -592,7 +620,6 @@ export default function OnePercentSessionStarter({
     agentModelId,
     agentModelParams,
     capitalNumber,
-    effectiveSelectionMode,
     focusSymbols,
     isFrozen,
     manualHasSource,
@@ -603,6 +630,7 @@ export default function OnePercentSessionStarter({
     refreshEligibility,
     screenerIds,
     screenerMode,
+    selectionMode,
     stopLossPct,
     takeProfitPct,
     targetPct,
@@ -625,15 +653,15 @@ export default function OnePercentSessionStarter({
         <div className="opc-starter__mode-toggle">
           <button
             type="button"
-            className={`opc-mode-btn${effectiveSelectionMode === 'deterministic' && !usingFocusSymbols ? ' opc-mode-btn--active' : ''}`}
-            disabled={isFrozen || usingFocusSymbols}
+            className={`opc-mode-btn${selectionMode === 'deterministic' ? ' opc-mode-btn--active' : ''}`}
+            disabled={isFrozen}
             onClick={() => setSelectionMode('deterministic')}
           >
             Algo selection
           </button>
           <button
             type="button"
-            className={`opc-mode-btn${effectiveSelectionMode === 'agent' ? ' opc-mode-btn--active' : ''}`}
+            className={`opc-mode-btn${selectionMode === 'agent' ? ' opc-mode-btn--active' : ''}`}
             disabled={isFrozen}
             onClick={() => setSelectionMode('agent')}
           >
@@ -642,8 +670,10 @@ export default function OnePercentSessionStarter({
         </div>
         <p className="opc-starter__mode-hint">
           {usingFocusSymbols
-            ? 'Watchlist / typed tickers force AI agent analysis with place / no-place confidence, then auto-order if approved.'
-            : effectiveSelectionMode === 'agent'
+            ? selectionMode === 'agent'
+              ? 'Watchlist / typed tickers only · AI decides place vs no-place, then auto-order if approved.'
+              : 'Watchlist / typed tickers only · algo ranks those names and takes the top eToro match.'
+            : selectionMode === 'agent'
               ? 'AI researches top screener hits (news, pre-market, sector/index mood) before picking.'
               : 'Ranks screener hits by momentum/liquidity score and takes the top eToro name.'}
         </p>
@@ -757,6 +787,7 @@ export default function OnePercentSessionStarter({
           accountEnv={accountEnv}
           slotsLeft={focusSlotsLeft}
           onToggle={toggleWatchlistSymbol}
+          onToggleWatchlist={toggleWatchlist}
           onClear={() => setWatchlistSymbols([])}
         />
       </div>
@@ -766,10 +797,7 @@ export default function OnePercentSessionStarter({
         <input
           value={focusSymbolsText}
           disabled={isFrozen}
-          onChange={event => {
-            setFocusSymbolsText(event.target.value)
-            if (event.target.value.trim()) setSelectionMode('agent')
-          }}
+          onChange={event => setFocusSymbolsText(event.target.value)}
           placeholder="e.g. AAPL, NVDA, MSFT"
           title="Comma-separated tickers. Combined with watchlist picks; skips screener."
         />

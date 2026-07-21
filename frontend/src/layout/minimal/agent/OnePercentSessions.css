@@ -767,6 +767,19 @@
   justify-content: space-between;
   gap: 8px;
   padding: 6px 10px 4px;
+  cursor: pointer;
+}
+
+.opc-ms__group-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.opc-ms__group-title input {
+  flex-shrink: 0;
+  accent-color: #2f6fd6;
 }
 
 .opc-ms__group-head strong {

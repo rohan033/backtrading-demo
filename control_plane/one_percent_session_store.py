@@ -140,10 +140,6 @@ def normalize_config(raw: dict[str, Any] | None = None) -> dict[str, Any]:
         if len(focus_symbols) >= 8:
             break
 
-    # Specific stocks always go through AI agent analysis (no screener rank pick).
-    if focus_symbols:
-        selection_mode = "agent"
-
     agent_model = str(data.get("agent_model") or "").strip() or None
     raw_params = data.get("agent_model_params")
     if not isinstance(raw_params, list):

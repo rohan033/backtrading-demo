@@ -574,8 +574,8 @@ class OnePercentSessionEngine:
             if str(s).strip()
         ]
         selection_mode = str(config.get("selection_mode") or "deterministic").strip().lower()
-        if focus_symbols:
-            selection_mode = "agent"
+        if selection_mode not in {"deterministic", "agent", "hybrid"}:
+            selection_mode = "deterministic"
 
         self.store.append_event(
             session_id,
