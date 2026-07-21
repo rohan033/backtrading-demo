@@ -37,12 +37,14 @@ from api.screener_routes import router as screener_router
 from api.traded_instruments_routes import router as traded_instruments_router
 from api.trades_pnl_routes import router as trades_pnl_router
 from api.market_news_routes import router as market_news_router
+from api.trade_halts_routes import router as trade_halts_router
 from api.trading_session_routes import get_trading_session_store, handle_trading_session_websocket, router as trading_session_router
 from api.one_percent_session_routes import (
     handle_one_percent_session_websocket,
     router as one_percent_session_router,
 )
 from api.news_feed import get_news_feed_hub
+from api.trade_halts_feed import get_trade_halts_feed_hub
 from api.watchlist_feed import get_watchlist_feed_hub, market_preview_uses_shared_hub
 from control_plane.client_mode import normalize_client_mode
 from control_plane.engine_registry import EngineRegistry, _parse_datetime
@@ -64,6 +66,7 @@ from control_plane.execution_sources import (
 from control_plane.execution_source_links import ensure_research_source_on_engine
 from control_plane.news_poller import get_news_poller
 from control_plane.insider_poller import get_insider_poller
+from control_plane.trade_halts_poller import get_trade_halts_poller
 from control_plane.agent_monitor import get_agent_monitor_service
 from control_plane.trading_schedule import default_schedule, resolve_schedule, trading_day_options
 from brokers.angel.adapters.portfolio import angel_portfolio_rows_from_holdings
@@ -143,6 +146,7 @@ app.include_router(screener_router)
 app.include_router(traded_instruments_router)
 app.include_router(trades_pnl_router)
 app.include_router(market_news_router)
+app.include_router(trade_halts_router)
 app.include_router(trading_session_router)
 app.include_router(one_percent_session_router)
 
@@ -160,6 +164,9 @@ _news_poller = get_news_poller(
 )
 _insider_poller = get_insider_poller(
     broadcast=get_news_feed_hub().broadcast_insider_transactions,
+)
+_trade_halts_poller = get_trade_halts_poller(
+    broadcast=get_trade_halts_feed_hub().broadcast_notifications,
 )
 
 
@@ -391,6 +398,7 @@ async def control_plane_lifespan(_app: FastAPI):
     await start_telegram_inbound_services()
     await _news_poller.start()
     await _insider_poller.start()
+    await _trade_halts_poller.start()
     await get_agent_monitor_service().start()
     from control_plane.one_percent_session_engine import get_one_percent_session_engine
 
@@ -400,6 +408,7 @@ async def control_plane_lifespan(_app: FastAPI):
     finally:
         await get_one_percent_session_engine().shutdown()
         await get_agent_monitor_service().stop()
+        await _trade_halts_poller.stop()
         await _insider_poller.stop()
         await _news_poller.stop()
         await stop_telegram_inbound_services()
@@ -3061,6 +3070,11 @@ async def ws_watchlist(ws: WebSocket):
 @app.websocket("/ws/news")
 async def ws_news(ws: WebSocket):
     await get_news_feed_hub().handle(ws)
+
+
+@app.websocket("/ws/trade-halts")
+async def ws_trade_halts(ws: WebSocket):
+    await get_trade_halts_feed_hub().handle(ws)
 
 
 @app.websocket("/ws/agent/monitor")

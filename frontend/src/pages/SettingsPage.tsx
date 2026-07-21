@@ -1,6 +1,15 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import { Activity, Download, ListPlus, RefreshCw, Settings2 } from 'lucide-react'
+import { Activity, Bell, BellOff, Download, ListPlus, OctagonAlert, RefreshCw, Rss, Settings2 } from 'lucide-react'
+import {
+  fetchTradeHaltNotifySettings,
+  fetchTradeHaltsForDay,
+  setTradeHaltGlobalNotifyEnabled,
+  setTradeHaltNotifyEnabled,
+  type TradeHalt,
+} from '../lib/tradeHalts'
 import './SettingsPage.css'
+
+type SettingsSection = 'order-activity' | 'halts'
 
 type TradeStatus = 'open' | 'closed'
 
@@ -262,7 +271,295 @@ function NestedTradeTable({ trades }: { trades: MomentumTrade[] }) {
   )
 }
 
+function formatHaltWhen(dateValue: string | null | undefined, timeValue: string | null | undefined): string {
+  const datePart = (dateValue || '').trim()
+  const timePart = (timeValue || '').trim().replace(/\.000$/, '')
+  if (!datePart && !timePart) return '—'
+  if (!timePart) return datePart
+  if (!datePart) return timePart
+  return `${datePart} ${timePart}`
+}
+
+function HaltsPanel() {
+  const [dayFilter, setDayFilter] = useState<'all' | string>('all')
+  const [halts, setHalts] = useState<TradeHalt[]>([])
+  const [notificationsEnabled, setNotificationsEnabled] = useState(true)
+  const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [polling, setPolling] = useState(false)
+  const [togglingGlobal, setTogglingGlobal] = useState(false)
+  const [togglingSymbol, setTogglingSymbol] = useState<string | null>(null)
+  const [error, setError] = useState('')
+
+  const loadHalts = useCallback(async (opts?: { soft?: boolean }) => {
+    const soft = Boolean(opts?.soft)
+    if (soft) setRefreshing(true)
+    else setLoading(true)
+    setError('')
+    try {
+      const [result, prefs] = await Promise.all([
+        fetchTradeHaltsForDay(dayFilter === 'all' ? null : dayFilter),
+        fetchTradeHaltNotifySettings(),
+      ])
+      setHalts(result.data)
+      setNotificationsEnabled(prefs.notifications_enabled)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load trade halts')
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
+    }
+  }, [dayFilter])
+
+  useEffect(() => {
+    void loadHalts()
+  }, [loadHalts])
+
+  const pollNow = async () => {
+    setPolling(true)
+    setError('')
+    try {
+      const res = await fetch('/api/trade-halts/poll', { method: 'POST' })
+      if (!res.ok) {
+        const payload = (await res.json().catch(() => ({}))) as { detail?: string }
+        throw new Error(payload.detail || 'Poll failed')
+      }
+      await loadHalts({ soft: true })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Poll failed')
+    } finally {
+      setPolling(false)
+    }
+  }
+
+  const toggleGlobalNotify = async () => {
+    const next = !notificationsEnabled
+    setTogglingGlobal(true)
+    setError('')
+    try {
+      await setTradeHaltGlobalNotifyEnabled(next)
+      setNotificationsEnabled(next)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update global notifications')
+    } finally {
+      setTogglingGlobal(false)
+    }
+  }
+
+  const toggleNotify = async (halt: TradeHalt) => {
+    const next = !(halt.notify_enabled !== false)
+    setTogglingSymbol(halt.symbol)
+    setError('')
+    try {
+      await setTradeHaltNotifyEnabled(halt.symbol, next)
+      setHalts(prev =>
+        prev.map(item =>
+          item.symbol === halt.symbol ? { ...item, notify_enabled: next } : item,
+        ),
+      )
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update notifications')
+    } finally {
+      setTogglingSymbol(null)
+    }
+  }
+
+  const haltedCount = useMemo(
+    () => halts.filter(item => item.status === 'halted').length,
+    [halts],
+  )
+  const resumedCount = useMemo(
+    () => halts.filter(item => item.status === 'resumed').length,
+    [halts],
+  )
+
+  return (
+    <section className="set-content" aria-labelledby="trade-halts-title">
+      <div className="set-toolbar">
+        <div className="set-toolbar__title">
+          <span className="set-eyebrow">NASDAQ</span>
+          <h2 id="trade-halts-title">Trade halts</h2>
+        </div>
+        <div className="set-toolbar__spacer" />
+        <button
+          type="button"
+          className={`set-notify-toggle set-notify-toggle--global${
+            notificationsEnabled ? ' set-notify-toggle--on' : ''
+          }`}
+          aria-pressed={notificationsEnabled}
+          aria-label={
+            notificationsEnabled
+              ? 'Disable all halt notifications'
+              : 'Enable all halt notifications'
+          }
+          disabled={togglingGlobal}
+          onClick={() => void toggleGlobalNotify()}
+        >
+          {notificationsEnabled ? <Bell aria-hidden="true" /> : <BellOff aria-hidden="true" />}
+          <span>{notificationsEnabled ? 'Notifications on' : 'Notifications off'}</span>
+        </button>
+        <label className="set-date">
+          <span>Day</span>
+          <select
+            value={dayFilter === 'all' ? 'all' : dayFilter}
+            onChange={event => {
+              const value = event.target.value
+              setDayFilter(value === 'all' ? 'all' : value)
+            }}
+          >
+            <option value="all">All (feed)</option>
+            <option value={toDateInputValue(new Date())}>Today</option>
+            <option value={toDateInputValue(new Date(Date.now() - 86400000))}>Yesterday</option>
+          </select>
+        </label>
+        {dayFilter !== 'all' ? (
+          <label className="set-date">
+            <span>Custom</span>
+            <input
+              type="date"
+              value={dayFilter}
+              onChange={event => setDayFilter(event.target.value || 'all')}
+            />
+          </label>
+        ) : null}
+        <button
+          type="button"
+          className="set-btn"
+          onClick={() => void loadHalts({ soft: true })}
+          disabled={refreshing || loading}
+        >
+          <RefreshCw className={refreshing ? 'set-spin' : ''} aria-hidden="true" />
+          {refreshing ? 'Refreshing' : 'Refresh'}
+        </button>
+        <button
+          type="button"
+          className="set-btn set-btn--primary"
+          onClick={() => void pollNow()}
+          disabled={polling}
+        >
+          <Rss aria-hidden="true" />
+          {polling ? 'Polling…' : 'Poll feed'}
+        </button>
+      </div>
+
+      {!notificationsEnabled ? (
+        <div className="set-halt-banner" role="status">
+          Halt toast notifications are disabled globally. Feed data still updates.
+        </div>
+      ) : null}
+
+      <div className="set-summary" aria-label="Trade halt summary">
+        <div className="set-summary__label">
+          <span className="set-eyebrow">Halts</span>
+          <strong>{dayFilter === 'all' ? 'Feed' : dayFilter}</strong>
+        </div>
+        <span className="set-stat-pill">
+          <em>Total</em>
+          <strong>{halts.length}</strong>
+        </span>
+        <span className="set-stat-pill">
+          <em>Halted</em>
+          <strong className="set-halt-status--halted">{haltedCount}</strong>
+        </span>
+        <span className="set-stat-pill">
+          <em>Resumed</em>
+          <strong className="set-halt-status--resumed">{resumedCount}</strong>
+        </span>
+      </div>
+
+      <div className="set-body">
+        {error ? <div className="set-error">{error}</div> : null}
+        {loading ? (
+          <div className="set-empty">Loading trade halts…</div>
+        ) : !halts.length ? (
+          <div className="set-empty">
+            <strong>No trade halts stored</strong>
+            <p>Use Poll feed to refresh from NASDAQ, or pick All (feed) / another day.</p>
+          </div>
+        ) : (
+          <div className="set-table-scroll">
+            <div className="set-table-card">
+              <table className="set-table">
+                <thead>
+                  <tr>
+                    <th>Symbol</th>
+                    <th>Status</th>
+                    <th>Reason</th>
+                    <th>Market</th>
+                    <th>Halted</th>
+                    <th>Resumption</th>
+                    <th>Issue</th>
+                    <th>Notify</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {halts.map(halt => {
+                    const notifyOn = halt.notify_enabled !== false
+                    const busy = togglingSymbol === halt.symbol
+                    return (
+                      <tr key={halt.id} className="set-table-row">
+                        <td>
+                          <strong className="set-sym">{halt.symbol}</strong>
+                        </td>
+                        <td>
+                          <span
+                            className={`set-halt-pill set-halt-pill--${
+                              halt.status === 'resumed' ? 'resumed' : 'halted'
+                            }`}
+                          >
+                            {halt.status === 'resumed' ? 'Resumed' : 'Halted'}
+                          </span>
+                        </td>
+                        <td>{halt.reason_code || '—'}</td>
+                        <td>{halt.market || '—'}</td>
+                        <td>{formatHaltWhen(halt.halt_date, halt.halt_time)}</td>
+                        <td>
+                          {formatHaltWhen(halt.resumption_date, halt.resumption_trade_time)}
+                        </td>
+                        <td>
+                          <span className="set-halt-issue">{halt.issue_name || '—'}</span>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className={`set-notify-toggle${notifyOn ? ' set-notify-toggle--on' : ''}`}
+                            aria-pressed={notifyOn}
+                            aria-label={
+                              notifyOn
+                                ? `Disable notifications for ${halt.symbol}`
+                                : `Enable notifications for ${halt.symbol}`
+                            }
+                            disabled={busy || !notificationsEnabled}
+                            title={
+                              !notificationsEnabled
+                                ? 'Turn on global notifications first'
+                                : undefined
+                            }
+                            onClick={() => void toggleNotify(halt)}
+                          >
+                            {notifyOn ? (
+                              <Bell aria-hidden="true" />
+                            ) : (
+                              <BellOff aria-hidden="true" />
+                            )}
+                            <span>{notifyOn ? 'On' : 'Off'}</span>
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
 export default function SettingsPage() {
+  const [section, setSection] = useState<SettingsSection>('order-activity')
   const [trades, setTrades] = useState<MomentumTrade[]>([])
   const [summary, setSummary] = useState<MomentumSummary>(EMPTY_SUMMARY)
   const [environmentFilter, setEnvironmentFilter] = useState<'all' | 'live' | 'demo'>('all')
@@ -473,16 +770,36 @@ export default function SettingsPage() {
             <p>Workspace controls</p>
           </div>
         </div>
-        <button type="button" className="set-nav__item set-nav__item--active" aria-current="page">
+        <button
+          type="button"
+          className={`set-nav__item${section === 'order-activity' ? ' set-nav__item--active' : ''}`}
+          aria-current={section === 'order-activity' ? 'page' : undefined}
+          onClick={() => setSection('order-activity')}
+        >
           <span className="set-nav__icon"><Activity aria-hidden="true" /></span>
           <span>
             <strong>Order activity</strong>
             <small>Momentum P&amp;L</small>
           </span>
         </button>
+        <button
+          type="button"
+          className={`set-nav__item${section === 'halts' ? ' set-nav__item--active' : ''}`}
+          aria-current={section === 'halts' ? 'page' : undefined}
+          onClick={() => setSection('halts')}
+        >
+          <span className="set-nav__icon set-nav__icon--halts"><OctagonAlert aria-hidden="true" /></span>
+          <span>
+            <strong>Halts</strong>
+            <small>NASDAQ trade halts</small>
+          </span>
+        </button>
         <p className="set-nav__footnote">More workspace settings will appear here.</p>
       </aside>
 
+      {section === 'halts' ? (
+        <HaltsPanel />
+      ) : (
       <section className="set-content" aria-labelledby="order-activity-title">
         <div className="set-toolbar">
           <div className="set-toolbar__title">
@@ -849,6 +1166,7 @@ export default function SettingsPage() {
           )}
         </div>
       </section>
+      )}
     </div>
   )
 }

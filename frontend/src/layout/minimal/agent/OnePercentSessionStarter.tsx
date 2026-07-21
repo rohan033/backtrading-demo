@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   createOnePercentSession,
@@ -23,6 +23,7 @@ import {
   type CursorAgentModel,
 } from '@/lib/cursorAgentModels'
 import { fetchScreeners, type Screener } from '@/lib/screenerApi'
+import { fetchWatchlists, type Watchlist } from '@/lib/watchlists'
 import { buildShellUrl } from '../useUrlState'
 
 type Props = {
@@ -47,6 +48,8 @@ const DEFAULTS = {
   minScore: '0',
 }
 
+const FOCUS_SYMBOL_LIMIT = 8
+
 function toggleInList(list: string[], value: string): string[] {
   return list.includes(value) ? list.filter(item => item !== value) : [...list, value]
 }
@@ -56,9 +59,213 @@ function parseFocusSymbols(raw: string): string[] {
   for (const part of raw.replace(/;/g, ',').split(/[,\s]+/)) {
     const sym = part.trim().toUpperCase().split('.', 1)[0]
     if (sym && !out.includes(sym)) out.push(sym)
-    if (out.length >= 8) break
+    if (out.length >= FOCUS_SYMBOL_LIMIT) break
   }
   return out
+}
+
+function watchlistTickerRoot(symbol: { tradingsymbol?: string; symbol?: string }): string {
+  const raw = String(symbol.tradingsymbol || symbol.symbol || '').trim().toUpperCase()
+  return raw.split('.', 1)[0]
+}
+
+function mergeFocusSymbols(...groups: string[][]): string[] {
+  const out: string[] = []
+  for (const group of groups) {
+    for (const raw of group) {
+      const sym = String(raw || '').trim().toUpperCase().split('.', 1)[0]
+      if (!sym || out.includes(sym)) continue
+      out.push(sym)
+      if (out.length >= FOCUS_SYMBOL_LIMIT) return out
+    }
+  }
+  return out
+}
+
+type WatchlistOption = {
+  root: string
+  label: string
+  watchlistId: string
+  watchlistName: string
+}
+
+function WatchlistSymbolMultiselect({
+  options,
+  selected,
+  disabled = false,
+  loading = false,
+  emptyHref,
+  accountEnv,
+  slotsLeft,
+  onToggle,
+  onClear,
+}: {
+  options: WatchlistOption[]
+  selected: string[]
+  disabled?: boolean
+  loading?: boolean
+  emptyHref: string
+  accountEnv: string
+  slotsLeft: number
+  onToggle: (ticker: string) => void
+  onClear: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const rootRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!open) return undefined
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false)
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const timer = window.setTimeout(() => searchRef.current?.focus(), 0)
+    return () => window.clearTimeout(timer)
+  }, [open])
+
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    if (!needle) return options
+    return options.filter(option => {
+      const hay = `${option.root} ${option.label} ${option.watchlistName}`.toLowerCase()
+      return hay.includes(needle)
+    })
+  }, [options, query])
+
+  const grouped = useMemo(() => {
+    const byList = new Map<string, { name: string; items: WatchlistOption[] }>()
+    for (const option of filtered) {
+      const bucket = byList.get(option.watchlistId) || {
+        name: option.watchlistName,
+        items: [],
+      }
+      bucket.items.push(option)
+      byList.set(option.watchlistId, bucket)
+    }
+    return [...byList.entries()]
+  }, [filtered])
+
+  const triggerLabel = selected.length
+    ? `${selected.length} selected`
+    : loading
+      ? 'Loading watchlists…'
+      : options.length
+        ? 'Select watchlist symbols'
+        : `No eToro ${accountEnv} symbols`
+
+  return (
+    <div className="opc-ms" ref={rootRef}>
+      <button
+        type="button"
+        className={`opc-ms__trigger${open ? ' opc-ms__trigger--open' : ''}`}
+        disabled={disabled || loading || (!options.length && !selected.length)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        onClick={() => setOpen(prev => !prev)}
+      >
+        <span className="opc-ms__trigger-label">{triggerLabel}</span>
+        <span className="opc-ms__chevron" aria-hidden="true">{open ? '▴' : '▾'}</span>
+      </button>
+
+      {selected.length ? (
+        <div className="opc-ms__chips">
+          {selected.map(symbol => (
+            <button
+              key={symbol}
+              type="button"
+              className="opc-ms__chip"
+              disabled={disabled}
+              onClick={() => onToggle(symbol)}
+              aria-label={`Remove ${symbol}`}
+            >
+              <strong>{symbol}</strong>
+              <span aria-hidden="true">×</span>
+            </button>
+          ))}
+          {!disabled ? (
+            <button type="button" className="opc-ms__clear" onClick={onClear}>
+              Clear
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {open ? (
+        <div className="opc-ms__menu" role="listbox" aria-multiselectable="true">
+          <div className="opc-ms__search">
+            <input
+              ref={searchRef}
+              type="search"
+              value={query}
+              disabled={disabled}
+              placeholder="Search ticker or watchlist…"
+              onChange={event => setQuery(event.target.value)}
+            />
+          </div>
+          {!options.length ? (
+            <p className="opc-ms__empty">
+              No eToro {accountEnv} watchlists yet.{' '}
+              <a href={emptyHref}>Add symbols in Watch &amp; Trade</a>.
+            </p>
+          ) : !grouped.length ? (
+            <p className="opc-ms__empty">No symbols match “{query.trim()}”.</p>
+          ) : (
+            <div className="opc-ms__groups">
+              {grouped.map(([watchlistId, group]) => (
+                <section key={watchlistId} className="opc-ms__group">
+                  <div className="opc-ms__group-head">
+                    <strong>{group.name}</strong>
+                    <span>{group.items.length}</span>
+                  </div>
+                  <ul className="opc-ms__options">
+                    {group.items.map(option => {
+                      const checked = selected.includes(option.root)
+                      const atCap = !checked && slotsLeft <= 0
+                      return (
+                        <li key={`${watchlistId}:${option.root}`}>
+                          <label className={`opc-ms__option${atCap ? ' opc-ms__option--disabled' : ''}`}>
+                            <input
+                              type="checkbox"
+                              disabled={disabled || atCap}
+                              checked={checked}
+                              onChange={() => onToggle(option.root)}
+                            />
+                            <span>
+                              <em>{option.root}</em>
+                              {option.label !== option.root ? <small>{option.label}</small> : null}
+                            </span>
+                          </label>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          )}
+          {slotsLeft === 0 ? (
+            <p className="opc-ms__cap">Selection limit reached ({FOCUS_SYMBOL_LIMIT}).</p>
+          ) : (
+            <p className="opc-ms__cap">{slotsLeft} slot{slotsLeft === 1 ? '' : 's'} left</p>
+          )}
+        </div>
+      ) : null}
+    </div>
+  )
 }
 
 export default function OnePercentSessionStarter({
@@ -79,6 +286,9 @@ export default function OnePercentSessionStarter({
   const [minScore, setMinScore] = useState(DEFAULTS.minScore)
   const [selectionMode, setSelectionMode] = useState<OnePercentSelectionMode>('deterministic')
   const [focusSymbolsText, setFocusSymbolsText] = useState('')
+  const [watchlistSymbols, setWatchlistSymbols] = useState<string[]>([])
+  const [watchlists, setWatchlists] = useState<Watchlist[]>([])
+  const [watchlistsLoading, setWatchlistsLoading] = useState(false)
   const [screenerMode, setScreenerMode] = useState<OnePercentScreenerMode>('auto')
   const [queryKeys, setQueryKeys] = useState<string[]>([])
   const [screenerIds, setScreenerIds] = useState<string[]>([])
@@ -94,7 +304,11 @@ export default function OnePercentSessionStarter({
   const [agentModelId, setAgentModelId] = useState('')
   const [agentModelParams, setAgentModelParams] = useState<AgentModelParamSelection[]>([])
 
-  const focusSymbols = useMemo(() => parseFocusSymbols(focusSymbolsText), [focusSymbolsText])
+  const typedFocusSymbols = useMemo(() => parseFocusSymbols(focusSymbolsText), [focusSymbolsText])
+  const focusSymbols = useMemo(
+    () => mergeFocusSymbols(watchlistSymbols, typedFocusSymbols),
+    [typedFocusSymbols, watchlistSymbols],
+  )
   const effectiveSelectionMode: OnePercentSelectionMode = focusSymbols.length
     ? 'agent'
     : selectionMode === 'agent'
@@ -103,6 +317,38 @@ export default function OnePercentSessionStarter({
   const usingFocusSymbols = focusSymbols.length > 0
   const showScreenerControls = !usingFocusSymbols
   const showAgentModel = effectiveSelectionMode === 'agent'
+  const focusSlotsLeft = Math.max(0, FOCUS_SYMBOL_LIMIT - focusSymbols.length)
+
+  const etoroWatchlists = useMemo(
+    () =>
+      watchlists.filter(
+        list =>
+          list.broker === 'etoro'
+          && (list.account_env || 'demo').toLowerCase() === accountEnv,
+      ),
+    [accountEnv, watchlists],
+  )
+
+  const watchlistOptions = useMemo(() => {
+    const options: WatchlistOption[] = []
+    const seen = new Set<string>()
+    for (const list of etoroWatchlists) {
+      for (const symbol of list.symbols || []) {
+        const root = watchlistTickerRoot(symbol)
+        if (!root) continue
+        const key = `${list.id}:${root}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        options.push({
+          root,
+          label: symbol.tradingsymbol || symbol.symbol || root,
+          watchlistId: list.id,
+          watchlistName: list.name || 'Watchlist',
+        })
+      }
+    }
+    return options
+  }, [etoroWatchlists])
 
   const selectedModel = useMemo(
     () => models.find(m => m.id === agentModelId) || null,
@@ -131,6 +377,43 @@ export default function OnePercentSessionStarter({
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setWatchlistsLoading(true)
+    void fetchWatchlists()
+      .then(rows => {
+        if (cancelled) return
+        setWatchlists(rows)
+        setWatchlistsLoading(false)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setWatchlists([])
+        setWatchlistsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    // Drop selections that are no longer on the active account's eToro watchlists.
+    const allowed = new Set<string>()
+    for (const list of etoroWatchlists) {
+      for (const symbol of list.symbols || []) {
+        const root = watchlistTickerRoot(symbol)
+        if (root) allowed.add(root)
+      }
+    }
+    setWatchlistSymbols(prev => {
+      const next = prev.filter(sym => allowed.has(sym))
+      if (next.length === prev.length && next.every((sym, index) => sym === prev[index])) {
+        return prev
+      }
+      return next
+    })
+  }, [etoroWatchlists])
 
   useEffect(() => {
     if (!showAgentModel || isFrozen) return
@@ -177,7 +460,9 @@ export default function OnePercentSessionStarter({
     setMaxAttempts(String(cfg.max_attempts ?? 3))
     setMinScore(String(cfg.min_score ?? 0))
     setSelectionMode(cfg.selection_mode === 'agent' || cfg.selection_mode === 'hybrid' ? 'agent' : 'deterministic')
-    setFocusSymbolsText(Array.isArray(cfg.focus_symbols) ? cfg.focus_symbols.join(', ') : '')
+    const frozenFocus = Array.isArray(cfg.focus_symbols) ? cfg.focus_symbols.map(String) : []
+    setFocusSymbolsText(frozenFocus.join(', '))
+    setWatchlistSymbols([])
     setScreenerMode(cfg.screener_mode === 'manual' ? 'manual' : 'auto')
     setQueryKeys(Array.isArray(cfg.query_keys) ? cfg.query_keys.map(String) : [])
     setScreenerIds(Array.isArray(cfg.screener_ids) ? cfg.screener_ids.map(String) : [])
@@ -232,6 +517,18 @@ export default function OnePercentSessionStarter({
         .map(p => ({ id: String(p.id), value: String(p.value) })),
     )
   }, [selectedModel])
+
+  const toggleWatchlistSymbol = useCallback((ticker: string) => {
+    const root = ticker.trim().toUpperCase().split('.', 1)[0]
+    if (!root) return
+    setWatchlistSymbols(prev => {
+      if (prev.includes(root)) return prev.filter(item => item !== root)
+      const merged = mergeFocusSymbols(prev, typedFocusSymbols, [root])
+      if (!merged.includes(root)) return prev
+      setSelectionMode('agent')
+      return [...prev, root]
+    })
+  }, [typedFocusSymbols])
 
   const manualHasSource = queryKeys.length > 0 || screenerIds.length > 0
   const canStart = !isFrozen
@@ -313,6 +610,7 @@ export default function OnePercentSessionStarter({
   ])
 
   const screenerHref = buildShellUrl({ tab: 'screener' })
+  const watchTradeHref = buildShellUrl({ tab: 'watch-trade' })
 
   const form = (
     <div className={`opc-starter__form${embedded ? ' opc-starter__form--embedded' : ''}`}>
@@ -344,7 +642,7 @@ export default function OnePercentSessionStarter({
         </div>
         <p className="opc-starter__mode-hint">
           {usingFocusSymbols
-            ? 'Specific stocks force AI agent analysis with place / no-place confidence, then auto-order if approved.'
+            ? 'Watchlist / typed tickers force AI agent analysis with place / no-place confidence, then auto-order if approved.'
             : effectiveSelectionMode === 'agent'
               ? 'AI researches top screener hits (news, pre-market, sector/index mood) before picking.'
               : 'Ranks screener hits by momentum/liquidity score and takes the top eToro name.'}
@@ -439,6 +737,30 @@ export default function OnePercentSessionStarter({
         </div>
       ) : null}
 
+      <div className="opc-starter__screeners opc-starter__watchlists">
+        <div className="opc-starter__screeners-head">
+          <strong>Watchlist picks</strong>
+          <a className="opc-starter__screeners-link" href={watchTradeHref}>
+            Open Watch &amp; Trade
+          </a>
+        </div>
+        <p className="opc-starter__mode-hint">
+          Search and multi-select eToro {accountEnv} watchlist symbols (up to {FOCUS_SYMBOL_LIMIT}
+          with typed tickers). Skips screener and uses AI agent analysis.
+        </p>
+        <WatchlistSymbolMultiselect
+          options={watchlistOptions}
+          selected={watchlistSymbols}
+          disabled={isFrozen}
+          loading={watchlistsLoading}
+          emptyHref={watchTradeHref}
+          accountEnv={accountEnv}
+          slotsLeft={focusSlotsLeft}
+          onToggle={toggleWatchlistSymbol}
+          onClear={() => setWatchlistSymbols([])}
+        />
+      </div>
+
       <label className="opc-field opc-field--full">
         <span>Specific stocks (optional)</span>
         <input
@@ -449,7 +771,7 @@ export default function OnePercentSessionStarter({
             if (event.target.value.trim()) setSelectionMode('agent')
           }}
           placeholder="e.g. AAPL, NVDA, MSFT"
-          title="Comma-separated tickers. Skips screener; AI decides place vs no-place."
+          title="Comma-separated tickers. Combined with watchlist picks; skips screener."
         />
       </label>
       {usingFocusSymbols ? (

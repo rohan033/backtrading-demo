@@ -588,6 +588,278 @@
   gap: 6px;
 }
 
+.opc-starter__watchlists {
+  margin-top: 0;
+  margin-bottom: 10px;
+}
+
+.opc-ms {
+  position: relative;
+  color: #111;
+}
+
+.opc-ms__trigger {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid #c9d7e4;
+  border-radius: 6px;
+  background: #fff;
+  color: #111;
+  color-scheme: light;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.opc-ms__trigger:hover:not(:disabled) {
+  border-color: #8fb3d4;
+  background: #f8fbfd;
+}
+
+.opc-ms__trigger--open,
+.opc-ms__trigger:focus-visible {
+  border-color: #2f6fd6;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(47, 111, 214, 0.18);
+}
+
+.opc-ms__trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+  background: #f3f4f6;
+}
+
+.opc-ms__trigger-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 700;
+  color: #111;
+}
+
+.opc-ms__chevron {
+  flex-shrink: 0;
+  color: #4a5568;
+  font-size: 11px;
+}
+
+.opc-ms__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.opc-ms__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #c5d8e8;
+  border-radius: 999px;
+  background: #f0f6fb;
+  color: #135f99;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.opc-ms__chip strong {
+  font-weight: 800;
+}
+
+.opc-ms__chip:hover:not(:disabled) {
+  background: #e4eef8;
+}
+
+.opc-ms__chip:disabled {
+  cursor: default;
+  opacity: 0.8;
+}
+
+.opc-ms__clear {
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #fff;
+  color: #4a5568;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.opc-ms__clear:hover {
+  background: #f6f8fa;
+  color: #111;
+}
+
+.opc-ms__menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 280px;
+  overflow: hidden;
+  border: 1px solid #c9d7e4;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(17, 17, 17, 0.14);
+  color-scheme: light;
+}
+
+.opc-ms__search {
+  flex-shrink: 0;
+  padding: 8px;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f8fafc;
+}
+
+.opc-ms__search input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid #c9d7e4;
+  border-radius: 6px;
+  background: #fff;
+  color: #111;
+  color-scheme: light;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.opc-ms__search input::placeholder {
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.opc-ms__search input:focus {
+  border-color: #2f6fd6;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(47, 111, 214, 0.16);
+}
+
+.opc-ms__groups {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 6px 0;
+}
+
+.opc-ms__group + .opc-ms__group {
+  border-top: 1px solid #eef1f4;
+}
+
+.opc-ms__group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px 4px;
+}
+
+.opc-ms__group-head strong {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #4a5568;
+}
+
+.opc-ms__group-head span {
+  color: #6b7280;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.opc-ms__options {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 6px;
+}
+
+.opc-ms__option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #111;
+}
+
+.opc-ms__option:hover {
+  background: #f3f7fb;
+}
+
+.opc-ms__option--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.opc-ms__option input {
+  flex-shrink: 0;
+  accent-color: #2f6fd6;
+}
+
+.opc-ms__option span {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.opc-ms__option em {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 800;
+  color: #111;
+}
+
+.opc-ms__option small {
+  color: #4a5568;
+  font-size: 10px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.opc-ms__empty {
+  margin: 0;
+  padding: 14px 12px;
+  color: #4a5568;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.opc-ms__empty a {
+  color: #0b57d0;
+  font-weight: 700;
+}
+
+.opc-ms__cap {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 7px 10px;
+  border-top: 1px solid #e5e7eb;
+  background: #f8fafc;
+  color: #4a5568;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 .opc-check {
   display: flex;
   align-items: flex-start;

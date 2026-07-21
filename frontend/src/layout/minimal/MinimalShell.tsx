@@ -24,8 +24,10 @@ import MomentumSidebarPanel from './MomentumSidebarPanel'
 import EarningsMonitorBar from './EarningsMonitorBar'
 import MarketClockBar from './MarketClockBar'
 import NewsNotificationsBar from './NewsNotificationsBar'
+import TradeHaltNotificationsBar from './TradeHaltNotificationsBar'
 import { useUrlState, buildShellUrl } from './useUrlState'
 import { useWatchlistEarnings } from '../../hooks/useWatchlistEarnings'
+import { useTradeHaltNotifications } from '../../hooks/useTradeHaltNotifications'
 import type { WatchlistEarningsRef } from '../../lib/marketResearch'
 
 /* ─── types ─────────────────────────────────────────────── */
@@ -569,6 +571,7 @@ export default function MinimalShell() {
     setNewsTab('new')
   }
   const { groups: newsGroups, clearNotifications } = useNewsNotifications()
+  const tradeHalts = useTradeHaltNotifications()
   const handleClearNewsUpdates = () => {
     setClearNewsError('')
     setClearingNewsUpdates(true)
@@ -658,6 +661,17 @@ export default function MinimalShell() {
   return (
     <div className="ms-root">
       <div className="ms-main-column">
+        <TradeHaltNotificationsBar
+          notifications={tradeHalts.notifications}
+          todayHalts={tradeHalts.halts}
+          day={tradeHalts.day}
+          onDismiss={id => {
+            void tradeHalts.dismiss(id).catch(() => {})
+          }}
+          onDismissAll={() => {
+            void tradeHalts.dismissAll().catch(() => {})
+          }}
+        />
         <EarningsMonitorBar
           alerts={earnings.monitors}
           onDismiss={earnings.dismissMonitor}
