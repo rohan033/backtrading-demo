@@ -143,6 +143,25 @@ async def stop_session(session_id: str, req: StopOnePercentSessionRequest | None
     return {"status": True, "data": detail}
 
 
+class CloseOnePercentPositionRequest(BaseModel):
+    reason: str = "Manual close"
+
+
+@router.post("/{session_id}/close-position", operation_id="close_one_percent_position")
+async def close_position(session_id: str, req: CloseOnePercentPositionRequest | None = None):
+    reason = (req.reason if req else None) or "Manual close"
+    try:
+        detail = await get_one_percent_session_engine().request_close_position(
+            session_id,
+            reason=reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not detail:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"status": True, "data": detail}
+
+
 @router.delete("/{session_id}", operation_id="delete_one_percent_session")
 async def delete_session(session_id: str):
     store = get_one_percent_session_store()

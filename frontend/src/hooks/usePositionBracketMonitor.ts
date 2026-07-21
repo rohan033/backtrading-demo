@@ -5,6 +5,7 @@ import {
   closeEtoroPosition,
   formatCloseEtoroDebug,
   logCloseEtoroExchange,
+  watchCloseSettlement,
 } from '@/lib/closeEtoroPosition'
 import type { ClosedPositionRef } from '@/lib/etoroPositions'
 import {
@@ -91,6 +92,7 @@ export function usePositionBracketMonitor({
       })
         .then(result => {
           logCloseEtoroExchange(ticker, result)
+          watchCloseSettlement(result, ticker)
           disableBracketsAfterClose(accountEnv, storageKey)
           showPlatformToast({
             variant: 'success',

@@ -21,6 +21,8 @@ STATIC_ETORO_PICKS: tuple[dict[str, str], ...] = (
 
 async def deterministic_explore_picks(session: dict[str, Any]) -> list[dict[str, Any]]:
     """Server-side stock shortlist — no agent required."""
+    from control_plane.instrument_resolve import find_watchlist_instrument
+
     broker = str(session.get("broker") or "etoro").lower()
     account_env = str(session.get("account_env") or "demo").lower()
     exchange = "ETORO" if broker == "etoro" else str(session.get("exchange") or "NSE")
@@ -29,6 +31,23 @@ async def deterministic_explore_picks(session: dict[str, Any]) -> list[dict[str,
     for ticker in DEFAULT_ETORO_TICKERS:
         if len(picks) >= 3:
             break
+        watchlist_hit = find_watchlist_instrument(broker, account_env, ticker)
+        if watchlist_hit:
+            symbol = str(watchlist_hit.get("tradingsymbol") or ticker).strip()
+            token = str(watchlist_hit.get("symboltoken") or "").strip()
+            if symbol and token:
+                picks.append({
+                    "symbol": symbol,
+                    "name": str(watchlist_hit.get("name") or symbol.split("-")[0]),
+                    "token": token,
+                    "exchange": str(watchlist_hit.get("exchange") or exchange),
+                    "recommendation": (
+                        f"Watchlist pick — {symbol.split('-')[0]} from "
+                        f"{watchlist_hit.get('watchlist_name') or 'watchlist'}"
+                    ),
+                    "from_watchlist": True,
+                })
+                continue
         try:
             rows = await search_instruments(
                 broker,
@@ -52,6 +71,7 @@ async def deterministic_explore_picks(session: dict[str, Any]) -> list[dict[str,
             "token": token,
             "exchange": str(row.get("exchange") or exchange),
             "recommendation": f"Deterministic pick — {symbol.split('-')[0]} via {broker} search",
+            "from_watchlist": bool(row.get("from_watchlist")),
         })
 
     if picks:

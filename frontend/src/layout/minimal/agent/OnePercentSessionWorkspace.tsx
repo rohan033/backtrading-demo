@@ -3,6 +3,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import SymbolLogo from '@/components/SymbolLogo'
 import { useCandidateChartLive } from '@/hooks/useCandidateChartLive'
 import {
+  closeEtoroPosition,
+  logCloseEtoroExchange,
+} from '@/lib/closeEtoroPosition'
+import {
+  closeOnePercentPosition,
   getOnePercentSession,
   isTerminalOnePercentState,
   onePercentSessionLabel,
@@ -260,11 +265,66 @@ type OrderMonitorRowData = {
   status: string
   lastCheckAt: string | null
   filled: boolean
+  estimatedPnl: number | null
+  estimatedPnlPct: number | null
+  remainingToTarget: number | null
+  goalPctComplete: number | null
+  remainingToTp: number | null
+  tpPctComplete: number | null
+  takeProfitPct: number | null
+  canClose: boolean
+  positionClosed: boolean
+}
+
+function clampPct(value: number): number {
+  return Math.round(Math.max(0, Math.min(100, value)) * 100) / 100
+}
+
+function computeTpProgress({
+  pnlPct,
+  takeProfitPct,
+  entry,
+  tpPrice,
+  current,
+  quantity,
+  pnl,
+}: {
+  pnlPct: number | null
+  takeProfitPct: number | null
+  entry: number | null
+  tpPrice: number | null
+  current: number | null
+  quantity: number | null
+  pnl: number | null
+}): { tpPctComplete: number | null; remainingToTp: number | null } {
+  if (takeProfitPct != null && takeProfitPct > 0 && pnlPct != null) {
+    const remainingToTp = entry != null && quantity != null && quantity > 0 && pnl != null
+      ? Math.round((entry * (takeProfitPct / 100) * quantity - pnl) * 100) / 100
+      : null
+    return { tpPctComplete: clampPct((pnlPct / takeProfitPct) * 100), remainingToTp }
+  }
+  if (
+    entry != null && entry > 0
+    && tpPrice != null && tpPrice > 0
+    && current != null
+    && tpPrice !== entry
+  ) {
+    const span = tpPrice - entry
+    const remainingToTp = quantity != null && quantity > 0
+      ? Math.round((tpPrice - current) * quantity * 100) / 100
+      : null
+    return {
+      tpPctComplete: clampPct(((current - entry) / span) * 100),
+      remainingToTp,
+    }
+  }
+  return { tpPctComplete: null, remainingToTp: null }
 }
 
 function buildOrderMonitorRow(
   events: OnePercentSessionEvent[],
   session: OnePercentSession | null,
+  livePnl?: { pnl: number | null; pnlPct: number | null },
 ): OrderMonitorRowData | null {
   let orderId: string | null = session?.active_order_id ? String(session.active_order_id) : null
   let positionId: string | null = session?.active_position_id ? String(session.active_position_id) : null
@@ -272,22 +332,46 @@ function buildOrderMonitorRow(
   let lastCheckAt: string | null = null
   let filled = false
   let seenOrder = false
+  let positionClosed = false
+  let estimatedPnl: number | null = null
+  let estimatedPnlPct: number | null = null
+  let remainingToTarget: number | null = null
+  let goalPctComplete: number | null = null
+  let remainingToTp: number | null = null
+  let tpPctComplete: number | null = null
+  let takeProfitPct: number | null = null
+  let entryPrice: number | null = null
+  let tpPrice: number | null = null
+  let currentPrice: number | null = null
+  let quantity: number | null = null
 
   for (const event of events) {
     const payload = asRecord(event.payload)
     if (event.event_type === 'order_placed') {
       seenOrder = true
+      positionClosed = false
       orderId = String(payload.order_id || orderId || '') || null
       symbol = String(payload.symbol || symbol || '')
       if (!lastCheckAt) lastCheckAt = event.created_at
     }
-    if (event.event_type === 'entry_filled') {
+    if (event.event_type === 'entry_filled' || event.event_type === 'order_configured') {
       seenOrder = true
-      filled = true
+      if (event.event_type === 'entry_filled') {
+        filled = true
+        positionClosed = false
+      }
       orderId = String(payload.order_id || orderId || '') || null
       positionId = String(payload.position_id || positionId || '') || null
       symbol = String(payload.symbol || symbol || '')
       lastCheckAt = event.created_at
+      const buy = Number(payload.buy ?? payload.entry_price)
+      const tp = Number(payload.take_profit_price)
+      const tpPct = Number(payload.take_profit_pct)
+      const qty = Number(payload.quantity)
+      if (Number.isFinite(buy)) entryPrice = buy
+      if (Number.isFinite(tp)) tpPrice = tp
+      if (Number.isFinite(tpPct)) takeProfitPct = tpPct
+      if (Number.isFinite(qty)) quantity = qty
     }
     if (event.event_type === 'position_snapshot') {
       seenOrder = true
@@ -296,25 +380,94 @@ function buildOrderMonitorRow(
       positionId = String(payload.position_id || positionId || '') || null
       symbol = String(payload.symbol || symbol || '')
       lastCheckAt = event.created_at
+      const snapPnl = Number(payload.estimated_pnl)
+      const snapPct = Number(payload.estimated_pnl_pct)
+      if (Number.isFinite(snapPnl)) estimatedPnl = snapPnl
+      if (Number.isFinite(snapPct)) estimatedPnlPct = snapPct
+      const rem = Number(payload.remaining_to_target)
+      const goal = Number(payload.goal_pct_complete)
+      if (Number.isFinite(rem)) remainingToTarget = rem
+      if (Number.isFinite(goal)) goalPctComplete = goal
+      const tpDone = Number(payload.tp_pct_complete)
+      const remTp = Number(payload.remaining_to_tp)
+      if (Number.isFinite(tpDone)) tpPctComplete = tpDone
+      if (Number.isFinite(remTp)) remainingToTp = remTp
+      const buy = Number(payload.buy ?? payload.entry_price)
+      const tp = Number(payload.take_profit_price)
+      const tpPct = Number(payload.take_profit_pct)
+      const cur = Number(payload.current_price)
+      const qty = Number(payload.quantity)
+      if (Number.isFinite(buy)) entryPrice = buy
+      if (Number.isFinite(tp)) tpPrice = tp
+      if (Number.isFinite(tpPct)) takeProfitPct = tpPct
+      if (Number.isFinite(cur)) currentPrice = cur
+      if (Number.isFinite(qty)) quantity = qty
     }
-    if (event.event_type === 'attempt_completed' || event.event_type === 'order_failed') {
+    if (
+      event.event_type === 'attempt_completed'
+      || event.event_type === 'order_failed'
+      || event.event_type === 'force_close_started'
+      || event.event_type === 'manual_close_requested'
+    ) {
       if (payload.order_id) orderId = String(payload.order_id)
       if (payload.position_id) positionId = String(payload.position_id)
       if (payload.symbol) symbol = String(payload.symbol)
       lastCheckAt = event.created_at
       seenOrder = true
+      if (
+        event.event_type === 'attempt_completed'
+        || event.event_type === 'force_close_started'
+        || event.event_type === 'manual_close_requested'
+      ) {
+        positionClosed = true
+      }
     }
   }
 
   if (!seenOrder && !orderId) return null
 
+  if (livePnl?.pnl != null && Number.isFinite(livePnl.pnl)) {
+    estimatedPnl = livePnl.pnl
+  }
+  if (livePnl?.pnlPct != null && Number.isFinite(livePnl.pnlPct)) {
+    estimatedPnlPct = livePnl.pnlPct
+  }
+
+  const target = Number(session?.target_dollars)
+  const cumulative = Number(session?.cumulative_pnl)
+  if (Number.isFinite(target) && target > 0 && estimatedPnl != null) {
+    const base = Number.isFinite(cumulative) ? cumulative : 0
+    const projected = base + estimatedPnl
+    remainingToTarget = Math.round((target - projected) * 100) / 100
+    goalPctComplete = clampPct((projected / target) * 100)
+  }
+
+  if (takeProfitPct == null && session?.config?.take_profit_pct != null) {
+    takeProfitPct = Number(session.config.take_profit_pct)
+  }
+  const liveTp = computeTpProgress({
+    pnlPct: estimatedPnlPct,
+    takeProfitPct,
+    entry: entryPrice,
+    tpPrice,
+    current: currentPrice,
+    quantity,
+    pnl: estimatedPnl,
+  })
+  if (liveTp.tpPctComplete != null) tpPctComplete = liveTp.tpPctComplete
+  if (liveTp.remainingToTp != null) remainingToTp = liveTp.remainingToTp
+
   const state = String(session?.state || '')
   let status = 'Order placed'
-  if (state === 'monitoring') status = filled || positionId ? 'Monitoring position' : 'Waiting for fill'
+  if (positionClosed && state !== 'monitoring') status = 'Closed'
+  else if (positionClosed) status = 'Closing…'
+  else if (state === 'monitoring') status = filled || positionId ? 'Monitoring position' : 'Waiting for fill'
   else if (state === 'placing') status = 'Placing order'
   else if (state === 'evaluating') status = 'Evaluating close'
   else if (state === 'finished' || state === 'stopped') status = state === 'stopped' ? 'Stopped' : 'Closed'
   else if (filled || positionId) status = 'Filled'
+
+  const openForClose = state === 'monitoring' && Boolean(positionId || orderId) && !positionClosed
 
   return {
     symbol: symbol || '—',
@@ -323,20 +476,116 @@ function buildOrderMonitorRow(
     status,
     lastCheckAt,
     filled: Boolean(filled || positionId),
+    estimatedPnl,
+    estimatedPnlPct,
+    remainingToTarget,
+    goalPctComplete,
+    remainingToTp,
+    tpPctComplete,
+    takeProfitPct,
+    canClose: openForClose,
+    positionClosed,
   }
 }
 
-function OrderMonitorRow({ row }: { row: OrderMonitorRowData }) {
+function OrderMonitorRow({
+  row,
+  closing,
+  onClose,
+}: {
+  row: OrderMonitorRowData
+  closing?: boolean
+  onClose?: () => void
+}) {
   const lastCheck = row.lastCheckAt
     ? new Date(row.lastCheckAt).toLocaleTimeString()
     : '—'
+  const remaining = row.remainingToTarget
+  const remainingLabel = remaining == null
+    ? null
+    : remaining > 0
+      ? `${money(remaining)} to goal`
+      : remaining < 0
+        ? `${money(Math.abs(remaining))} over goal`
+        : 'Goal hit'
+  const remTp = row.remainingToTp
+  const tpRemainingLabel = remTp == null
+    ? null
+    : remTp > 0
+      ? `${money(remTp)} to TP`
+      : remTp < 0
+        ? `${money(Math.abs(remTp))} over TP`
+        : 'TP hit'
+  const showClose = Boolean(row.canClose && onClose && !closing && !row.positionClosed)
+  const showProgress = remainingLabel != null
+    || row.goalPctComplete != null
+    || tpRemainingLabel != null
+    || row.tpPctComplete != null
   return (
     <div className={`opc-order ${row.filled ? 'opc-order--live' : ''}`.trim()}>
       <div className="opc-order__head">
         <span className="opc-order__badge">{row.filled ? 'Filled' : 'Ordered'}</span>
         <strong className="opc-order__symbol">{row.symbol}</strong>
-        <span className="opc-order__status">{row.status}</span>
+        <span className="opc-order__status">
+          {closing ? 'Closing…' : row.status}
+        </span>
+        {row.estimatedPnl != null ? (
+          <span className={`opc-order__pnl ${pnlClass(row.estimatedPnl)}`.trim()}>
+            {money(row.estimatedPnl)}
+            {row.estimatedPnlPct != null ? (
+              <i className={pnlClass(row.estimatedPnlPct)}>{pct(row.estimatedPnlPct)}</i>
+            ) : null}
+          </span>
+        ) : null}
+        {showClose ? (
+          <button
+            type="button"
+            className="opc-order__close"
+            onClick={onClose}
+          >
+            Close position
+          </button>
+        ) : null}
       </div>
+      {showProgress ? (
+        <div className="opc-order__goal">
+          {tpRemainingLabel ? (
+            <span className={`opc-order__remaining opc-order__remaining--tp${remTp != null && remTp <= 0 ? ' opc-order__remaining--hit' : ''}`}>
+              {tpRemainingLabel}
+            </span>
+          ) : null}
+          {row.tpPctComplete != null ? (
+            <span
+              className="opc-order__goal-bar opc-order__goal-bar--tp"
+              title={
+                row.takeProfitPct != null
+                  ? `${row.tpPctComplete}% of ${row.takeProfitPct}% take-profit`
+                  : `${row.tpPctComplete}% of take-profit`
+              }
+            >
+              <span
+                className="opc-order__goal-fill opc-order__goal-fill--tp"
+                style={{ width: `${Math.max(2, Math.min(100, row.tpPctComplete))}%` }}
+              />
+              <em>{row.tpPctComplete.toFixed(0)}% TP</em>
+            </span>
+          ) : null}
+          {remainingLabel ? (
+            <span className={`opc-order__remaining${remaining != null && remaining <= 0 ? ' opc-order__remaining--hit' : ''}`}>
+              {remainingLabel}
+            </span>
+          ) : null}
+          {row.goalPctComplete != null ? (
+            <span className="opc-order__goal-bar" title={`${row.goalPctComplete}% of session target`}>
+              <span
+                className="opc-order__goal-fill"
+                style={{ width: `${Math.max(2, Math.min(100, row.goalPctComplete))}%` }}
+              />
+              <em>{row.goalPctComplete.toFixed(0)}% goal</em>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
       <div className="opc-order__ids">
         <span>
           <em>Order</em>
@@ -351,6 +600,53 @@ function OrderMonitorRow({ row }: { row: OrderMonitorRowData }) {
           <strong>{lastCheck}</strong>
         </span>
       </div>
+    </div>
+  )
+}
+
+function AttemptHistoryRow({ attempt }: { attempt: Record<string, unknown> }) {
+  const symbol = String(attempt.symbol || '—')
+  const number = Number(attempt.attempt_number)
+  const outcome = String(attempt.outcome || attempt.status || 'open')
+  const pnl = Number(attempt.realized_pnl)
+  const pnlPct = Number(attempt.realized_pnl_pct)
+  const takeProfitPct = Number(attempt.take_profit_pct)
+  const hasPnl = Number.isFinite(pnl)
+  const hasPnlPct = Number.isFinite(pnlPct)
+  const tpPct = Number.isFinite(takeProfitPct) && takeProfitPct > 0 && hasPnlPct
+    ? clampPct((pnlPct / takeProfitPct) * 100)
+    : null
+  const done = Boolean(attempt.finished_at || attempt.outcome)
+  if (!done && !hasPnl) return null
+  return (
+    <div className={`opc-attempt ${outcome === 'win' || outcome === 'take_profit' ? 'opc-attempt--win' : outcome === 'loss' || outcome === 'stop_loss' ? 'opc-attempt--loss' : ''}`.trim()}>
+      <div className="opc-attempt__head">
+        <span className="opc-attempt__badge">
+          Attempt{Number.isFinite(number) ? ` ${number}` : ''}
+        </span>
+        <strong className="opc-attempt__symbol">{symbol}</strong>
+        <span className="opc-attempt__outcome">{outcome.replace(/_/g, ' ')}</span>
+        {hasPnl ? (
+          <span className={`opc-attempt__pnl ${pnlClass(pnl)}`.trim()}>
+            {money(pnl)}
+            {hasPnlPct ? <i className={pnlClass(pnlPct)}>{pct(pnlPct)}</i> : null}
+          </span>
+        ) : null}
+      </div>
+      {tpPct != null ? (
+        <div className="opc-order__goal">
+          <span
+            className="opc-order__goal-bar opc-order__goal-bar--tp"
+            title={`${tpPct}% of ${takeProfitPct}% take-profit`}
+          >
+            <span
+              className="opc-order__goal-fill opc-order__goal-fill--tp"
+              style={{ width: `${Math.max(2, Math.min(100, tpPct))}%` }}
+            />
+            <em>{tpPct.toFixed(0)}% TP</em>
+          </span>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -465,6 +761,8 @@ export default function OnePercentSessionWorkspace({
   const [events, setEvents] = useState<OnePercentSessionEvent[]>([])
   const [error, setError] = useState('')
   const [stopping, setStopping] = useState(false)
+  const [closingPosition, setClosingPosition] = useState(false)
+  const [locallyClosedIds, setLocallyClosedIds] = useState(() => new Set<string>())
 
   const load = useCallback(async () => {
     const next = await getOnePercentSession(sessionId)
@@ -482,6 +780,11 @@ export default function OnePercentSessionWorkspace({
       cancelled = true
     }
   }, [load])
+
+  useEffect(() => {
+    setLocallyClosedIds(new Set())
+    setClosingPosition(false)
+  }, [sessionId])
 
   useEffect(() => {
     if (!detail || isTerminalOnePercentState(detail.state)) return
@@ -563,7 +866,48 @@ export default function OnePercentSessionWorkspace({
   })
 
   const pickRows = useMemo(() => buildPickStatusRows(events), [events])
-  const orderRow = useMemo(() => buildOrderMonitorRow(events, detail), [detail, events])
+
+  const liveOrderPnl = useMemo(() => {
+    const payload = pinned?.payload
+    if (!payload) return { pnl: null as number | null, pnlPct: null as number | null }
+    const entry = Number(payload.buy ?? payload.entry_price)
+    const qty = Number(payload.quantity)
+    const livePrice = live.ltp != null && Number.isFinite(live.ltp) ? live.ltp : null
+    const current = livePrice ?? Number(payload.current_price ?? payload.buy ?? payload.entry_price)
+    if (Number.isFinite(entry) && Number.isFinite(current) && Number.isFinite(qty) && qty > 0) {
+      const pnl = (current - entry) * qty
+      const pnlPct = entry > 0 ? ((current - entry) / entry) * 100 : null
+      return { pnl, pnlPct }
+    }
+    const snap = Number(payload.estimated_pnl)
+    const snapPct = Number(payload.estimated_pnl_pct)
+    return {
+      pnl: Number.isFinite(snap) ? snap : null,
+      pnlPct: Number.isFinite(snapPct) ? snapPct : null,
+    }
+  }, [live.ltp, pinned?.payload])
+
+  const orderRow = useMemo(() => {
+    const row = buildOrderMonitorRow(events, detail, liveOrderPnl)
+    if (!row) return null
+    const pid = row.positionId ? String(row.positionId) : ''
+    if (pid && locallyClosedIds.has(pid)) {
+      return {
+        ...row,
+        canClose: false,
+        positionClosed: true,
+        status: detail?.state === 'monitoring' ? 'Closing…' : (row.positionClosed ? row.status : 'Closed'),
+      }
+    }
+    return row
+  }, [detail, events, liveOrderPnl, locallyClosedIds])
+
+  const finishedAttempts = useMemo(
+    () => (detail?.attempts || [])
+      .map(row => asRecord(row))
+      .filter(row => Boolean(row.finished_at || row.outcome || row.realized_pnl != null)),
+    [detail?.attempts],
+  )
 
   const handleStop = useCallback(async () => {
     setStopping(true)
@@ -580,6 +924,63 @@ export default function OnePercentSessionWorkspace({
     }
   }, [onSessionUpdate, sessionId])
 
+  const handleClosePosition = useCallback(async () => {
+    if (!detail) return
+    const positionId = String(
+      orderRow?.positionId || detail.active_position_id || '',
+    ).trim()
+    if (!positionId) {
+      setError('No broker position id to close')
+      return
+    }
+    // Hide Close immediately so a second click cannot fire.
+    setLocallyClosedIds(prev => {
+      const next = new Set(prev)
+      next.add(positionId)
+      return next
+    })
+    setClosingPosition(true)
+    setError('')
+    try {
+      // Close via the same control-plane eToro path as Positions (always registered).
+      // The 1% /close-position route only sets an engine flag and may 404 until API restart.
+      const result = await closeEtoroPosition(positionId, detail.account_env, {
+        instrumentId: feedToken,
+        notify: {
+          source: 'positions',
+          ticker: orderRow?.symbol || detail.active_symbol || undefined,
+          close_reason: '1% manual close',
+        },
+      })
+      logCloseEtoroExchange('1pc-manual', result)
+
+      // Notify 1% engine when route is available; ignore Not Found until API reload.
+      try {
+        const next = await closeOnePercentPosition(sessionId)
+        setDetail(next)
+        setEvents(next.events || [])
+        onSessionUpdate?.(next)
+      } catch (notifyErr) {
+        const msg = notifyErr instanceof Error ? notifyErr.message : ''
+        if (!/not found/i.test(msg)) {
+          console.warn('[1pc] close-position notify failed', notifyErr)
+        }
+        const refreshed = await getOnePercentSession(sessionId)
+        setDetail(refreshed)
+        setEvents(refreshed.events || [])
+        onSessionUpdate?.(refreshed)
+      }
+    } catch (err) {
+      setLocallyClosedIds(prev => {
+        const next = new Set(prev)
+        next.delete(positionId)
+        return next
+      })
+      setError(err instanceof Error ? err.message : 'Failed to close position')
+    } finally {
+      setClosingPosition(false)
+    }
+  }, [detail, feedToken, onSessionUpdate, orderRow, sessionId])
   if (!detail) {
     return <div className="am-chat-empty">{error || 'Loading 1% session…'}</div>
   }
@@ -635,12 +1036,35 @@ export default function OnePercentSessionWorkspace({
         {pickRows.length || orderRow ? (
           <>
             {pickRows.map(row => <PickStatusRow key={row.key} row={row} />)}
-            {orderRow ? <OrderMonitorRow row={orderRow} /> : null}
+            {orderRow ? (
+              <OrderMonitorRow
+                row={orderRow}
+                closing={closingPosition}
+                onClose={() => void handleClosePosition()}
+              />
+            ) : null}
           </>
         ) : (
           <div className="am-empty-note">Waiting for a pick…</div>
         )}
       </div>
+
+      {finishedAttempts.length ? (
+        <details className="opc-attempts-panel">
+          <summary className="opc-attempts-panel__summary">
+            <span>Attempts</span>
+            <em>{finishedAttempts.length}</em>
+          </summary>
+          <div className="opc-attempts-panel__body">
+            {finishedAttempts.map(attempt => (
+              <AttemptHistoryRow
+                key={String(attempt.id || `${attempt.symbol}-${attempt.attempt_number}`)}
+                attempt={attempt}
+              />
+            ))}
+          </div>
+        </details>
+      ) : null}
     </div>
   )
 }

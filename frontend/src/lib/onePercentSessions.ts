@@ -205,6 +205,18 @@ export async function stopOnePercentSession(
   return parseJson(res)
 }
 
+export async function closeOnePercentPosition(
+  sessionId: string,
+  reason = 'Manual close',
+): Promise<OnePercentSessionDetail> {
+  const res = await fetch(`${API}/${encodeURIComponent(sessionId)}/close-position`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  })
+  return parseJson(res)
+}
+
 export async function deleteOnePercentSession(sessionId: string): Promise<void> {
   const res = await fetch(`${API}/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
   await parseJson(res)

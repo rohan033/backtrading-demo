@@ -548,6 +548,126 @@ class WatchlistStore:
         conn.close()
         return self.get_watchlist(watchlist_id)
 
+    @staticmethod
+    def _ticker_root(value: str) -> str:
+        text = str(value or "").strip().upper()
+        if not text:
+            return ""
+        return text.split(".", 1)[0].split("-", 1)[0]
+
+    @classmethod
+    def _watchlist_ticker_score(cls, tradingsymbol: str, symbol_field: str, ticker: str) -> int:
+        """Higher is better. Used to prefer .US/.RTH equities over bare crypto collisions."""
+        target = str(ticker or "").strip().upper()
+        if not target:
+            return 0
+        target_root = cls._ticker_root(target)
+        ts = str(tradingsymbol or "").strip().upper()
+        sym = str(symbol_field or "").strip().upper()
+        if not ts and not sym:
+            return 0
+        # Exact symbol with exchange suffix beats bare ticker collisions (STX crypto vs STX.US).
+        if ts == target and ("." in ts or "-" in ts):
+            return 100
+        if target_root and ts in {f"{target_root}.US", f"{target_root}.RTH"}:
+            return 90
+        if ts == target or sym == target:
+            return 80
+        if target_root and ts.startswith(f"{target_root}."):
+            return 70
+        if target_root and cls._ticker_root(ts) == target_root:
+            return 60
+        if target_root and cls._ticker_root(sym) == target_root:
+            return 50
+        return 0
+
+    def find_symbol_by_ticker(
+        self,
+        *,
+        broker: str,
+        account_env: str,
+        ticker: str,
+    ) -> dict[str, Any] | None:
+        """Find the best matching symbol across all watchlists for broker+env.
+
+        Returns a dict with watchlist symbol fields plus watchlist_id/name when found.
+        """
+        broker_name = (broker or "angel").strip().lower()
+        env = (account_env or ("demo" if broker_name == "etoro" else "live")).strip().lower()
+        query = str(ticker or "").strip()
+        if not query:
+            return None
+
+        best: dict[str, Any] | None = None
+        best_score = 0
+        for watchlist in self.list_watchlists():
+            wl_broker = str(watchlist.get("broker") or "angel").strip().lower()
+            wl_env = str(
+                watchlist.get("account_env")
+                or ("demo" if wl_broker == "etoro" else "live")
+            ).strip().lower()
+            if wl_broker != broker_name or wl_env != env:
+                continue
+            for symbol in watchlist.get("symbols") or []:
+                if not isinstance(symbol, dict):
+                    continue
+                score = self._watchlist_ticker_score(
+                    str(symbol.get("tradingsymbol") or ""),
+                    str(symbol.get("symbol") or ""),
+                    query,
+                )
+                if score <= best_score:
+                    continue
+                token = str(symbol.get("symboltoken") or "").strip()
+                if not token:
+                    continue
+                best_score = score
+                best = {
+                    **symbol,
+                    "watchlist_id": watchlist.get("id"),
+                    "watchlist_name": watchlist.get("name"),
+                    "broker": wl_broker,
+                    "account_env": wl_env,
+                    "match_score": score,
+                }
+        return best
+
+    def list_ticker_roots(
+        self,
+        *,
+        broker: str,
+        account_env: str | None = None,
+    ) -> set[str]:
+        """Return normalized ticker roots present on matching watchlists."""
+        broker_name = (broker or "angel").strip().lower()
+        env = (
+            (account_env or ("demo" if broker_name == "etoro" else "live"))
+            .strip()
+            .lower()
+        )
+        roots: set[str] = set()
+        for watchlist in self.list_watchlists():
+            wl_broker = str(watchlist.get("broker") or "angel").strip().lower()
+            wl_env = str(
+                watchlist.get("account_env")
+                or ("demo" if wl_broker == "etoro" else "live")
+            ).strip().lower()
+            if wl_broker != broker_name or wl_env != env:
+                continue
+            for symbol in watchlist.get("symbols") or []:
+                if not isinstance(symbol, dict):
+                    continue
+                # Prefer tradingsymbol; only use display "symbol" when it looks like a ticker.
+                candidates = [symbol.get("tradingsymbol")]
+                display = str(symbol.get("symbol") or "").strip()
+                if display and " " not in display and len(display) <= 12:
+                    candidates.append(display)
+                for raw in candidates:
+                    root = self._ticker_root(str(raw or ""))
+                    if root:
+                        roots.add(root)
+        return roots
+
 
 _store: WatchlistStore | None = None
 

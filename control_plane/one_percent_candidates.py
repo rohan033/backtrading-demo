@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from control_plane.instrument_resolve import pick_best_match, search_instruments
+from control_plane.instrument_resolve import (
+    find_watchlist_instrument,
+    pick_best_match,
+    search_instruments,
+)
 from control_plane.screener_query import (
     ONE_PERCENT_QUERY_PRESETS,
     ScreenerDefinition,
@@ -93,8 +97,10 @@ def rank_candidates(
     exclude_symbols: set[str] | None = None,
     min_score: float = 0.0,
     limit: int = 20,
+    watchlist_roots: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     excluded = {s.strip().upper() for s in (exclude_symbols or set()) if s}
+    known = {s.strip().upper() for s in (watchlist_roots or set()) if s}
     ranked: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in rows:
@@ -102,18 +108,45 @@ def rank_candidates(
         symbol = str(candidate.get("symbol") or "").upper()
         if not symbol or symbol in seen or symbol in excluded:
             continue
+        root = symbol.split(".", 1)[0].split("-", 1)[0]
+        on_watchlist = root in known or symbol in known
         close = candidate.get("close")
-        if close is None or float(close) < 20:
-            continue
-        market_cap = candidate.get("market_cap")
-        if market_cap is not None and float(market_cap) < 10_000_000_000:
+        # Keep watchlist-known names even when under the usual $20 / $10B gates —
+        # those IDs are already trusted and tradable on eToro.
+        if not on_watchlist:
+            if close is None or float(close) < 20:
+                continue
+            market_cap = candidate.get("market_cap")
+            if market_cap is not None and float(market_cap) < 10_000_000_000:
+                continue
+        elif close is None or float(close) <= 0:
             continue
         if float(candidate.get("score") or 0) < float(min_score or 0):
             continue
         seen.add(symbol)
+        candidate["on_watchlist"] = on_watchlist
         ranked.append(candidate)
-    ranked.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    ranked.sort(
+        key=lambda item: (
+            1 if item.get("on_watchlist") else 0,
+            float(item.get("score") or 0),
+        ),
+        reverse=True,
+    )
     return ranked[:limit]
+
+
+def _watchlist_roots_for_env(account_env: str) -> set[str]:
+    try:
+        from control_plane.watchlist_store import get_watchlist_store
+
+        return get_watchlist_store().list_ticker_roots(
+            broker="etoro",
+            account_env=account_env,
+        )
+    except Exception as exc:
+        log.warning("[1PC] watchlist root scan failed: %s", exc)
+        return set()
 
 
 def _etoro_rate_ltp(rate: dict[str, Any] | None) -> float | None:
@@ -164,14 +197,63 @@ async def resolve_etoro_candidate(
 ) -> dict[str, Any] | None:
     """Map a TradingView equity ticker to the matching eToro instrument.
 
-    Prefer the instrument whose live eToro LTP is closest to the screener close.
-    Bare tickers like STX can resolve to crypto (Stacks @ $0.17) while the
-    screener meant Seagate (~$794) listed as STX.US / STX.RTH.
+    Prefer a known watchlist instrument ID when the ticker is already saved.
+    Otherwise prefer the instrument whose live eToro LTP is closest to the
+    screener close. Bare tickers like STX can resolve to crypto (Stacks @ $0.17)
+    while the screener meant Seagate (~$794) listed as STX.US / STX.RTH.
     """
     symbol = str(candidate.get("symbol") or "").strip()
     if not symbol:
         return None
     screener_px = _num(candidate.get("close"))
+
+    watchlist_hit = find_watchlist_instrument("etoro", account_env, symbol)
+    if watchlist_hit:
+        token = str(watchlist_hit.get("symboltoken") or "").strip()
+        tradingsymbol = str(watchlist_hit.get("tradingsymbol") or symbol).strip()
+        if token:
+            ltp = None
+            try:
+                from brokers.etoro.trading_client import EtoroTradingClient
+
+                client = EtoroTradingClient(
+                    account_env="demo" if account_env == "demo" else "live",
+                )
+                client.generate_session()
+                rates = await client.aget_rates([int(token)])
+                if rates:
+                    ltp = _etoro_rate_ltp(rates[0] if isinstance(rates[0], dict) else None)
+            except Exception as exc:
+                log.info("[1PC] watchlist LTP fetch skipped for %s: %s", tradingsymbol, exc)
+            close_px = float(ltp) if ltp and ltp > 0 else screener_px
+            log.info(
+                "[1PC] using watchlist instrument %s token=%s list=%s",
+                tradingsymbol,
+                token,
+                watchlist_hit.get("watchlist_name"),
+            )
+            return {
+                **candidate,
+                "symbol": tradingsymbol,
+                "tradingsymbol": tradingsymbol,
+                "symboltoken": token,
+                "exchange": "ETORO",
+                "close": close_px,
+                "etoro_ltp": ltp,
+                "screener_close": screener_px,
+                "instrument_name": (
+                    watchlist_hit.get("name")
+                    or watchlist_hit.get("instrumentDisplayName")
+                    or candidate.get("name")
+                ),
+                "logo35x35": watchlist_hit.get("logo35x35"),
+                "logo50x50": watchlist_hit.get("logo50x50"),
+                "logo150x150": watchlist_hit.get("logo150x150"),
+                "etoro_available": True,
+                "from_watchlist": True,
+                "watchlist_name": watchlist_hit.get("watchlist_name"),
+            }
+
     try:
         rows = await search_instruments("etoro", account_env, symbol, exchange="ETORO")
     except Exception as exc:
@@ -277,6 +359,7 @@ async def resolve_etoro_candidate(
         "logo50x50": hit.get("logo50x50"),
         "logo150x150": hit.get("logo150x150"),
         "etoro_available": True,
+        "from_watchlist": bool(hit.get("from_watchlist")),
     }
 
 
@@ -394,6 +477,14 @@ async def find_tradeable_candidates(
     primary_key = keys[0] if keys else (sources[0].get("key") or sources[0].get("id") or "mixed")
     primary_name = " + ".join(query_names) if query_names else "Mixed screeners"
 
+    watchlist_roots = _watchlist_roots_for_env(account_env)
+    if watchlist_roots:
+        log.info(
+            "[1PC] watchlist roots available env=%s count=%d",
+            account_env,
+            len(watchlist_roots),
+        )
+
     ranked = rank_candidates(
         merged_rows,
         query_key=str(primary_key),
@@ -401,6 +492,7 @@ async def find_tradeable_candidates(
         exclude_symbols=exclude_symbols,
         min_score=min_score,
         limit=max(limit * 3, 20),
+        watchlist_roots=watchlist_roots,
     )
 
     resolved: list[dict[str, Any]] = []
@@ -413,6 +505,39 @@ async def find_tradeable_candidates(
             resolved.append(hit)
         else:
             unresolved.append(str(candidate.get("symbol") or ""))
+
+    # Last resort: among screener rows that never made the ranked cut, still try
+    # tickers that already exist on the user's eToro watchlists.
+    if not resolved and watchlist_roots:
+        log.warning(
+            "[1PC] no resolved candidates — falling back to watchlist intersection "
+            "(ranked=%d unresolved=%s)",
+            len(ranked),
+            unresolved[:8],
+        )
+        seen = {str(c.get("symbol") or "").upper() for c in ranked}
+        fallback_rows: list[dict[str, Any]] = []
+        for row in merged_rows:
+            candidate = normalize_candidate(
+                row, query_key=str(primary_key), query_name=primary_name,
+            )
+            symbol = str(candidate.get("symbol") or "").upper()
+            root = symbol.split(".", 1)[0].split("-", 1)[0]
+            if not symbol or symbol in seen:
+                continue
+            if root not in watchlist_roots and symbol not in watchlist_roots:
+                continue
+            seen.add(symbol)
+            candidate["on_watchlist"] = True
+            fallback_rows.append(candidate)
+        for candidate in fallback_rows:
+            if len(resolved) >= limit:
+                break
+            hit = await resolve_etoro_candidate(candidate, account_env=account_env)
+            if hit:
+                resolved.append(hit)
+            else:
+                unresolved.append(str(candidate.get("symbol") or ""))
 
     return {
         "market_phase": phase,
@@ -428,6 +553,7 @@ async def find_tradeable_candidates(
         "columns": columns,
         "candidates": resolved,
         "unresolved": [s for s in unresolved if s],
+        "watchlist_roots_count": len(watchlist_roots),
     }
 
 

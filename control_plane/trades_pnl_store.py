@@ -321,6 +321,11 @@ class TradesPnlStore:
         pnl: float | None = None,
         pnl_pct: float | None = None,
         close_reason: str | None = None,
+        order_id: str | None = None,
+        quantity: float | None = None,
+        capital: float | None = None,
+        opened_at: str | None = None,
+        closed_at: str | None = None,
     ) -> dict[str, Any] | None:
         """Persist a finalized trade closed by the Positions UI or its automation."""
         position = _clean(position_id)
@@ -335,9 +340,14 @@ class TradesPnlStore:
             return None
 
         now = _now_utc()
+        open_ts = _clean(opened_at) or now
+        close_ts = _clean(closed_at) or now
         broker_name = (broker or "etoro").lower()
         env = (account_env or "demo").lower()
         trade_source = (source or "positions").lower()
+        qty = _num(quantity)
+        cap = _num(capital)
+        oid = _clean(order_id)
         conn = self._connect()
         existing = conn.execute(
             """
@@ -355,12 +365,12 @@ class TradesPnlStore:
                 """
                 INSERT INTO trades_pnl (
                     id, position_id, source, broker, account_env, symbol,
-                    tradingsymbol, exchange, side, entry_price, exit_price,
-                    pnl, pnl_pct, status, close_reason, opened_at, closed_at,
-                    updated_at
+                    tradingsymbol, exchange, side, quantity, capital,
+                    entry_price, exit_price, pnl, pnl_pct, status, close_reason,
+                    order_id, opened_at, closed_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'ETORO', 'buy', ?, ?, ?, ?,
-                        'closed', ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'ETORO', 'buy', ?, ?, ?, ?, ?, ?,
+                        'closed', ?, ?, ?, ?, ?)
                 """,
                 (
                     row_id,
@@ -370,13 +380,16 @@ class TradesPnlStore:
                     env,
                     ticker,
                     ticker,
+                    qty,
+                    cap,
                     buy,
                     sell,
                     profit,
                     profit_pct,
                     _clean(close_reason),
-                    now,
-                    now,
+                    oid,
+                    open_ts,
+                    close_ts,
                     now,
                 ),
             )
@@ -386,8 +399,13 @@ class TradesPnlStore:
                 """
                 UPDATE trades_pnl
                 SET source = ?, symbol = ?, tradingsymbol = ?,
+                    quantity = COALESCE(?, quantity),
+                    capital = COALESCE(?, capital),
                     entry_price = ?, exit_price = ?, pnl = ?, pnl_pct = ?,
-                    status = 'closed', close_reason = ?, closed_at = ?,
+                    status = 'closed', close_reason = ?,
+                    order_id = COALESCE(?, order_id),
+                    opened_at = COALESCE(?, opened_at),
+                    closed_at = ?,
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -395,12 +413,16 @@ class TradesPnlStore:
                     trade_source,
                     ticker,
                     ticker,
+                    qty,
+                    cap,
                     buy,
                     sell,
                     profit,
                     profit_pct,
                     _clean(close_reason),
-                    now,
+                    oid,
+                    open_ts if opened_at else None,
+                    close_ts,
                     now,
                     row_id,
                 ),
@@ -410,6 +432,28 @@ class TradesPnlStore:
         row = conn.execute("SELECT * FROM trades_pnl WHERE id = ?", (row_id,)).fetchone()
         conn.close()
         return self._payload(row) if row else None
+
+    def has_position(
+        self,
+        *,
+        position_id: str,
+        broker: str = "etoro",
+        account_env: str = "demo",
+    ) -> bool:
+        position = _clean(position_id)
+        if not position:
+            return False
+        conn = self._connect()
+        row = conn.execute(
+            """
+            SELECT 1 FROM trades_pnl
+            WHERE broker = ? AND account_env = ? AND position_id = ?
+            LIMIT 1
+            """,
+            ((broker or "etoro").lower(), (account_env or "demo").lower(), position),
+        ).fetchone()
+        conn.close()
+        return row is not None
 
     def list_trades(
         self,

@@ -41,11 +41,12 @@ No symbol pre-selected — find the best stock to trade for these goals.
 
 Instructions:
 1. Shortlist 3–5 symbols via search_instruments (broker={session.get("broker")}, account_env={session.get("account_env")}, exchange=ETORO for eToro), then narrow to exactly 3 finalists.
+   Prefer any search hit with from_watchlist=true — reuse that instrument token/tradingsymbol.
 2. For EACH finalist, BEFORE writing any debate or pick:
    - get_historical_candles (1m or 5m + 30m/4h)
    - get_company_news and get_recommendation_trends
 3. Emit CandidateDebate then TopStockPicks with exactly 3 ranked candidates.
-   Each pick MUST include: symbol, name, token, exchange from search_instruments.
+   Each pick MUST include: symbol, name, token, exchange from search_instruments (watchlist token when present).
 4. Do NOT emit StrategySetupForm or place orders — discovery only.
 
 The system will auto-select your #1 ranked pick (server fallback if picks are missing).
@@ -118,6 +119,31 @@ async def _apply_explore_picks(
     symbol = str(pick.get("symbol") or "").strip()
     token = str(pick.get("token") or "").strip()
     exchange = str(pick.get("exchange") or "").strip() or None
+
+    session = store.get_session(session_id) or {}
+    broker = str(session.get("broker") or "etoro").lower()
+    account_env = str(session.get("account_env") or "demo").lower()
+    from control_plane.instrument_resolve import find_watchlist_instrument
+
+    watchlist_hit = find_watchlist_instrument(broker, account_env, symbol)
+    if watchlist_hit:
+        wl_token = str(watchlist_hit.get("symboltoken") or "").strip()
+        wl_symbol = str(watchlist_hit.get("tradingsymbol") or symbol).strip()
+        if wl_token:
+            if wl_token != token:
+                store.append_event(
+                    session_id,
+                    "watchlist_token_override",
+                    {
+                        "symbol": wl_symbol,
+                        "previous_token": token,
+                        "token": wl_token,
+                        "watchlist_name": watchlist_hit.get("watchlist_name"),
+                    },
+                )
+            symbol = wl_symbol
+            token = wl_token
+            exchange = str(watchlist_hit.get("exchange") or exchange or "ETORO")
 
     store.append_event(
         session_id,

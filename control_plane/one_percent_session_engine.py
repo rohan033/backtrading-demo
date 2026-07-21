@@ -30,6 +30,49 @@ log = logging.getLogger("backtrading")
 POLL_INTERVAL_SEC = 2.0
 SNAPSHOT_EVERY_N = 3
 ORDER_OPEN_TIMEOUT_SEC = 120.0
+# Soft blacklist window for symbols that lost money (same trading day / session).
+LOSS_BLACKLIST_HOURS = 24.0
+
+
+def _ticker_root(symbol: str | None) -> str:
+    text = str(symbol or "").strip().upper()
+    if not text:
+        return ""
+    return text.split(".", 1)[0].split("-", 1)[0]
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _threshold_hit(
+    *,
+    current: float,
+    entry_price: float,
+    pnl_amount: float,
+    take_profit_price: float,
+    stop_loss_price: float,
+) -> str | None:
+    """Return take_profit / stop_loss when live price or PnL crossed attempt brackets."""
+    if current <= 0:
+        return None
+    tp = float(take_profit_price or 0)
+    sl = float(stop_loss_price or 0)
+    if tp > 0 and current >= tp * 0.999:
+        return "take_profit"
+    if sl > 0 and current <= sl * 1.001:
+        return "stop_loss"
+    # Dollar-band fallback from entry↔bracket prices when quantity-based PnL is available.
+    if entry_price > 0 and tp > entry_price and pnl_amount >= (tp - entry_price) * 0.999:
+        # only meaningful when qty≈1; keep price checks primary
+        pass
+    return None
 
 
 def _now_utc() -> str:
@@ -224,6 +267,7 @@ class OnePercentSessionEngine:
         self.store = store or get_one_percent_session_store()
         self._tasks: dict[str, asyncio.Task] = {}
         self._stop_flags: set[str] = set()
+        self._close_flags: set[str] = set()
         self._lock = asyncio.Lock()
 
     async def startup(self) -> None:
@@ -240,12 +284,14 @@ class OnePercentSessionEngine:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
         self._stop_flags.clear()
+        self._close_flags.clear()
 
     def _ensure_runner(self, session_id: str) -> None:
         task = self._tasks.get(session_id)
         if task and not task.done():
             return
         self._stop_flags.discard(session_id)
+        self._close_flags.discard(session_id)
         self._tasks[session_id] = asyncio.create_task(
             self._run_session(session_id),
             name=f"one-percent-session-{session_id}",
@@ -293,6 +339,100 @@ class OnePercentSessionEngine:
         if task and not task.done():
             task.cancel()
         return self.store.get_session_detail(session_id)
+
+    async def request_close_position(
+        self,
+        session_id: str,
+        *,
+        reason: str = "Manual close",
+    ) -> dict[str, Any] | None:
+        """Market-close the active eToro position and let the monitor settle P&L."""
+        session = self.store.get_session(session_id)
+        if not session:
+            return None
+        if session.get("state") != "monitoring":
+            raise ValueError("Session is not monitoring an open position")
+        position_id = str(session.get("active_position_id") or "").strip()
+        if not position_id and not session.get("active_order_id"):
+            raise ValueError("No active position to close")
+
+        self._close_flags.add(session_id)
+        self.store.append_event(
+            session_id,
+            "manual_close_requested",
+            state="monitoring",
+            payload={
+                "reason": reason,
+                "position_id": position_id or None,
+                "order_id": session.get("active_order_id"),
+                "symbol": session.get("active_symbol"),
+            },
+        )
+
+        # Close immediately so the UI action does not depend on the next poll tick.
+        if position_id:
+            env = "live" if str(session.get("account_env") or "").lower() == "live" else "demo"
+            attempt_id = session.get("active_attempt_id")
+            attempt = self.store.get_attempt(attempt_id) if attempt_id else None
+            quantity = float((attempt or {}).get("quantity") or 0) if attempt else 0.0
+            token = str((attempt or {}).get("symboltoken") or "") if attempt else ""
+            instrument_id = None
+            if token:
+                try:
+                    instrument_id = int(token)
+                except (TypeError, ValueError):
+                    instrument_id = None
+            try:
+                from brokers.etoro.order_client import EtoroV2BracketOrderClient
+
+                client = EtoroV2BracketOrderClient(account_env=env)
+                client.generate_session()
+                await client.aclose_position(
+                    position_id,
+                    units=float(quantity) if quantity and quantity > 0 else None,
+                    instrument_id=instrument_id,
+                )
+                log.info(
+                    "[1PC] manual_close broker ok session=%s position=%s",
+                    session_id,
+                    position_id,
+                )
+            except Exception as exc:
+                # Flag stays set — monitor loop retries / settles from portfolio.
+                log.warning(
+                    "[1PC] manual_close broker error session=%s position=%s err=%s",
+                    session_id,
+                    position_id,
+                    exc,
+                )
+                self.store.append_event(
+                    session_id,
+                    "force_close_error",
+                    state="monitoring",
+                    payload={"error": str(exc), "position_id": position_id, "close_reason": "manual_close"},
+                )
+
+        return self.store.get_session_detail(session_id)
+
+    def _loss_blacklist(self, session_id: str) -> set[str]:
+        """Symbols that lost money recently — skip for a while on later attempts."""
+        blocked: set[str] = set()
+        now = datetime.now(timezone.utc)
+        for attempt in self.store.list_attempts(session_id):
+            if str(attempt.get("outcome") or "").lower() != "loss":
+                continue
+            finished = _parse_iso(attempt.get("finished_at")) or _parse_iso(attempt.get("created_at"))
+            if finished is not None:
+                age_h = (now - finished.astimezone(timezone.utc)).total_seconds() / 3600.0
+                if age_h > LOSS_BLACKLIST_HOURS:
+                    continue
+            symbol = str(attempt.get("symbol") or attempt.get("tradingsymbol") or "").upper()
+            root = _ticker_root(symbol)
+            if symbol:
+                blocked.add(symbol)
+            if root:
+                blocked.add(root)
+        return blocked
 
     async def check_eligibility(
         self,
@@ -425,13 +565,9 @@ class OnePercentSessionEngine:
             )
             return
 
-        # Screening / focus symbols
+        # Screening / focus symbols — blacklist only symbols that incurred a loss.
         self.store.set_state(session_id, "screening")
-        exclude = {
-            str(a.get("symbol") or a.get("tradingsymbol") or "").upper()
-            for a in self.store.list_attempts(session_id)
-            if a.get("symbol") or a.get("tradingsymbol")
-        }
+        exclude = self._loss_blacklist(session_id)
         focus_symbols = [
             str(s).strip().upper()
             for s in (config.get("focus_symbols") or [])
@@ -1015,6 +1151,35 @@ class OnePercentSessionEngine:
                 else:
                     pnl_amount = (current - entry_price) * quantity if entry_price and quantity else 0.0
                 pnl_pct = ((current - entry_price) / entry_price * 100.0) if entry_price else 0.0
+                cumulative = float(session.get("cumulative_pnl") or 0)
+                target = float(session.get("target_dollars") or 0)
+                projected = cumulative + pnl_amount
+                remaining_to_target = round(target - projected, 2) if target else None
+                goal_pct = (
+                    round(max(0.0, min(100.0, (projected / target) * 100.0)), 2)
+                    if target > 0
+                    else None
+                )
+                tp_pct = float(attempt.get("take_profit_pct") or 0)
+                tp_price = float(attempt.get("take_profit_price") or 0)
+                tp_pct_complete = None
+                remaining_to_tp = None
+                if tp_pct > 0:
+                    tp_pct_complete = round(max(0.0, min(100.0, (pnl_pct / tp_pct) * 100.0)), 2)
+                    target_tp_pnl = (
+                        (entry_price * (tp_pct / 100.0) * quantity)
+                        if entry_price and quantity
+                        else None
+                    )
+                    if target_tp_pnl is not None:
+                        remaining_to_tp = round(target_tp_pnl - pnl_amount, 2)
+                elif tp_price > 0 and entry_price > 0 and quantity > 0 and tp_price != entry_price:
+                    span = tp_price - entry_price
+                    tp_pct_complete = round(
+                        max(0.0, min(100.0, ((current - entry_price) / span) * 100.0)),
+                        2,
+                    )
+                    remaining_to_tp = round((tp_price - current) * quantity, 2)
                 ticks += 1
                 if ticks == 1 or ticks % SNAPSHOT_EVERY_N == 0:
                     self.store.append_event(
@@ -1043,8 +1208,42 @@ class OnePercentSessionEngine:
                             "estimated_pnl": round(pnl_amount, 2),
                             "estimated_pnl_pct": round(pnl_pct, 4),
                             "broker_pnl": broker_pnl,
+                            "cumulative_pnl": round(cumulative, 2),
+                            "target_dollars": target,
+                            "remaining_to_target": remaining_to_target,
+                            "goal_pct_complete": goal_pct,
+                            "tp_pct_complete": tp_pct_complete,
+                            "remaining_to_tp": remaining_to_tp,
                         },
                     )
+
+                # Force-close when eToro brackets didn't fire but live P/L crossed TP/SL.
+                threshold = _threshold_hit(
+                    current=float(current or 0),
+                    entry_price=float(entry_price or 0),
+                    pnl_amount=float(pnl_amount or 0),
+                    take_profit_price=float(attempt.get("take_profit_price") or 0),
+                    stop_loss_price=float(attempt.get("stop_loss_price") or 0),
+                )
+                manual_close = session_id in self._close_flags
+                if threshold or manual_close:
+                    close_why = "manual_close" if manual_close else threshold
+                    self._close_flags.discard(session_id)
+                    await self._force_close_open_position(
+                        session=session,
+                        attempt=attempt,
+                        client=client,
+                        order_id=str(order_id) if order_id else None,
+                        position_id=str(position_id) if position_id else None,
+                        entry_price=entry_price,
+                        quantity=quantity,
+                        last_mark=current,
+                        last_broker_pnl=broker_pnl if broker_pnl is not None else pnl_amount,
+                        last_matched=matched,
+                        open_positions=positions,
+                        close_reason=str(close_why),
+                    )
+                    return
             else:
                 elapsed = (datetime.now(timezone.utc) - opened_at).total_seconds()
                 # orders:lookup can return positionId+openRate before /pnl lists the
@@ -1156,6 +1355,91 @@ class OnePercentSessionEngine:
 
             await asyncio.sleep(POLL_INTERVAL_SEC)
 
+    async def _force_close_open_position(
+        self,
+        *,
+        session: dict[str, Any],
+        attempt: dict[str, Any],
+        client: Any,
+        order_id: str | None,
+        position_id: str | None,
+        entry_price: float,
+        quantity: float,
+        last_mark: float | None,
+        last_broker_pnl: float | None,
+        last_matched: dict[str, Any] | None,
+        open_positions: list[dict[str, Any]],
+        close_reason: str,
+    ) -> None:
+        """Market-close on eToro when brackets didn't fire (or user clicked Close)."""
+        session_id = session["id"]
+        pid = str(position_id or "").strip()
+        token = str(attempt.get("symboltoken") or "") or None
+        instrument_id = None
+        if token:
+            try:
+                instrument_id = int(token)
+            except (TypeError, ValueError):
+                instrument_id = None
+
+        self.store.append_event(
+            session_id,
+            "force_close_started",
+            state="monitoring",
+            payload={
+                "attempt_id": attempt.get("id"),
+                "symbol": attempt.get("symbol"),
+                "position_id": pid,
+                "order_id": order_id,
+                "close_reason": close_reason,
+                "last_mark": last_mark,
+                "last_broker_pnl": last_broker_pnl,
+            },
+        )
+
+        if pid:
+            try:
+                await client.aclose_position(
+                    pid,
+                    units=float(quantity) if quantity and quantity > 0 else None,
+                    instrument_id=instrument_id,
+                )
+                log.info(
+                    "[1PC] force_close ok session=%s position=%s reason=%s",
+                    session_id,
+                    pid,
+                    close_reason,
+                )
+            except Exception as exc:
+                log.warning(
+                    "[1PC] force_close broker error session=%s position=%s err=%s — completing from marks",
+                    session_id,
+                    pid,
+                    exc,
+                )
+                self.store.append_event(
+                    session_id,
+                    "force_close_error",
+                    state="monitoring",
+                    payload={"error": str(exc), "position_id": pid, "close_reason": close_reason},
+                )
+
+        # Prefer broker history / LTP settlement path; fall back to last mark.
+        await self._close_from_broker(
+            session=session,
+            attempt=attempt,
+            client=client,
+            order_id=order_id,
+            position_id=pid or None,
+            entry_price=entry_price,
+            quantity=quantity,
+            last_mark=last_mark,
+            last_broker_pnl=last_broker_pnl,
+            last_matched=last_matched,
+            open_positions=open_positions,
+            forced_close_reason=close_reason,
+        )
+
     async def _close_from_broker(
         self,
         *,
@@ -1170,6 +1454,7 @@ class OnePercentSessionEngine:
         last_broker_pnl: float | None,
         last_matched: dict[str, Any] | None,
         open_positions: list[dict[str, Any]],
+        forced_close_reason: str | None = None,
     ) -> None:
         """Position missing from portfolio — resolve buy/sell from eToro, not screener LTP."""
         session_id = session["id"]
@@ -1214,7 +1499,9 @@ class OnePercentSessionEngine:
                 )
                 fill = _fill_from_order_lookup(lookup, preferred_position_id=position_id)
             except Exception as exc:
-                log.warning(
+                # Closed market-close orders often 500 on lookup — settle from last_matched.
+                log_fn = log.debug if last_matched else log.warning
+                log_fn(
                     "[1PC] etoro_order_lookup on_close failed session=%s order_id=%s err=%s",
                     session_id,
                     order_id,
@@ -1319,14 +1606,15 @@ class OnePercentSessionEngine:
             sell_source = "buy_fallback"
 
         if sell_source != "trade_history":
+            # Classify TP/SL for outcome labeling, but never overwrite the exit
+            # price with the bracket target (that invents fills like Trade Story mismatches).
             if exit_price > 0 and tp and exit_price >= tp * 0.999:
                 close_reason = "take_profit"
-                exit_price = tp
-                sell_source = "take_profit"
             elif exit_price > 0 and sl and exit_price <= sl * 1.001:
                 close_reason = "stop_loss"
-                exit_price = sl
-                sell_source = "stop_loss"
+
+        if forced_close_reason:
+            close_reason = forced_close_reason
 
         if realized_pnl is None and buy > 0 and quantity > 0 and exit_price > 0:
             realized_pnl = (exit_price - buy) * quantity

@@ -1381,6 +1381,11 @@ function DetailPanel({ selected, width, onResizeStart }: {
                   <div className="wt-detail-title-copy">
                     <div className="wt-detail-ticker">{sym.ticker}</div>
                     <div className="wt-detail-fullname">{sym.name}</div>
+                    {sym.symboltoken ? (
+                      <div className="wt-detail-id" title="Instrument ID">
+                        ID {sym.symboltoken}
+                      </div>
+                    ) : null}
                     <div className="wt-detail-price">{sym.price}</div>
                     <div className={`wt-detail-change ${sym.chgUp?'wt-up':'wt-down'}`}>{sym.chg}</div>
                   </div>

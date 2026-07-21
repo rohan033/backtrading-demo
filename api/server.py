@@ -615,6 +615,8 @@ async def control_plane_search(
     account_env: str = "live",
     use_fake_client: bool = False,
 ):
+    from control_plane.instrument_resolve import merge_watchlist_into_search_rows
+
     broker_name = "fake" if use_fake_client else (broker or "angel").lower()
     log.info(
         "[CONTROL_SEARCH] request broker=%s env=%s exchange=%s q=%r fake=%s",
@@ -622,14 +624,21 @@ async def control_plane_search(
     )
     try:
         if broker_name == "fake":
-            rows = _mock_search_rows(q)
+            rows = merge_watchlist_into_search_rows(
+                broker_name, account_env, q, _mock_search_rows(q),
+            )
             log.info("[CONTROL_SEARCH] fake returned %d rows for %r", len(rows), q)
             return {"status": True, "data": rows}
 
         if broker_name == "etoro":
             client = await _etoro_trading_client(account_env)
             instruments = await client.asearch_instruments(q)
-            rows = [_etoro_instrument_to_search_row(item) for item in instruments]
+            rows = merge_watchlist_into_search_rows(
+                broker_name,
+                account_env,
+                q,
+                [_etoro_instrument_to_search_row(item) for item in instruments],
+            )
             if rows:
                 log.info(
                     "[CONTROL_SEARCH] etoro returned %d rows for %r using account_env=%s",
@@ -651,7 +660,9 @@ async def control_plane_search(
         client = get_client()
         result = client._client.searchScrip(exchange, q)
         if result and result.get("status"):
-            rows = result.get("data", []) or []
+            rows = merge_watchlist_into_search_rows(
+                broker_name, account_env, q, result.get("data", []) or [],
+            )
             log.info("[CONTROL_SEARCH] angel returned %d rows for %r", len(rows), q)
             for item in rows[:10]:
                 log.info(
@@ -660,12 +671,28 @@ async def control_plane_search(
                 )
             return {"status": True, "data": rows}
 
+        # Still surface watchlist-only matches when Angel text search misses.
+        rows = merge_watchlist_into_search_rows(broker_name, account_env, q, [])
+        if rows:
+            return {"status": True, "data": rows}
+
         log.warning("[CONTROL_SEARCH] angel returned no results for %r: %s", q, result)
         return {"status": False, "message": "No results found", "data": []}
     except Exception as e:
         error_message = str(e)
         if hasattr(e, "status_code") and hasattr(e, "payload"):
             error_message = f"{e} payload={getattr(e, 'payload', None)}"
+        # Watchlist-only fallback when broker search blows up (e.g. missing creds).
+        try:
+            rows = merge_watchlist_into_search_rows(broker_name, account_env, q, [])
+            if rows:
+                log.warning(
+                    "[CONTROL_SEARCH] broker search failed; returning watchlist hit for %r",
+                    q,
+                )
+                return {"status": True, "data": rows}
+        except Exception:
+            pass
         log.error(
             "[CONTROL_SEARCH] failed broker=%s env=%s q=%r error=%s",
             broker_name,
@@ -1614,6 +1641,27 @@ def _log_etoro_close_result(label: str, result: dict) -> None:
     )
 
 
+async def _settle_close_notify(
+    client,
+    position_id: str,
+    notify: PositionCloseNotifyContext | None,
+    *,
+    order_id: str | None = None,
+) -> tuple[PositionCloseNotifyContext | None, dict | None]:
+    """Prefer eToro trade/history fill over client live LTP estimates."""
+    from control_plane.etoro_close_settle import (
+        apply_settlement_to_notify,
+        settle_closed_trade,
+    )
+
+    settled = await settle_closed_trade(
+        client,
+        position_id=position_id,
+        order_id=order_id,
+    )
+    return apply_settlement_to_notify(notify, settled), settled
+
+
 def _position_close_notify_details(
     *,
     account_env: str,
@@ -1988,12 +2036,28 @@ async def close_execution_position(
     # reflects the new state without waiting for the next remote poll.
     db.mark_position_closed(str(position_id), execution_id)
 
+    notify = req.notify
+    settled = None
+    settlement_pending = False
+    try:
+        notify, settled = await _settle_close_notify(client, str(position_id), notify)
+        if settled:
+            log.info(
+                "[CONTROL_ETORO] close settled from history execution=%s position=%s sell=%s pnl=%s",
+                execution_id,
+                position_id,
+                settled.get("sell_price"),
+                settled.get("pnl"),
+            )
+    except Exception as exc:
+        log.debug("[CONTROL_ETORO] close settle skipped: %s", exc)
+        settled = None
+
     # Record the exit + realized P&L in the durable ledger. No-op unless this
     # execution has a momentum entry recorded. Best-effort: never fail the close.
     try:
         from control_plane.trades_pnl_store import get_trades_pnl_store
 
-        notify = req.notify
         get_trades_pnl_store().record_exit(
             execution_id=execution_id,
             position_id=str(position_id),
@@ -2005,6 +2069,21 @@ async def close_execution_position(
         )
     except Exception as exc:
         log.debug("[CONTROL_ETORO] trades_pnl exit record skipped: %s", exc)
+
+    if not settled and notify:
+        try:
+            from control_plane.etoro_close_settle import schedule_background_resettle
+
+            schedule_background_resettle(
+                account_env=account_env,
+                position_id=str(position_id),
+                ticker=getattr(notify, "ticker", None),
+                source=getattr(notify, "source", None) or "momentum",
+                close_reason=getattr(notify, "close_reason", None),
+            )
+            settlement_pending = True
+        except Exception as exc:
+            log.debug("[CONTROL_ETORO] background settle schedule skipped: %s", exc)
 
     try:
         from control_plane.agent_trade_completion import log_position_close_for_execution
@@ -2023,20 +2102,22 @@ async def close_execution_position(
     _notify_ui_position_closed(
         account_env=account_env,
         position_id=str(position_id),
-        notify=req.notify,
+        notify=notify,
         executor_id=execution_id,
         position_row=position_row,
     )
 
     log.info(
-        "[CONTROL_ETORO] close_position OK execution=%s position=%s env=%s units=%s",
-        execution_id, position_id, account_env, req.units,
+        "[CONTROL_ETORO] close_position OK execution=%s position=%s env=%s units=%s pending=%s",
+        execution_id, position_id, account_env, req.units, settlement_pending,
     )
     return {
         "status": True,
         "position_id": position_id,
         "closed": True,
         "debug": closed,
+        "settled": settled,
+        "settlement_pending": settlement_pending,
     }
 
 
@@ -2443,10 +2524,18 @@ async def control_plane_etoro_close_position(
     _log_etoro_close_result("CONTROL_ETORO", closed)
     _remove_position_from_portfolio_cache("etoro", env, str(position_id))
 
+    # Prefer eToro trade/history fill (Trade Story) over client live LTP.
+    notify = req.notify
+    settled = None
+    settlement_pending = False
+    try:
+        notify, settled = await _settle_close_notify(client, str(position_id), notify)
+    except Exception as exc:
+        log.debug("[CONTROL_ETORO] direct close settle skipped: %s", exc)
+
     # Direct closes initiated by the Positions page (manual or bracket
     # automation) do not have an execution id, so persist their finalized P&L
     # explicitly. Other API callers are intentionally excluded.
-    notify = req.notify
     if notify and notify.source in {"positions", "bracket"}:
         try:
             from control_plane.trades_pnl_store import get_trades_pnl_store
@@ -2466,12 +2555,33 @@ async def control_plane_etoro_close_position(
         except Exception as exc:
             log.debug("[CONTROL_ETORO] UI trade P&L record skipped: %s", exc)
 
+    if not settled and notify and notify.source in {"positions", "bracket"}:
+        try:
+            from control_plane.etoro_close_settle import schedule_background_resettle
+
+            schedule_background_resettle(
+                account_env=env,
+                position_id=str(position_id),
+                ticker=notify.ticker,
+                source=notify.source,
+                close_reason=notify.close_reason,
+            )
+            settlement_pending = True
+        except Exception as exc:
+            log.debug("[CONTROL_ETORO] background settle schedule skipped: %s", exc)
+
     _notify_ui_position_closed(
         account_env=env,
         position_id=str(position_id),
-        notify=req.notify,
+        notify=notify,
     )
-    log.info("[CONTROL_ETORO] direct close OK position=%s env=%s", position_id, env)
+    log.info(
+        "[CONTROL_ETORO] direct close OK position=%s env=%s settled=%s pending=%s",
+        position_id,
+        env,
+        bool(settled),
+        settlement_pending,
+    )
     return {
         "status": True,
         "broker": "etoro",
@@ -2479,7 +2589,27 @@ async def control_plane_etoro_close_position(
         "position_id": position_id,
         "closed": True,
         "debug": closed,
+        "settled": settled,
+        "settlement_pending": settlement_pending,
     }
+
+
+@app.get(
+    "/api/control/etoro/positions/{position_id}/settlement",
+    operation_id="get_etoro_position_settlement",
+    summary="Poll background trade/history settlement for a closed position",
+)
+async def control_plane_etoro_position_settlement(position_id: str):
+    from control_plane.etoro_close_settle import get_settlement_job
+
+    job = get_settlement_job(str(position_id))
+    if not job:
+        return {
+            "status": True,
+            "position_id": str(position_id),
+            "data": {"status": "unknown", "position_id": str(position_id)},
+        }
+    return {"status": True, "position_id": str(position_id), "data": job}
 
 
 @app.get("/api/control/etoro/orders", operation_id="get_etoro_orders", summary="Get eToro pending and active orders")

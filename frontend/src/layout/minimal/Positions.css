@@ -159,8 +159,30 @@
 }
 
 .pos-sym-ticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-weight: 700;
   color: #111;
+}
+
+.pos-monitor-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid #9dd4b3;
+  border-radius: 999px;
+  background: #e8f8ee;
+  color: #126b3a;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.pos-row--monitoring td {
+  background: #f7fcf9;
 }
 
 .pos-sym-name {
@@ -276,6 +298,11 @@
 .pos-toolbar-meta--monitor {
   color: #126b3a;
   font-weight: 700;
+}
+
+.pos-toolbar-meta--monitor-idle {
+  color: #4a5568;
+  font-weight: 600;
 }
 
 .pos-row--hidden {

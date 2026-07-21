@@ -57,7 +57,7 @@ frontend/dist/
 manual_robo.db
 control_plane.db
 live_events.db
-
+order_activity.db
 # Generated chart exports (matplotlib / analysis scripts at repo root)
 /*.png
 /charts/

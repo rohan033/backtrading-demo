@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import { Activity, Download, RefreshCw, Settings2 } from 'lucide-react'
+import { Activity, Download, ListPlus, RefreshCw, Settings2 } from 'lucide-react'
 import './SettingsPage.css'
 
 type TradeStatus = 'open' | 'closed'
@@ -41,6 +41,50 @@ type LedgerRow =
     }
 
 type DatePreset = 'all' | 'last_7d' | 'last_30d' | 'last_week' | 'last_month' | 'x_days' | 'custom'
+
+type ImportSource = 'positions' | 'bracket' | 'momentum-trade' | 'manual'
+
+type EtoroDayTrade = {
+  position_id: string
+  order_id: string | null
+  instrument_id: number | null
+  symbol: string
+  ticker: string
+  is_buy: boolean
+  units: number | null
+  investment: number | null
+  entry_price: number | null
+  exit_price: number | null
+  pnl: number | null
+  pnl_pct: number | null
+  fees: number | null
+  opened_at: string | null
+  closed_at: string | null
+  already_imported: boolean
+}
+
+const IMPORT_SOURCES: Array<{ value: ImportSource; label: string }> = [
+  { value: 'positions', label: 'Positions' },
+  { value: 'bracket', label: 'Bracket' },
+  { value: 'momentum-trade', label: 'Momentum' },
+  { value: 'manual', label: 'Manual' },
+]
+
+function sourcePillClass(source: string): string {
+  if (source === 'momentum-trade') return 'momentum'
+  if (source === '1pc_session') return 'onepc'
+  if (source === 'manual') return 'manual'
+  if (source === 'bracket') return 'bracket'
+  return 'positions'
+}
+
+function sourceLabel(source: string): string {
+  if (source === 'momentum-trade') return 'Momentum'
+  if (source === '1pc_session') return '1%'
+  if (source === 'manual') return 'Manual'
+  if (source === 'bracket') return 'Bracket'
+  return 'Positions'
+}
 
 function shortSessionId(sessionId: string): string {
   const clean = sessionId.trim()
@@ -232,6 +276,16 @@ export default function SettingsPage() {
   const [fromDate, setFromDate] = useState('')
   const [toDate, setToDate] = useState(() => toDateInputValue(new Date()))
 
+  const [importOpen, setImportOpen] = useState(false)
+  const [importEnv, setImportEnv] = useState<'live' | 'demo'>('live')
+  const [importDay, setImportDay] = useState(() => toDateInputValue(new Date()))
+  const [importTicker, setImportTicker] = useState('')
+  const [importSource, setImportSource] = useState<ImportSource>('positions')
+  const [importRows, setImportRows] = useState<EtoroDayTrade[]>([])
+  const [importLoading, setImportLoading] = useState(false)
+  const [importError, setImportError] = useState('')
+  const [importingIds, setImportingIds] = useState<Record<string, boolean>>({})
+
   const loadTrades = useCallback(async (refresh = false) => {
     if (refresh) setRefreshing(true)
     else setLoading(true)
@@ -271,6 +325,86 @@ export default function SettingsPage() {
   useEffect(() => {
     void loadTrades()
   }, [loadTrades])
+
+  const loadEtoroDay = useCallback(async () => {
+    setImportLoading(true)
+    setImportError('')
+    try {
+      const params = new URLSearchParams({
+        account_env: importEnv,
+        day: importDay,
+      })
+      const ticker = importTicker.trim()
+      if (ticker) params.set('ticker', ticker)
+      const response = await fetch(`/api/trades-pnl/etoro-day?${params}`)
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { detail?: string }
+        throw new Error(body.detail || `Request failed (${response.status})`)
+      }
+      const payload = await response.json() as { status?: boolean; data?: EtoroDayTrade[] }
+      if (!payload.status) throw new Error('Could not load eToro day trades')
+      setImportRows(payload.data || [])
+      setImportOpen(true)
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Failed to load eToro trades')
+      setImportRows([])
+    } finally {
+      setImportLoading(false)
+    }
+  }, [importDay, importEnv, importTicker])
+
+  const importTrade = useCallback(async (row: EtoroDayTrade) => {
+    if (!row.position_id) return
+    setImportingIds(prev => ({ ...prev, [row.position_id]: true }))
+    setImportError('')
+    try {
+      const response = await fetch('/api/trades-pnl/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          account_env: importEnv,
+          position_id: row.position_id,
+          source: importSource,
+          symbol: row.symbol,
+          entry_price: row.entry_price,
+          exit_price: row.exit_price,
+          pnl: row.pnl,
+          pnl_pct: row.pnl_pct,
+          units: row.units,
+          investment: row.investment,
+          order_id: row.order_id,
+          opened_at: row.opened_at,
+          closed_at: row.closed_at,
+          close_reason: 'manual_import',
+        }),
+      })
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({})) as { detail?: string }
+        throw new Error(body.detail || `Import failed (${response.status})`)
+      }
+      setImportRows(prev => prev.map(item => (
+        item.position_id === row.position_id ? { ...item, already_imported: true } : item
+      )))
+      await loadTrades(true)
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Failed to import trade')
+    } finally {
+      setImportingIds(prev => {
+        const next = { ...prev }
+        delete next[row.position_id]
+        return next
+      })
+    }
+  }, [importEnv, importSource, loadTrades])
+
+  const filteredImportRows = useMemo(() => {
+    const q = importTicker.trim().toUpperCase()
+    if (!q) return importRows
+    return importRows.filter(row =>
+      row.ticker.toUpperCase().includes(q)
+      || row.symbol.toUpperCase().includes(q),
+    )
+  }, [importRows, importTicker])
 
   const visibleTrades = useMemo(() => {
     const now = new Date()
@@ -414,11 +548,146 @@ export default function SettingsPage() {
             <RefreshCw className={refreshing ? 'set-spin' : ''} aria-hidden="true" />
             {refreshing ? 'Refreshing' : 'Refresh'}
           </button>
+          <button
+            type="button"
+            className="set-btn"
+            onClick={() => {
+              setImportOpen(true)
+              if (!importRows.length) void loadEtoroDay()
+            }}
+            disabled={importLoading}
+          >
+            <ListPlus aria-hidden="true" />
+            {importLoading ? 'Loading eToro…' : 'Import eToro day'}
+          </button>
           <a className="set-btn set-btn--primary" href={downloadUrl}>
             <Download aria-hidden="true" />
             CSV
           </a>
         </div>
+
+        {importOpen ? (
+          <details className="set-import" open>
+            <summary className="set-import__summary">
+              <span>Import from eToro</span>
+              <em>{filteredImportRows.length}</em>
+            </summary>
+            <div className="set-import__controls">
+              <div className="set-env" role="group" aria-label="Import account">
+                {(['live', 'demo'] as const).map(environment => (
+                  <button
+                    type="button"
+                    key={environment}
+                    className={importEnv === environment ? 'set-env__active' : ''}
+                    aria-pressed={importEnv === environment}
+                    onClick={() => setImportEnv(environment)}
+                  >
+                    {environment[0].toUpperCase() + environment.slice(1)}
+                  </button>
+                ))}
+              </div>
+              <label className="set-date">
+                <span>Day</span>
+                <input type="date" value={importDay} onChange={event => setImportDay(event.target.value)} />
+              </label>
+              <label className="set-date">
+                <span>Ticker</span>
+                <input
+                  type="text"
+                  placeholder="ZYBT"
+                  value={importTicker}
+                  onChange={event => setImportTicker(event.target.value)}
+                />
+              </label>
+              <label className="set-date">
+                <span>Source</span>
+                <select
+                  value={importSource}
+                  onChange={event => setImportSource(event.target.value as ImportSource)}
+                >
+                  {IMPORT_SOURCES.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="set-btn set-btn--primary"
+                onClick={() => void loadEtoroDay()}
+                disabled={importLoading}
+              >
+                {importLoading ? 'Loading…' : 'List trades'}
+              </button>
+              <button
+                type="button"
+                className="set-btn"
+                onClick={() => setImportOpen(false)}
+              >
+                Hide
+              </button>
+            </div>
+            {importError ? (
+              <div className="set-error set-error--inline" role="alert">
+                <span>{importError}</span>
+              </div>
+            ) : null}
+            {filteredImportRows.length ? (
+              <div className="set-import__table-wrap">
+                <table className="set-import__table">
+                  <thead>
+                    <tr>
+                      <th>Ticker</th>
+                      <th className="set-num">Buy</th>
+                      <th className="set-num">Sell</th>
+                      <th className="set-num">P&amp;L</th>
+                      <th className="set-num">%</th>
+                      <th>Closed</th>
+                      <th>Position</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredImportRows.map(row => {
+                      const busy = Boolean(importingIds[row.position_id])
+                      return (
+                        <tr key={row.position_id}>
+                          <td>
+                            <strong className="set-sym">{row.ticker || row.symbol}</strong>
+                            {row.units != null ? (
+                              <span className="set-meta">{row.units} u</span>
+                            ) : null}
+                          </td>
+                          <td className="set-num">{formatMoney(row.entry_price)}</td>
+                          <td className="set-num">{formatMoney(row.exit_price)}</td>
+                          <td className={`set-num ${pnlTone(row.pnl)}`}>{formatMoney(row.pnl)}</td>
+                          <td className={`set-num ${pnlTone(row.pnl_pct)}`}>{formatPct(row.pnl_pct)}</td>
+                          <td>{formatDateTime(row.closed_at)}</td>
+                          <td><span className="set-meta">{row.position_id}</span></td>
+                          <td>
+                            <button
+                              type="button"
+                              className="set-btn set-btn--small"
+                              disabled={busy || row.already_imported}
+                              onClick={() => void importTrade(row)}
+                            >
+                              {row.already_imported ? 'Added' : busy ? 'Adding…' : 'Add'}
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="set-import__empty">
+                {importLoading
+                  ? 'Loading eToro closes…'
+                  : 'No eToro closes for this day — pick Live/Demo, day, optional ticker, then List trades.'}
+              </div>
+            )}
+          </details>
+        ) : null}
 
         <div className="set-summary" aria-label="Order activity summary">
           <div className="set-summary__label">
@@ -500,8 +769,8 @@ export default function SettingsPage() {
                                 <strong className="set-sym">{trade.tradingsymbol || trade.symbol || '—'}</strong>
                               </td>
                               <td className="set-td">
-                                <span className={`set-pill set-pill--${trade.source === 'momentum-trade' ? 'momentum' : 'positions'}`}>
-                                  {trade.source === 'momentum-trade' ? 'Momentum' : 'Positions'}
+                                <span className={`set-pill set-pill--${sourcePillClass(trade.source)}`}>
+                                  {sourceLabel(trade.source)}
                                 </span>
                               </td>
                               <td className={`set-td set-td--num ${pnlTone(trade.pnl)}`}>

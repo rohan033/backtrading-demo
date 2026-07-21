@@ -530,7 +530,14 @@
 }
 .wt-detail-title-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .wt-detail-ticker { font-size: 13px; font-weight: 700; color: #888; letter-spacing: 0.06em; text-transform: uppercase; }
-.wt-detail-fullname { font-size: 10px; color: #BBBBBB; }
+.wt-detail-fullname { font-size: 10px; color: #4a5568; }
+.wt-detail-id {
+  font-size: 11px;
+  font-weight: 700;
+  color: #4a5568;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
 .wt-detail-price { font-size: 15px; font-weight: 800; color: #202020; letter-spacing: -0.02em; margin-top: 2px; }
 .wt-detail-change { font-size: 11px; font-weight: 600; }
 

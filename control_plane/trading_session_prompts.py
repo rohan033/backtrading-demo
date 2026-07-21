@@ -38,9 +38,10 @@ def trading_session_broker_block(session: dict[str, Any]) -> str:
         return f"""BROKER SCOPE (critical — this session is eToro / {account_env}):
 - Use ONLY eToro-tradable US/global symbols. Every MCP market call MUST pass broker=etoro and account_env={account_env}.
 - search_instruments: use broker=etoro, exchange=ETORO (or omit exchange). NEVER pass exchange=NSE, BSE, or any Indian exchange.
+- WATCHLIST FIRST: when search_instruments returns a row with from_watchlist=true (or the same ticker already on the user's eToro watchlists), you MUST use that symboltoken/tradingsymbol — do not pick a different eToro instrument for the same ticker.
 - Do NOT call search_scrip, Angel One APIs, SmartConnect, or any India/NSE-specific search or candle tools.
 - Reject NSE/India results entirely (e.g. AMDIND-EQ, *-EQ on NSE) — if you see them, re-search on eToro for the US ticker (e.g. AMD on ETORO).
-- TopStockPicks and strategy_suggestion must use symbol, token, and exchange from eToro search_instruments results only."""
+- TopStockPicks and strategy_suggestion must use symbol, token, and exchange from eToro search_instruments results (preferring watchlist hits when present)."""
 
     if broker in {"angel", "angelone"}:
         return f"""BROKER SCOPE (critical — this session is Angel One / {account_env}):

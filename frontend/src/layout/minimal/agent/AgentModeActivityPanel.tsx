@@ -129,8 +129,9 @@ export default function AgentModeActivityPanel({
       const symbol = action.symbol.split('-')[0]
       await sendMessage(
         `User selected ${symbol} (${broker} / ${accountEnv}). `
-        + `Finalize setup for ${symbol}: use search_instruments for token/exchange, `
-        + `emit ai_summary (highlights/lowlights/cautions from Finnhub news + your research), `
+        + `Finalize setup for ${symbol}: call search_instruments and prefer any from_watchlist=true `
+        + `hit (reuse that instrument ID/token), then emit ai_summary `
+        + `(highlights/lowlights/cautions from Finnhub news + your research), `
         + `then ai_action StrategySetupForm. Do NOT deploy or place orders until the user clicks Deploy.`,
       )
       return

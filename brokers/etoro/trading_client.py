@@ -254,6 +254,28 @@ class EtoroTradingClient(EtoroClient, TickClient):
                 break
         return None
 
+    async def await_settled_closed_trade(
+        self,
+        *,
+        position_id: str | int | None = None,
+        order_id: str | int | None = None,
+        attempts: int = 4,
+        delay_sec: float = 0.8,
+        min_date: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Poll trade/history until the closed fill appears (can lag after market-close)."""
+        for i in range(max(1, int(attempts))):
+            row = await self.afind_closed_trade(
+                position_id=position_id,
+                order_id=order_id,
+                min_date=min_date,
+            )
+            if row:
+                return row
+            if i + 1 < attempts:
+                await asyncio.sleep(float(delay_sec))
+        return None
+
     async def aget_available_cash(self) -> float:
         """Return USD cash available to open new positions.
 

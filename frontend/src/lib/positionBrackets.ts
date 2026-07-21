@@ -80,10 +80,13 @@ export function savePositionBrackets(
   accountEnv: string,
   positionId: string,
   patch: Partial<PositionBracketSettings>,
+  base?: PositionBracketSettings,
 ) {
   const env = accountEnv === 'live' ? 'live' : 'demo'
   const store = readStore()
-  const current = loadPositionBrackets(accountEnv, positionId)
+  // Prefer an explicit base (in-memory row state) so patches don't wipe fields
+  // that were loaded from a legacy key via loadPositionBracketsForRow.
+  const current = base ?? loadPositionBrackets(accountEnv, positionId)
   const next = { ...current, ...patch }
   store[env] = { ...(store[env] || {}), [positionId]: next }
   writeStore(store)

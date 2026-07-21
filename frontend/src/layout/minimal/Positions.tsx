@@ -10,6 +10,7 @@ import {
   closeEtoroPosition,
   formatCloseEtoroDebug,
   logCloseEtoroExchange,
+  watchCloseSettlement,
 } from '../../lib/closeEtoroPosition'
 import { fetchEtoroPositions } from '../../lib/etoro-account-data'
 import {
@@ -208,12 +209,14 @@ function BracketCell({
         value={value}
         step={mode === 'price' ? 0.01 : mode === 'percent' ? 0.1 : 1}
         placeholder={mode === 'price' ? 'Price' : mode === 'percent' ? '%' : 'Amount'}
-        onChange={e =>
-          onChange(
-            kind === 'take_profit'
-              ? { takeProfitValue: e.target.value }
-              : { stopLossValue: e.target.value },
-          )}
+        onChange={e => {
+          const nextValue = e.target.value
+          if (kind === 'take_profit') {
+            onChange({ takeProfitValue: nextValue })
+            return
+          }
+          onChange({ stopLossValue: nextValue })
+        }}
       />
       {hasValue && targetPrice != null ? (
         <div className="pos-bracket-hint">
@@ -315,18 +318,25 @@ const PositionTableRow = memo(function PositionTableRow({
   }, [accountEnv, storageKey, row.positionId, row.symboltoken])
 
   const onBracketsChange = useCallback((patch: Partial<PositionBracketSettings>) => {
-    const next = savePositionBrackets(accountEnv, storageKey, patch)
-    setBrackets(next)
-    if ('takeProfitEnabled' in patch || 'stopLossEnabled' in patch) {
-      onBracketsUpdated?.()
-    }
+    setBrackets(prev => {
+      const next = savePositionBrackets(accountEnv, storageKey, patch, prev)
+      // Defer: do not nest parent setState inside this updater (toolbar count).
+      queueMicrotask(() => onBracketsUpdated?.())
+      return next
+    })
   }, [accountEnv, onBracketsUpdated, storageKey])
+
+  const monitoring = Boolean(
+    (brackets.takeProfitEnabled && brackets.takeProfitValue.trim())
+    || (brackets.stopLossEnabled && brackets.stopLossValue.trim()),
+  )
 
   return (
     <tr
       className={[
         closing ? 'pos-row--closing' : '',
         hidden ? 'pos-row--hidden' : '',
+        monitoring ? 'pos-row--monitoring' : '',
       ].filter(Boolean).join(' ') || undefined}
       aria-hidden={hidden || undefined}
     >
@@ -344,7 +354,10 @@ const PositionTableRow = memo(function PositionTableRow({
             />
           </span>
           <div className="pos-sym-label">
-            <div className="pos-sym-ticker">{ticker}</div>
+            <div className="pos-sym-ticker">
+              {ticker}
+              {monitoring ? <span className="pos-monitor-badge">Monitoring</span> : null}
+            </div>
             {name ? <div className="pos-sym-name">{name}</div> : null}
             <div className={`pos-side${row.isBuy ? '' : ' pos-side--sell'}`}>
               {row.isBuy ? 'Long' : 'Short'}
@@ -540,6 +553,7 @@ function PositionsTable({
         },
       })
       logCloseEtoroExchange(ticker, result)
+      watchCloseSettlement(result, ticker)
       void recordTradedInstrument({
         symboltoken: row.symboltoken,
         tradingsymbol: ticker,
@@ -672,11 +686,18 @@ function PositionsTable({
           </div>
         ) : null}
         <div className="pos-toolbar-spacer" />
-        {enabledBracketCount > 0 ? (
-          <span className="pos-toolbar-meta pos-toolbar-meta--monitor">
-            Monitoring {enabledBracketCount} bracket{enabledBracketCount === 1 ? '' : 's'}
-          </span>
-        ) : null}
+        <span
+          className={`pos-toolbar-meta pos-toolbar-meta--monitor${enabledBracketCount > 0 ? '' : ' pos-toolbar-meta--monitor-idle'}`}
+          title={
+            enabledBracketCount > 0
+              ? 'Live P&L is watched; positions auto-close when TP/SL is hit'
+              : 'Turn on TP or SL with a value to start monitoring'
+          }
+        >
+          {enabledBracketCount > 0
+            ? `Monitoring ${enabledBracketCount} bracket${enabledBracketCount === 1 ? '' : 's'}`
+            : 'Monitoring idle'}
+        </span>
         {refreshedLabel ? (
           <span className="pos-toolbar-meta">Updated {refreshedLabel}</span>
         ) : null}

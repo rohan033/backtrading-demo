@@ -104,6 +104,7 @@ TRADING_SESSION_EXTERNAL_HINT = """Autonomous trading session agent (market rese
 
 - Match the session broker on every MCP call (broker + account_env + exchange in the user prompt). eToro sessions: broker=etoro, exchange=ETORO only — never NSE, Angel One, search_scrip, or Indian stocks.
 - Prefer MCP trading tools (search_instruments, get_company_news, get_recommendation_trends, get_historical_candles, portfolio/position tools) and web search for live market facts — not stale repo code.
+- When search_instruments returns from_watchlist=true (ticker already on the user's watchlists), ALWAYS reuse that instrument token/tradingsymbol — do not pick a different eToro ID for the same ticker.
 - BEFORE any final A2UI output: fetch get_historical_candles, compute recent $/% moves, and double-check every thesis against that data — do not contradict visible price action (e.g. calling a selloff when candles show a spike).
 - Emit trader-facing UI via fenced JSON a2ui / ai_action blocks only (no markdown prose).
 - Explore phase MUST end with a ```json fence containing TopStockPicks (3 ranked symbols with token + exchange from search_instruments).
@@ -157,7 +158,7 @@ AGENT_MODE_A2UI_HINT = """Agent Mode UI rules (critical — Generative UI only):
 TRADE PLANNING (when the user asks to plan, suggest, compare, or find a trade — Plan mode):
 - Do NOT place orders or create/start strategies during planning. Research first; deploy only after the user clicks Deploy on StrategySetupForm.
 - Before any pick, research silently with tools (do not narrate tools in chat):
-  1) `search_instruments` for 3–5 liquid candidates on the thread broker.
+  1) `search_instruments` for 3–5 liquid candidates on the thread broker. Prefer any hit with from_watchlist=true and reuse that token.
   2) `get_company_news` (Finnhub) for each finalist — headlines + summaries.
   3) `get_recommendation_trends` when available for the symbol.
   4) Web search for same-day catalysts, earnings, sector moves (complement Finnhub; cite sources in InsightCards cautions only).
@@ -174,7 +175,7 @@ TRADE PLANNING (when the user asks to plan, suggest, compare, or find a trade �
   4) Do NOT emit TradeDecision or StrategySetupForm until the user selects a symbol from TopStockPicks.
 - After the user selects a symbol: resolve instrument, emit ai_summary recap + ai_action StrategySetupForm only.
 
-- Before picking a symbol (legacy one-shot flow), shortlist exactly 3 candidates using the TRADE PLANNING steps above.
+- Before picking a symbol (legacy one-shot flow), shortlist exactly 3 candidates using the TRADE PLANNING steps above. Prefer search_instruments hits with from_watchlist=true.
 - For deployable setups (before the user clicks Deploy), emit ai_action (renders as StrategySetupForm):
 
 ```json

@@ -545,11 +545,119 @@
   color: #79520f;
 }
 
+.set-pill--manual {
+  border-color: #94a3b8;
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.set-pill--bracket {
+  border-color: #93c5fd;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
 .set-pill--onepc {
   border-color: #8ab07a;
   background: #eef8ea;
   color: #2f6b28;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.set-btn--small {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 11px;
+}
+
+.set-import {
+  margin: 0 16px 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 12px;
+  background: #fff;
+  color: #111;
+  color-scheme: light;
+}
+
+.set-import__summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #111;
+}
+
+.set-import__summary::-webkit-details-marker {
+  display: none;
+}
+
+.set-import__summary em {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #f4f5f6;
+  color: #4a5568;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.set-import__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  padding: 0 14px 12px;
+}
+
+.set-import__table-wrap {
+  max-height: min(36vh, 320px);
+  overflow: auto;
+  padding: 0 14px 12px;
+}
+
+.set-import__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.set-import__table th,
+.set-import__table td {
+  padding: 8px;
+  border-bottom: 1px solid #e8ecf0;
+  text-align: left;
+  color: #111;
+  vertical-align: middle;
+}
+
+.set-import__table th {
+  color: #4a5568;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.set-import__empty {
+  padding: 0 14px 14px;
+  color: #4a5568;
+  font-size: 12px;
+}
+
+.set-error--inline {
+  margin: 0 14px 10px;
 }
 
 .set-pos {
