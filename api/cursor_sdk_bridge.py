@@ -160,9 +160,12 @@ def control_plane_mcp_servers() -> dict[str, Any] | None:
     from api.control_plane_mcp_tools import CONTROL_PLANE_MCP_SERVER
 
     control_plane_url = os.getenv("CONTROL_PLANE_URL", "http://127.0.0.1:8000").strip().rstrip("/")
+    # Trailing slash avoids Starlette's 307 redirect from /mcp → /mcp/, which can
+    # break Cursor SDK MCP handshakes mid-run.
+    mcp_path = CONTROL_PLANE_MCP_PATH.rstrip("/") + "/"
     return {
         CONTROL_PLANE_MCP_SERVER: HttpMcpServerConfig(
-            url=f"{control_plane_url}{CONTROL_PLANE_MCP_PATH}",
+            url=f"{control_plane_url}{mcp_path}",
         )
     }
 
@@ -439,13 +442,21 @@ class CursorSdkBridge:
 
             result = await run.wait()
             if result.status == "error":
+                detail = (getattr(result, "result", None) or "").strip() or "Cursor agent run failed"
+                log.error(
+                    "[CURSOR_SDK] Run status=error session=%s agent=%s run=%s detail=%s",
+                    session_name,
+                    agent.agent_id,
+                    run.id,
+                    detail[:500],
+                )
                 yield {
                     "type": "error",
                     "phase": "run",
                     "agent_id": agent.agent_id,
                     "run_id": run.id,
                     "status": result.status,
-                    "message": "Cursor agent run failed",
+                    "message": detail,
                 }
                 return
 
