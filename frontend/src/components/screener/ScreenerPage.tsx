@@ -5,7 +5,9 @@ import {
   deleteScreener,
   fetchScreener,
   fetchScreenerFields,
+  fetchScreenerPresets,
   fetchScreeners,
+  generateScreenerFromText,
   refreshScreener,
   syncScreenerWatchlist,
   updateScreener,
@@ -14,8 +16,17 @@ import {
   type ScreenerDefinition,
   type ScreenerField,
   type ScreenerFilterCond,
+  type ScreenerPreset,
   type WatchlistSyncSummary,
 } from '../../lib/screenerApi'
+import {
+  defaultParamsForModel,
+  listCursorAgentModels,
+  paramValueFor,
+  setParamValue,
+  type AgentModelParamSelection,
+  type CursorAgentModel,
+} from '../../lib/cursorAgentModels'
 import {
   definitionToDsl,
   emptyDefinition,
@@ -23,11 +34,29 @@ import {
   tickerSymbol,
 } from '../../lib/screenerDefinition'
 import { showPlatformToast } from '../../lib/platform-toast'
+import { safeSetItem } from '../../lib/safeStorage'
 import './Screener.css'
 
-type EditorMode = 'filters' | 'dsl'
+type EditorMode = 'filters' | 'dsl' | 'ai'
 type SortState = { key: string; dir: 'asc' | 'desc' } | null
 type RowSyncStatus = Record<string, 'adding' | 'added' | 'already_present' | 'unmatched' | 'failed'>
+
+const EDITOR_WIDTH_KEY = 'screener-editor-width-v1'
+const EDITOR_MIN_WIDTH = 320
+const EDITOR_MAX_WIDTH = 720
+const EDITOR_DEFAULT_WIDTH = 420
+
+function loadEditorWidth(): number {
+  try {
+    const value = Number(localStorage.getItem(EDITOR_WIDTH_KEY))
+    if (Number.isFinite(value)) {
+      return Math.min(EDITOR_MAX_WIDTH, Math.max(EDITOR_MIN_WIDTH, value))
+    }
+  } catch {
+    // ignore
+  }
+  return EDITOR_DEFAULT_WIDTH
+}
 
 const PAGE_SIZES = [10, 20, 50] as const
 const PERCENT_KEYS = new Set([
@@ -95,6 +124,15 @@ function defaultFilter(): ScreenerFilterCond {
 
 export default function ScreenerPage() {
   const [screeners, setScreeners] = useState<Screener[]>([])
+  const [presets, setPresets] = useState<ScreenerPreset[]>([])
+  const [presetMenuOpen, setPresetMenuOpen] = useState(false)
+  const [aiPrompt, setAiPrompt] = useState('')
+  const [aiGenerating, setAiGenerating] = useState(false)
+  const [models, setModels] = useState<CursorAgentModel[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState('')
+  const [agentModelId, setAgentModelId] = useState('')
+  const [agentModelParams, setAgentModelParams] = useState<AgentModelParamSelection[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [screener, setScreener] = useState<Screener | null>(null)
   const [fields, setFields] = useState<ScreenerField[]>([])
@@ -102,6 +140,8 @@ export default function ScreenerPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
   const [editorOpen, setEditorOpen] = useState(true)
+  const [editorWidth, setEditorWidth] = useState(loadEditorWidth)
+  const editorResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const [editorMode, setEditorMode] = useState<EditorMode>('filters')
   const [draftDefinition, setDraftDefinition] = useState<ScreenerDefinition>(emptyDefinition())
   const [draftDsl, setDraftDsl] = useState('')
@@ -155,9 +195,14 @@ export default function ScreenerPage() {
     setLoading(true)
     setError('')
     try {
-      const [list, fieldList] = await Promise.all([fetchScreeners(false), fetchScreenerFields()])
+      const [list, fieldList, presetList] = await Promise.all([
+        fetchScreeners(false),
+        fetchScreenerFields(),
+        fetchScreenerPresets().catch(() => [] as ScreenerPreset[]),
+      ])
       setScreeners(list)
       setFields(fieldList)
+      setPresets(presetList)
       const nextId = preferId || selectedId || list[0]?.id || null
       setSelectedId(nextId)
       if (nextId) {
@@ -177,10 +222,108 @@ export default function ScreenerPage() {
     }
   }, [selectedId])
 
+  const builtinNames = useMemo(
+    () => new Set(presets.map(p => p.name.trim().toLowerCase())),
+    [presets],
+  )
+
+  const missingPresets = useMemo(() => {
+    const have = new Set(screeners.map(s => s.name.trim().toLowerCase()))
+    return presets.filter(p => !have.has(p.name.trim().toLowerCase()))
+  }, [presets, screeners])
+
   useEffect(() => {
     void loadList()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setModelsLoading(true)
+    setModelsError('')
+    void listCursorAgentModels()
+      .then(rows => {
+        if (cancelled) return
+        setModels(rows)
+        setModelsLoading(false)
+        if (!rows.length) return
+        const preferred =
+          rows.find(m => m.id === 'composer-2.5')
+          || rows.find(m => m.variants?.some(v => v.is_default))
+          || rows[0]
+        setAgentModelId(prev => {
+          if (prev && rows.some(m => m.id === prev)) return prev
+          return preferred.id
+        })
+        setAgentModelParams(prev => (prev.length ? prev : defaultParamsForModel(preferred)))
+      })
+      .catch(err => {
+        if (cancelled) return
+        setModels([])
+        setModelsLoading(false)
+        setModelsError(err instanceof Error ? err.message : 'Failed to load models')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const selectedModel = useMemo(
+    () => models.find(m => m.id === agentModelId) || null,
+    [models, agentModelId],
+  )
+
+  const activeVariantName =
+    selectedModel?.variants?.find(v => {
+      const vp = (v.params || []).map(p => `${p.id}=${p.value}`).sort().join('|')
+      const cur = [...agentModelParams].map(p => `${p.id}=${p.value}`).sort().join('|')
+      return vp === cur
+    })?.display_name || ''
+
+  const handleModelChange = useCallback((modelId: string) => {
+    setAgentModelId(modelId)
+    const model = models.find(m => m.id === modelId) || null
+    setAgentModelParams(defaultParamsForModel(model))
+  }, [models])
+
+  const handleVariantSelect = useCallback((variantDisplayName: string) => {
+    if (!selectedModel) return
+    const variant = selectedModel.variants?.find(v => v.display_name === variantDisplayName)
+    if (!variant) return
+    setAgentModelParams(
+      (variant.params || [])
+        .filter(p => p.id && p.value)
+        .map(p => ({ id: String(p.id), value: String(p.value) })),
+    )
+  }, [selectedModel])
+
+  const startEditorResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    editorResizeRef.current = { startX: event.clientX, startWidth: editorWidth }
+    document.body.classList.add('scr-resizing')
+
+    const onMove = (moveEvent: MouseEvent) => {
+      const active = editorResizeRef.current
+      if (!active) return
+      // Editor is on the right — drag left to widen.
+      const next = Math.min(
+        EDITOR_MAX_WIDTH,
+        Math.max(EDITOR_MIN_WIDTH, active.startWidth + active.startX - moveEvent.clientX),
+      )
+      setEditorWidth(next)
+      safeSetItem(EDITOR_WIDTH_KEY, String(next))
+    }
+
+    const onUp = () => {
+      editorResizeRef.current = null
+      document.body.classList.remove('scr-resizing')
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [editorWidth])
 
   const selectScreener = async (id: string) => {
     setSelectedId(id)
@@ -372,6 +515,73 @@ export default function ScreenerPage() {
     }
   }
 
+  const handleCreateFromPreset = async (preset: ScreenerPreset) => {
+    setPresetMenuOpen(false)
+    const existing = screeners.find(
+      s => s.name.trim().toLowerCase() === preset.name.trim().toLowerCase(),
+    )
+    if (existing) {
+      await selectScreener(existing.id)
+      return
+    }
+    try {
+      const created = await createScreener({
+        name: preset.name,
+        definition: preset.definition,
+      })
+      setScreeners(prev => [...prev, created])
+      await selectScreener(created.id)
+      setEditorOpen(true)
+      showPlatformToast({
+        variant: 'success',
+        message: `Added preset “${preset.name}”`,
+      })
+    } catch (err) {
+      showPlatformToast({
+        variant: 'error',
+        message: err instanceof Error ? err.message : 'Failed to add preset',
+      })
+    }
+  }
+
+  const handleAiGenerate = async () => {
+    const text = aiPrompt.trim()
+    if (!text || aiGenerating) return
+    setAiGenerating(true)
+    setPresetMenuOpen(false)
+    try {
+      const result = await generateScreenerFromText(text, {
+        create: true,
+        modelId: agentModelId || null,
+        modelParams: agentModelParams,
+      })
+      const created = result.screener
+      if (!created?.id) {
+        throw new Error('AI did not return a saved screener')
+      }
+      setScreeners(prev => [...prev, created])
+      setAiPrompt('')
+      await selectScreener(created.id)
+      setEditorOpen(true)
+      setEditorMode('filters')
+      showPlatformToast({
+        variant: 'success',
+        message: result.explanation
+          ? `Created “${result.name}” — ${result.explanation}`
+          : `Created “${result.name}”`,
+        duration: 8000,
+      })
+    } catch (err) {
+      showPlatformToast({
+        variant: 'error',
+        message: err instanceof Error ? err.message : 'AI generate failed',
+        duration: 10000,
+      })
+    } finally {
+      setAiGenerating(false)
+    }
+  }
+
   const handleDelete = async (id?: string) => {
     const targetId = id || selected?.id
     if (!targetId) return
@@ -501,10 +711,11 @@ export default function ScreenerPage() {
           {screeners.map(item => {
             const active = item.id === selectedId
             const editing = editingId === item.id
+            const isBuiltin = builtinNames.has(item.name.trim().toLowerCase())
             return (
               <div
                 key={item.id}
-                className={`scr-pill-wrap${active ? ' scr-pill-wrap--active' : ''}`}
+                className={`scr-pill-wrap${active ? ' scr-pill-wrap--active' : ''}${isBuiltin ? ' scr-pill-wrap--builtin' : ''}`}
               >
                 {editing ? (
                   <input
@@ -528,11 +739,12 @@ export default function ScreenerPage() {
                       type="button"
                       role="tab"
                       aria-selected={active}
-                      className={`scr-pill${active ? ' scr-pill--active' : ''}`}
+                      className={`scr-pill${active ? ' scr-pill--active' : ''}${isBuiltin ? ' scr-pill--builtin' : ''}`}
                       onClick={() => void selectScreener(item.id)}
                       onDoubleClick={() => startRename(item)}
-                      title="Double-click to rename"
+                      title={isBuiltin ? 'Built-in preset · double-click to rename' : 'Double-click to rename'}
                     >
+                      {isBuiltin ? <span className="scr-pill-badge" aria-hidden>★</span> : null}
                       {item.name}
                     </button>
                     <button
@@ -561,6 +773,41 @@ export default function ScreenerPage() {
           <button type="button" className="scr-pill scr-pill--add" onClick={() => void handleCreate()}>
             + New
           </button>
+          {presets.length > 0 ? (
+            <div className="scr-preset-menu">
+              <button
+                type="button"
+                className="scr-pill scr-pill--preset"
+                aria-expanded={presetMenuOpen}
+                aria-haspopup="menu"
+                onClick={() => setPresetMenuOpen(v => !v)}
+              >
+                Built-in presets
+                {missingPresets.length ? ` (${missingPresets.length})` : ''}
+              </button>
+              {presetMenuOpen ? (
+                <div className="scr-preset-dropdown" role="menu">
+                  {presets.map(preset => {
+                    const installed = !missingPresets.some(p => p.key === preset.key)
+                    return (
+                      <button
+                        key={preset.key}
+                        type="button"
+                        role="menuitem"
+                        className="scr-preset-item"
+                        disabled={installed}
+                        onClick={() => void handleCreateFromPreset(preset)}
+                        title={preset.description || preset.phase}
+                      >
+                        <strong>{preset.name}</strong>
+                        <span>{installed ? 'Already added' : preset.description || preset.phase}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <div className="scr-toolbar-spacer" />
         <button
@@ -638,9 +885,20 @@ export default function ScreenerPage() {
           ) : !selected ? (
             <div className="scr-empty">
               <p>No screeners yet.</p>
-              <button type="button" className="scr-btn scr-btn--primary" onClick={() => void handleCreate()}>
-                Create screener
-              </button>
+              <div className="scr-empty-actions">
+                <button type="button" className="scr-btn scr-btn--primary" onClick={() => void handleCreate()}>
+                  Create screener
+                </button>
+                {presets[0] ? (
+                  <button
+                    type="button"
+                    className="scr-btn"
+                    onClick={() => void handleCreateFromPreset(presets[0])}
+                  >
+                    Add “{presets[0].name}”
+                  </button>
+                ) : null}
+              </div>
             </div>
           ) : !selected.results?.length ? (
             <div className="scr-empty">
@@ -780,7 +1038,19 @@ export default function ScreenerPage() {
         </div>
 
         {editorOpen ? (
-          <aside className="scr-editor" aria-label="Screener query editor">
+          <aside
+            className="scr-editor"
+            aria-label="Screener query editor"
+            style={{ width: editorWidth, minWidth: editorWidth }}
+          >
+            <div
+              className="scr-editor-resize"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize query editor"
+              title="Drag to resize"
+              onMouseDown={startEditorResize}
+            />
             <div className="scr-editor-header">
               <span className="scr-editor-title">Query</span>
               <div className="scr-editor-tabs">
@@ -801,10 +1071,124 @@ export default function ScreenerPage() {
                 >
                   Python DSL
                 </button>
+                <button
+                  type="button"
+                  className={`scr-editor-tab${editorMode === 'ai' ? ' scr-editor-tab--active' : ''}`}
+                  onClick={() => setEditorMode('ai')}
+                >
+                  AI
+                </button>
               </div>
             </div>
             <div className="scr-editor-body">
-              {editorMode === 'filters' ? (
+              {editorMode === 'ai' ? (
+                <section className="scr-ai-panel scr-ai-panel--tab" aria-label="AI screener generator">
+                  <div className="scr-ai-panel__head">
+                    <strong>AI</strong>
+                    <span>Describe a screener in plain language — Cursor builds the filters for you.</span>
+                  </div>
+                  {modelsLoading ? (
+                    <p className="scr-hint">Loading models…</p>
+                  ) : modelsError ? (
+                    <p className="scr-hint scr-hint--error">{modelsError}</p>
+                  ) : (
+                    <div className="scr-ai-panel__models">
+                      <label className="scr-field scr-field--compact">
+                        <span className="scr-label">Model</span>
+                        <select
+                          className="scr-select"
+                          value={agentModelId}
+                          disabled={aiGenerating || (!models.length && !agentModelId)}
+                          onChange={e => handleModelChange(e.target.value)}
+                        >
+                          {!models.length && agentModelId ? (
+                            <option value={agentModelId}>{agentModelId}</option>
+                          ) : null}
+                          {!models.length && !agentModelId ? (
+                            <option value="">No models available</option>
+                          ) : null}
+                          {models.map(m => (
+                            <option key={m.id} value={m.id}>
+                              {m.display_name || m.id}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {selectedModel?.variants?.length ? (
+                        <label className="scr-field scr-field--compact">
+                          <span className="scr-label">Preset</span>
+                          <select
+                            className="scr-select"
+                            value={activeVariantName}
+                            disabled={aiGenerating}
+                            onChange={e => handleVariantSelect(e.target.value)}
+                          >
+                            <option value="">Custom</option>
+                            {selectedModel.variants.map(v => (
+                              <option key={v.display_name} value={v.display_name}>
+                                {v.display_name}{v.is_default ? ' (default)' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
+                      {selectedModel?.parameters?.length ? (
+                        <div className="scr-ai-panel__params">
+                          {selectedModel.parameters.map(param => (
+                            <label key={param.id} className="scr-field scr-field--compact">
+                              <span className="scr-label">{param.display_name || param.id}</span>
+                              <select
+                                className="scr-select"
+                                value={paramValueFor(agentModelParams, param.id)}
+                                disabled={aiGenerating}
+                                onChange={e => {
+                                  setAgentModelParams(
+                                    setParamValue(agentModelParams, param.id, e.target.value),
+                                  )
+                                }}
+                              >
+                                <option value="">—</option>
+                                {(param.values || []).map(v => (
+                                  <option key={v.value} value={v.value}>
+                                    {v.display_name || v.value}
+                                  </option>
+                                ))}
+                              </select>
+                            </label>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                  {selectedModel?.description ? (
+                    <p className="scr-hint">{selectedModel.description}</p>
+                  ) : null}
+                  <form
+                    className="scr-ai-panel__prompt"
+                    onSubmit={event => {
+                      event.preventDefault()
+                      void handleAiGenerate()
+                    }}
+                  >
+                    <textarea
+                      id="scr-ai-prompt"
+                      className="scr-textarea scr-ai-panel__textarea"
+                      value={aiPrompt}
+                      disabled={aiGenerating}
+                      rows={5}
+                      placeholder={'Describe a screener… e.g. “tech names up >2% today with relative volume >2”'}
+                      onChange={e => setAiPrompt(e.target.value)}
+                    />
+                    <button
+                      type="submit"
+                      className="scr-btn scr-btn--primary"
+                      disabled={aiGenerating || !aiPrompt.trim()}
+                    >
+                      {aiGenerating ? 'Generating…' : 'Generate'}
+                    </button>
+                  </form>
+                </section>
+              ) : editorMode === 'filters' ? (
                 <>
                   <div className="scr-field">
                     <span className="scr-label">Columns</span>
@@ -1019,27 +1403,35 @@ export default function ScreenerPage() {
               )}
             </div>
             <div className="scr-editor-footer">
-              <button
-                type="button"
-                className="scr-btn scr-btn--primary"
-                disabled={!selected || saving}
-                onClick={() => void saveDefinition()}
-              >
-                {saving ? 'Saving…' : 'Save & run'}
-              </button>
-              <button
-                type="button"
-                className="scr-btn"
-                disabled={!selected}
-                onClick={() => {
-                  if (!selected) return
-                  setDraftDefinition(selected.definition || emptyDefinition())
-                  setDraftDsl(selected.dsl_text || definitionToDsl(selected.definition || emptyDefinition()))
-                  setDslError('')
-                }}
-              >
-                Reset
-              </button>
+              {editorMode === 'ai' ? (
+                <p className="scr-hint scr-editor-footer-hint">
+                  Generate creates a new screener and switches to Filters so you can review it.
+                </p>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="scr-btn scr-btn--primary"
+                    disabled={!selected || saving}
+                    onClick={() => void saveDefinition()}
+                  >
+                    {saving ? 'Saving…' : 'Save & run'}
+                  </button>
+                  <button
+                    type="button"
+                    className="scr-btn"
+                    disabled={!selected}
+                    onClick={() => {
+                      if (!selected) return
+                      setDraftDefinition(selected.definition || emptyDefinition())
+                      setDraftDsl(selected.dsl_text || definitionToDsl(selected.definition || emptyDefinition()))
+                      setDslError('')
+                    }}
+                  >
+                    Reset
+                  </button>
+                </>
+              )}
             </div>
           </aside>
         ) : null}

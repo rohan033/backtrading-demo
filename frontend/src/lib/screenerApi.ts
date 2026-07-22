@@ -29,6 +29,15 @@ export type ScreenerDefinition = {
   limit?: number
   offset?: number
   market?: string
+  indexes?: string[]
+}
+
+export type ScreenerPreset = {
+  key: string
+  name: string
+  description: string
+  phase: string
+  definition: ScreenerDefinition
 }
 
 export type ScreenerResultRow = {
@@ -90,6 +99,10 @@ async function parseJson<T>(res: Response): Promise<T> {
 
 export async function fetchScreenerFields(): Promise<ScreenerField[]> {
   return parseJson(await fetch(`${API}/fields`))
+}
+
+export async function fetchScreenerPresets(): Promise<ScreenerPreset[]> {
+  return parseJson(await fetch(`${API}/presets`))
 }
 
 export async function fetchScreeners(includeResults = false): Promise<Screener[]> {
@@ -158,6 +171,40 @@ export async function validateScreenerDsl(dsl_text: string): Promise<{
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ dsl_text }),
+    }),
+  )
+}
+
+export type GenerateScreenerResult = {
+  name: string
+  explanation: string
+  definition: ScreenerDefinition
+  dsl_text: string
+  screener?: Screener | null
+}
+
+export async function generateScreenerFromText(
+  prompt: string,
+  {
+    create = true,
+    modelId,
+    modelParams,
+  }: {
+    create?: boolean
+    modelId?: string | null
+    modelParams?: Array<{ id: string; value: string }>
+  } = {},
+): Promise<GenerateScreenerResult> {
+  return parseJson(
+    await fetch(`${API}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt,
+        create,
+        model_id: modelId || null,
+        model_params: (modelParams || []).filter(p => p.id && p.value),
+      }),
     }),
   )
 }

@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from control_plane.screener_query import (
+    ONE_PERCENT_PRESET_UI_KEYS,
+    ONE_PERCENT_QUERY_PRESETS,
     PRE_MARKET_GAINERS_DEFINITION,
     PRE_MARKET_GAINERS_NAME,
     PREMARKET_MOVERS_DEFINITION,
@@ -79,10 +81,18 @@ class ScreenerStore:
         now = _now_utc()
         rows = conn.execute("SELECT id, name, definition_json FROM screeners").fetchall()
         by_name = {str(row["name"]).strip().lower(): row for row in rows}
-        seeds = [
+        seeds: list[tuple[str, ScreenerDefinition]] = [
             (PRE_MARKET_GAINERS_NAME, PRE_MARKET_GAINERS_DEFINITION),
             ("Pre-market Movers", PREMARKET_MOVERS_DEFINITION),
         ]
+        # Built-in 1% / Agent Mode query presets — same defs the session starter uses.
+        for key in ONE_PERCENT_PRESET_UI_KEYS:
+            preset = ONE_PERCENT_QUERY_PRESETS.get(key) or {}
+            definition = preset.get("definition")
+            name = str(preset.get("name") or key).strip()
+            if not name or not isinstance(definition, ScreenerDefinition):
+                continue
+            seeds.append((name, definition))
         position = len(rows)
         for name, definition in seeds:
             key = name.strip().lower()
@@ -185,6 +195,8 @@ class ScreenerStore:
 
     def list_screeners(self, *, include_results: bool = False) -> list[dict[str, Any]]:
         conn = self._connect()
+        # Re-run seeds so newly added built-in presets appear without a full DB wipe.
+        self._seed_defaults(conn)
         rows = conn.execute(
             "SELECT * FROM screeners ORDER BY position ASC, created_at ASC"
         ).fetchall()

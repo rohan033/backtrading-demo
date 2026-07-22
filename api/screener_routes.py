@@ -40,6 +40,13 @@ class ValidateDslRequest(BaseModel):
     dsl_text: str = Field(..., min_length=1)
 
 
+class GenerateScreenerRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, max_length=2000)
+    create: bool = False
+    model_id: str | None = None
+    model_params: list[dict[str, str]] = Field(default_factory=list)
+
+
 class SyncWatchlistRequest(BaseModel):
     tickers: list[str] | None = None
     account_env: str = Field(default="demo")
@@ -54,6 +61,29 @@ def get_fields():
     return {"status": True, "data": list_screener_fields()}
 
 
+@router.get(
+    "/presets",
+    operation_id="list_screener_presets",
+    summary="List built-in screener presets (1% / Agent Mode queries)",
+)
+def list_presets():
+    from control_plane.screener_query import ONE_PERCENT_PRESET_UI_KEYS, ONE_PERCENT_QUERY_PRESETS
+
+    rows = []
+    for key in ONE_PERCENT_PRESET_UI_KEYS:
+        preset = ONE_PERCENT_QUERY_PRESETS.get(key) or {}
+        definition = preset.get("definition")
+        defn = definition.to_dict() if hasattr(definition, "to_dict") else None
+        rows.append({
+            "key": key,
+            "name": preset.get("name") or key,
+            "description": preset.get("description") or "",
+            "phase": preset.get("phase") or "regular",
+            "definition": defn,
+        })
+    return {"status": True, "data": rows}
+
+
 @router.post("/validate", operation_id="validate_screener_dsl", summary="Validate screener DSL")
 def validate_dsl(req: ValidateDslRequest):
     try:
@@ -65,6 +95,47 @@ def validate_dsl(req: ValidateDslRequest):
         "data": {
             "definition": defn.to_dict(),
             "dsl_text": definition_to_dsl(defn),
+        },
+    }
+
+
+@router.post(
+    "/generate",
+    operation_id="generate_screener_from_text",
+    summary="AI agent: free-text → screener definition (optionally create)",
+)
+async def generate_screener(req: GenerateScreenerRequest):
+    from control_plane.screener_ai_generate import generate_screener_from_text
+
+    try:
+        generated = await generate_screener_from_text(
+            req.prompt,
+            model_id=req.model_id,
+            model_params=req.model_params or None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc) or "AI screener generation failed",
+        ) from exc
+
+    screener = None
+    if req.create:
+        store = get_screener_store()
+        screener = store.create_screener(
+            name=generated["name"],
+            definition=generated["definition"],
+            dsl_text=generated["dsl_text"],
+        )
+    return {
+        "status": True,
+        "data": {
+            **generated,
+            "screener": screener,
         },
     }
 

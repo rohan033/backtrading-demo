@@ -72,6 +72,10 @@ export function definitionToDsl(defn: ScreenerDefinition): string {
   }
   if (defn.offset) lines.push(`    .offset(${Number(defn.offset)})`)
   lines.push(`    .limit(${Number(defn.limit || 50)})`)
+  if (defn.indexes?.length) {
+    const idxArgs = defn.indexes.map(i => JSON.stringify(i)).join(', ')
+    lines.push(`    .set_index(${idxArgs})`)
+  }
   lines.push(')')
   return `${lines.join('\n')}\n`
 }
