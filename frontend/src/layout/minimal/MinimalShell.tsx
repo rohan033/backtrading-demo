@@ -23,7 +23,6 @@ import SettingsPage from '../../pages/SettingsPage'
 import MomentumSidebarPanel from './MomentumSidebarPanel'
 import EarningsMonitorBar from './EarningsMonitorBar'
 import MarketClockBar from './MarketClockBar'
-import NewsNotificationsBar from './NewsNotificationsBar'
 import TradeHaltNotificationsBar from './TradeHaltNotificationsBar'
 import { useUrlState, buildShellUrl } from './useUrlState'
 import { useWatchlistEarnings } from '../../hooks/useWatchlistEarnings'
@@ -158,20 +157,10 @@ function MainPanel({
   tab,
   setTab,
   earnings,
-  newsGroups,
-  onClearNewsUpdates,
-  clearingNewsUpdates,
-  clearNewsError,
-  onOpenNewsPanel,
 }: {
   tab: MainTab
   setTab: (t: MainTab) => void
   earnings: ReturnType<typeof useWatchlistEarnings>
-  newsGroups: NewsUpdateGroup[]
-  onClearNewsUpdates: () => void
-  clearingNewsUpdates: boolean
-  clearNewsError: string
-  onOpenNewsPanel: () => void
 }) {
   return (
     <main className="ms-main">
@@ -206,13 +195,6 @@ function MainPanel({
           </Pill>
         </div>
         <div className="ms-header-trailing">
-          <NewsNotificationsBar
-            groups={newsGroups}
-            onClear={onClearNewsUpdates}
-            onOpenPanel={onOpenNewsPanel}
-            clearing={clearingNewsUpdates}
-            clearError={clearNewsError}
-          />
           <MarketClockBar />
         </div>
       </div>
@@ -565,11 +547,6 @@ export default function MinimalShell() {
   const [clearingNewsUpdates, setClearingNewsUpdates] = useState(false)
   const [clearNewsError, setClearNewsError] = useState('')
   const [rightCollapsed, setRightCollapsed] = useState(() => loadStoredBool(LEFT_COLLAPSED_KEY))
-  const handleOpenNewsPanel = () => {
-    setRightCollapsed(false)
-    safeSetItem(LEFT_COLLAPSED_KEY, 'false')
-    setNewsTab('new')
-  }
   const { groups: newsGroups, clearNotifications } = useNewsNotifications()
   const tradeHalts = useTradeHaltNotifications()
   const handleClearNewsUpdates = () => {
@@ -682,11 +659,6 @@ export default function MinimalShell() {
           tab={mainTab}
           setTab={setMainTab}
           earnings={earnings}
-          newsGroups={newsGroups}
-          onClearNewsUpdates={handleClearNewsUpdates}
-          clearingNewsUpdates={clearingNewsUpdates}
-          clearNewsError={clearNewsError}
-          onOpenNewsPanel={handleOpenNewsPanel}
         />
       </div>
       <SideDrawer

@@ -193,6 +193,15 @@
 .ms-header--main {
   justify-content: space-between;
 }
+.ms-header-trailing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+  flex: 1;
+  justify-content: flex-end;
+}
 .ms-header--right {
   background: var(--ms-right-hdr);
   justify-content: flex-start;

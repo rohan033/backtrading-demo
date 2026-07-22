@@ -89,22 +89,6 @@ function changeClass(value: unknown): string {
   return n > 0 ? 'scr-chg--up' : 'scr-chg--down'
 }
 
-function statusClass(status: string): string {
-  if (status === 'ok') return 'scr-status--ok'
-  if (status === 'running') return 'scr-status--running'
-  if (status === 'error') return 'scr-status--error'
-  return 'scr-status--idle'
-}
-
-function formatTime(iso?: string | null): string {
-  if (!iso) return 'never'
-  try {
-    return new Date(iso).toLocaleTimeString()
-  } catch {
-    return iso
-  }
-}
-
 function defaultFilter(): ScreenerFilterCond {
   return { left: 'premarket_change', operation: 'greater', right: 5 }
 }
@@ -590,17 +574,6 @@ export default function ScreenerPage() {
       </div>
 
       <div className="scr-meta">
-        <span className={`scr-status ${statusClass(selected?.refresh_status || 'idle')}`}>
-          {refreshing || selected?.refresh_status === 'running' ? 'running' : selected?.refresh_status || 'idle'}
-        </span>
-        <span>
-          Results: <strong>{selected?.results?.length ?? 0}</strong>
-          {selected?.total_count ? ` / ${selected.total_count}` : ''}
-        </span>
-        <span>
-          Last refresh: <strong>{formatTime(selected?.last_refreshed_at)}</strong>
-        </span>
-        {selected?.last_error ? <span className="scr-status scr-status--error">{selected.last_error}</span> : null}
         <div className="scr-toolbar-spacer" />
         <label className="scr-toggle">
           <input
