@@ -37,21 +37,60 @@ def _validate_day(day: str | None) -> str:
 async def list_trade_halts(
     day: str | None = Query(None, description="YYYY-MM-DD; omit for all stored feed rows"),
     symbol: str | None = Query(None, min_length=1, max_length=32),
+    reason: str | None = Query(None, description="Filter by reason code, e.g. LUDP"),
 ):
     store = get_trade_halts_store()
+    reason_code = (reason or "").strip().upper() or None
     if day:
         target = _validate_day(day)
         if symbol:
             data = store.list_halts_for_symbol(symbol, day=target)
         else:
             data = store.list_halts_for_day(target)
-        return {"status": True, "day": target, "data": data}
-
-    if symbol:
+    elif symbol:
         data = store.list_halts_for_symbol(symbol)
     else:
         data = store.list_all_halts()
-    return {"status": True, "day": None, "data": data}
+
+    if reason_code:
+        data = [
+            row
+            for row in data
+            if str(row.get("reason_code") or "").strip().upper() == reason_code
+        ]
+    return {"status": True, "day": day and _validate_day(day) or None, "reason": reason_code, "data": data}
+
+
+@router.get(
+    "/hot",
+    operation_id="list_hot_trade_halt_symbols",
+    summary="Symbols most often halted (default: LUDP) for the overview ticker strip",
+)
+async def list_hot_trade_halt_symbols(
+    reason: str = Query("LUDP", description="Reason code to count"),
+    limit: int = Query(6, ge=1, le=20),
+    day: str | None = Query(None, description="YYYY-MM-DD; omit for all stored feed rows"),
+):
+    store = get_trade_halts_store()
+    if day:
+        rows = store.list_halts_for_day(_validate_day(day))
+    else:
+        rows = store.list_all_halts()
+    hot = store.hot_symbols(rows, reason_code=reason, limit=limit)
+    return {"status": True, "reason": (reason or "LUDP").strip().upper(), "data": hot}
+
+
+@router.delete(
+    "/older",
+    operation_id="delete_older_trade_halts",
+    summary="Delete halt rows older than keep_day (default: today)",
+)
+async def delete_older_trade_halts(
+    keep_day: str | None = Query(None, description="YYYY-MM-DD; keep this day and newer"),
+):
+    cutoff = _validate_day(keep_day) if keep_day else date.today().isoformat()
+    result = get_trade_halts_store().purge_older_than(cutoff)
+    return {"status": True, "keep_day": cutoff, **result}
 
 
 @router.get(

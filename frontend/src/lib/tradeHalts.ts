@@ -29,9 +29,26 @@ export type TradeHaltNotification = {
   payload?: TradeHalt | null
 }
 
-export async function fetchTradeHaltsForDay(day?: string | null): Promise<{ day: string | null; data: TradeHalt[] }> {
-  const qs = day ? `?day=${encodeURIComponent(day)}` : ''
-  const res = await fetch(`/api/trade-halts${qs}`)
+export type HotHaltSymbol = {
+  symbol: string
+  issue_name?: string | null
+  halt_count: number
+  halted_count: number
+  resumed_count: number
+  last_status: string
+  last_halt_day?: string | null
+  reason_code?: string
+}
+
+export async function fetchTradeHaltsForDay(
+  day?: string | null,
+  reason: string | null = 'LUDP',
+): Promise<{ day: string | null; data: TradeHalt[] }> {
+  const params = new URLSearchParams()
+  if (day) params.set('day', day)
+  if (reason) params.set('reason', reason)
+  const qs = params.toString()
+  const res = await fetch(`/api/trade-halts${qs ? `?${qs}` : ''}`)
   if (!res.ok) {
     const payload = (await res.json().catch(() => ({}))) as { detail?: string }
     throw new Error(payload.detail || 'Failed to load trade halts')
@@ -41,6 +58,73 @@ export async function fetchTradeHaltsForDay(day?: string | null): Promise<{ day:
     day: payload.day ?? day ?? null,
     data: Array.isArray(payload.data) ? payload.data : [],
   }
+}
+
+export async function deleteOlderTradeHalts(keepDay?: string | null): Promise<{
+  keep_day: string
+  halts_deleted: number
+  notifications_deleted: number
+}> {
+  const qs = keepDay ? `?keep_day=${encodeURIComponent(keepDay)}` : ''
+  const res = await fetch(`/api/trade-halts/older${qs}`, { method: 'DELETE' })
+  if (!res.ok) {
+    const payload = (await res.json().catch(() => ({}))) as { detail?: string }
+    throw new Error(payload.detail || 'Failed to delete older halts')
+  }
+  return (await res.json()) as {
+    keep_day: string
+    halts_deleted: number
+    notifications_deleted: number
+  }
+}
+
+/** Rank symbols by halt frequency from an already-loaded list. */
+export function rankHotHaltSymbols(halts: TradeHalt[], limit = 6): HotHaltSymbol[] {
+  const counts = new Map<string, HotHaltSymbol>()
+  for (const row of halts) {
+    const symbol = (row.symbol || '').trim().toUpperCase()
+    if (!symbol) continue
+    let bucket = counts.get(symbol)
+    if (!bucket) {
+      bucket = {
+        symbol,
+        issue_name: row.issue_name,
+        halt_count: 0,
+        halted_count: 0,
+        resumed_count: 0,
+        last_status: row.status || 'halted',
+        last_halt_day: row.halt_day,
+        reason_code: row.reason_code || undefined,
+      }
+      counts.set(symbol, bucket)
+    }
+    bucket.halt_count += 1
+    if (String(row.status).toLowerCase() === 'resumed') {
+      bucket.resumed_count += 1
+    } else {
+      bucket.halted_count += 1
+      bucket.last_status = 'halted'
+    }
+    const day = row.halt_day || ''
+    const prev = bucket.last_halt_day || ''
+    if (day >= prev) {
+      bucket.last_halt_day = day
+      if (String(row.status).toLowerCase() !== 'resumed') {
+        bucket.last_status = 'halted'
+      } else if (bucket.last_status !== 'halted') {
+        bucket.last_status = 'resumed'
+      }
+      if (row.issue_name) bucket.issue_name = row.issue_name
+    }
+  }
+  return [...counts.values()]
+    .sort(
+      (a, b) =>
+        b.halt_count - a.halt_count ||
+        b.halted_count - a.halted_count ||
+        a.symbol.localeCompare(b.symbol),
+    )
+    .slice(0, Math.max(1, Math.min(limit, 20)))
 }
 
 export async function fetchTradeHaltNotifySettings(): Promise<{

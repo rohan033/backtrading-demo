@@ -1,8 +1,21 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react'
-import { Activity, Bell, BellOff, Download, ListPlus, OctagonAlert, RefreshCw, Rss, Settings2 } from 'lucide-react'
 import {
+  Activity,
+  Bell,
+  BellOff,
+  Download,
+  ListPlus,
+  OctagonAlert,
+  RefreshCw,
+  Rss,
+  Settings2,
+  Trash2,
+} from 'lucide-react'
+import {
+  deleteOlderTradeHalts,
   fetchTradeHaltNotifySettings,
   fetchTradeHaltsForDay,
+  rankHotHaltSymbols,
   setTradeHaltGlobalNotifyEnabled,
   setTradeHaltNotifyEnabled,
   type TradeHalt,
@@ -287,6 +300,7 @@ function HaltsPanel() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [polling, setPolling] = useState(false)
+  const [purging, setPurging] = useState(false)
   const [togglingGlobal, setTogglingGlobal] = useState(false)
   const [togglingSymbol, setTogglingSymbol] = useState<string | null>(null)
   const [error, setError] = useState('')
@@ -298,7 +312,7 @@ function HaltsPanel() {
     setError('')
     try {
       const [result, prefs] = await Promise.all([
-        fetchTradeHaltsForDay(dayFilter === 'all' ? null : dayFilter),
+        fetchTradeHaltsForDay(dayFilter === 'all' ? null : dayFilter, 'LUDP'),
         fetchTradeHaltNotifySettings(),
       ])
       setHalts(result.data)
@@ -329,6 +343,24 @@ function HaltsPanel() {
       setError(err instanceof Error ? err.message : 'Poll failed')
     } finally {
       setPolling(false)
+    }
+  }
+
+  const deleteOlder = async () => {
+    const keepDay = dayFilter === 'all' ? toDateInputValue(new Date()) : dayFilter
+    const confirmed = window.confirm(
+      `Delete all trade halts older than ${keepDay}? Today's (and newer) LUDP rows are kept.`,
+    )
+    if (!confirmed) return
+    setPurging(true)
+    setError('')
+    try {
+      await deleteOlderTradeHalts(keepDay)
+      await loadHalts({ soft: true })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete older halts')
+    } finally {
+      setPurging(false)
     }
   }
 
@@ -364,14 +396,7 @@ function HaltsPanel() {
     }
   }
 
-  const haltedCount = useMemo(
-    () => halts.filter(item => item.status === 'halted').length,
-    [halts],
-  )
-  const resumedCount = useMemo(
-    () => halts.filter(item => item.status === 'resumed').length,
-    [halts],
-  )
+  const hotSymbols = useMemo(() => rankHotHaltSymbols(halts, 6), [halts])
 
   return (
     <section className="set-content" aria-labelledby="trade-halts-title">
@@ -433,6 +458,16 @@ function HaltsPanel() {
         </button>
         <button
           type="button"
+          className="set-btn"
+          onClick={() => void deleteOlder()}
+          disabled={purging || loading}
+          title="Delete halt rows older than today (or the selected day)"
+        >
+          <Trash2 aria-hidden="true" />
+          {purging ? 'Deleting…' : 'Delete older'}
+        </button>
+        <button
+          type="button"
           className="set-btn set-btn--primary"
           onClick={() => void pollNow()}
           disabled={polling}
@@ -448,48 +483,78 @@ function HaltsPanel() {
         </div>
       ) : null}
 
-      <div className="set-summary" aria-label="Trade halt summary">
+      <div className="set-summary set-summary--halts" aria-label="Hot repeatedly halted stocks">
         <div className="set-summary__label">
-          <span className="set-eyebrow">Halts</span>
-          <strong>{dayFilter === 'all' ? 'Feed' : dayFilter}</strong>
+          <span className="set-eyebrow">Hot</span>
+          <strong>LUDP</strong>
         </div>
-        <span className="set-stat-pill">
-          <em>Total</em>
-          <strong>{halts.length}</strong>
-        </span>
-        <span className="set-stat-pill">
-          <em>Halted</em>
-          <strong className="set-halt-status--halted">{haltedCount}</strong>
-        </span>
-        <span className="set-stat-pill">
-          <em>Resumed</em>
-          <strong className="set-halt-status--resumed">{resumedCount}</strong>
-        </span>
+        <div className="set-halt-ticker" role="list">
+          {loading ? (
+            <div className="set-halt-ticker__empty">Loading…</div>
+          ) : !hotSymbols.length ? (
+            <div className="set-halt-ticker__empty">No LUDP repeats yet</div>
+          ) : (
+            hotSymbols.map(item => (
+              <article
+                key={item.symbol}
+                className={`set-halt-ticker-card set-halt-ticker-card--${
+                  item.last_status === 'resumed' ? 'resumed' : 'halted'
+                }`}
+                role="listitem"
+                title={item.issue_name || item.symbol}
+              >
+                <strong className="set-halt-ticker-card__sym">{item.symbol}</strong>
+                <span className="set-halt-ticker-card__count">
+                  {item.halt_count}×
+                </span>
+                <em className="set-halt-ticker-card__status">
+                  {item.last_status === 'resumed' ? 'Resumed' : 'Halted'}
+                </em>
+              </article>
+            ))
+          )}
+        </div>
       </div>
 
       <div className="set-body">
         {error ? <div className="set-error">{error}</div> : null}
         {loading ? (
-          <div className="set-empty">Loading trade halts…</div>
+          <div className="set-empty">Loading LUDP trade halts…</div>
         ) : !halts.length ? (
           <div className="set-empty">
-            <strong>No trade halts stored</strong>
+            <strong>No LUDP trade halts stored</strong>
             <p>Use Poll feed to refresh from NASDAQ, or pick All (feed) / another day.</p>
           </div>
         ) : (
           <div className="set-table-scroll">
             <div className="set-table-card">
-              <table className="set-table">
+              <table className="set-table set-table--halts">
                 <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>Status</th>
-                    <th>Reason</th>
-                    <th>Market</th>
-                    <th>Halted</th>
-                    <th>Resumption</th>
-                    <th>Issue</th>
-                    <th>Notify</th>
+                  <tr className="set-thead-row set-thead-row--halts">
+                    <th className="set-th set-th--first" scope="col">
+                      Symbol
+                    </th>
+                    <th className="set-th" scope="col">
+                      Status
+                    </th>
+                    <th className="set-th" scope="col">
+                      Reason
+                    </th>
+                    <th className="set-th" scope="col">
+                      Market
+                    </th>
+                    <th className="set-th" scope="col">
+                      Halted
+                    </th>
+                    <th className="set-th" scope="col">
+                      Resumption
+                    </th>
+                    <th className="set-th" scope="col">
+                      Issue
+                    </th>
+                    <th className="set-th" scope="col">
+                      Notify
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -498,10 +563,10 @@ function HaltsPanel() {
                     const busy = togglingSymbol === halt.symbol
                     return (
                       <tr key={halt.id} className="set-table-row">
-                        <td>
+                        <td className="set-td set-td--first">
                           <strong className="set-sym">{halt.symbol}</strong>
                         </td>
-                        <td>
+                        <td className="set-td">
                           <span
                             className={`set-halt-pill set-halt-pill--${
                               halt.status === 'resumed' ? 'resumed' : 'halted'
@@ -510,16 +575,18 @@ function HaltsPanel() {
                             {halt.status === 'resumed' ? 'Resumed' : 'Halted'}
                           </span>
                         </td>
-                        <td>{halt.reason_code || '—'}</td>
-                        <td>{halt.market || '—'}</td>
-                        <td>{formatHaltWhen(halt.halt_date, halt.halt_time)}</td>
-                        <td>
+                        <td className="set-td">{halt.reason_code || '—'}</td>
+                        <td className="set-td">{halt.market || '—'}</td>
+                        <td className="set-td">
+                          {formatHaltWhen(halt.halt_date, halt.halt_time)}
+                        </td>
+                        <td className="set-td">
                           {formatHaltWhen(halt.resumption_date, halt.resumption_trade_time)}
                         </td>
-                        <td>
+                        <td className="set-td">
                           <span className="set-halt-issue">{halt.issue_name || '—'}</span>
                         </td>
-                        <td>
+                        <td className="set-td">
                           <button
                             type="button"
                             className={`set-notify-toggle${notifyOn ? ' set-notify-toggle--on' : ''}`}

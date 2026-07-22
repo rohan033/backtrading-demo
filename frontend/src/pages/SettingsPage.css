@@ -812,6 +812,118 @@
   font-size: 11px;
 }
 
+.set-summary--halts {
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.set-halt-ticker {
+  display: flex;
+  flex: 1;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.set-halt-ticker__empty {
+  color: #4a5568;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 4px;
+  white-space: nowrap;
+}
+
+.set-halt-ticker-card {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 88px;
+  max-width: 140px;
+  padding: 8px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #f4f6f8;
+  color: #111;
+}
+
+.set-halt-ticker-card--halted {
+  border-color: #e2b4ae;
+  background: #fff3f2;
+}
+
+.set-halt-ticker-card--resumed {
+  border-color: #9fd0b5;
+  background: #eef8f1;
+}
+
+.set-halt-ticker-card__sym {
+  color: #111;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1.15;
+}
+
+.set-halt-ticker-card__count {
+  color: #111;
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+
+.set-halt-ticker-card__status {
+  color: #4a5568;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.set-halt-ticker-card--halted .set-halt-ticker-card__status {
+  color: #b42318;
+}
+
+.set-halt-ticker-card--resumed .set-halt-ticker-card__status {
+  color: #1a8c4a;
+}
+
+.set-thead-row--halts {
+  background: var(--ms-pill-active, #ffe599);
+  border-bottom: 1.5px solid #e0c86a;
+}
+
+.set-thead-row--halts .set-th {
+  color: #111;
+  background: transparent;
+}
+
+.set-table--halts .set-th--first,
+.set-table--halts .set-td--first {
+  padding-left: 10px;
+  padding-right: 6px;
+  width: 72px;
+}
+
+.set-table--halts .set-th,
+.set-table--halts .set-td {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.set-table--halts .set-table-row {
+  cursor: default;
+}
+
 .set-halt-banner {
   margin: 8px 8px 0;
   padding: 8px 10px;

@@ -463,6 +463,64 @@ class TradeHaltsStore:
         conn.close()
         return [self._halt_payload(row) for row in rows]
 
+    @staticmethod
+    def hot_symbols(
+        rows: list[dict[str, Any]],
+        *,
+        reason_code: str = "LUDP",
+        limit: int = 6,
+    ) -> list[dict[str, Any]]:
+        """Rank symbols by halt count for a reason code (default LUDP)."""
+        want = (reason_code or "LUDP").strip().upper()
+        counts: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            code = str(row.get("reason_code") or "").strip().upper()
+            if want and code != want:
+                continue
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            bucket = counts.get(symbol)
+            if bucket is None:
+                bucket = {
+                    "symbol": symbol,
+                    "issue_name": row.get("issue_name"),
+                    "halt_count": 0,
+                    "halted_count": 0,
+                    "resumed_count": 0,
+                    "last_status": row.get("status") or "halted",
+                    "last_halt_day": row.get("halt_day"),
+                    "reason_code": code or want,
+                }
+                counts[symbol] = bucket
+            bucket["halt_count"] = int(bucket["halt_count"]) + 1
+            if str(row.get("status") or "").lower() == "resumed":
+                bucket["resumed_count"] = int(bucket["resumed_count"]) + 1
+            else:
+                bucket["halted_count"] = int(bucket["halted_count"]) + 1
+                bucket["last_status"] = "halted"
+            # Prefer freshest day / currently halted as last_status when mixed.
+            day = str(row.get("halt_day") or "")
+            prev_day = str(bucket.get("last_halt_day") or "")
+            if day >= prev_day:
+                bucket["last_halt_day"] = day
+                if str(row.get("status") or "").lower() != "resumed":
+                    bucket["last_status"] = "halted"
+                elif bucket["last_status"] != "halted":
+                    bucket["last_status"] = "resumed"
+                if row.get("issue_name"):
+                    bucket["issue_name"] = row.get("issue_name")
+
+        ranked = sorted(
+            counts.values(),
+            key=lambda item: (
+                -int(item.get("halt_count") or 0),
+                -int(item.get("halted_count") or 0),
+                str(item.get("symbol") or ""),
+            ),
+        )
+        return ranked[: max(1, min(int(limit or 6), 20))]
+
     def list_recent_halts(self, *, days: int = 2) -> list[dict[str, Any]]:
         """Return halt rows for the last N calendar days (inclusive of today)."""
         span = max(1, min(int(days or 2), 14))
