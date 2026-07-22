@@ -1650,25 +1650,36 @@ def _log_etoro_close_result(label: str, result: dict) -> None:
     )
 
 
-async def _settle_close_notify(
-    client,
+def _schedule_close_settle(
+    *,
+    account_env: str,
     position_id: str,
     notify: PositionCloseNotifyContext | None,
-    *,
     order_id: str | None = None,
-) -> tuple[PositionCloseNotifyContext | None, dict | None]:
-    """Prefer eToro trade/history fill over client live LTP estimates."""
-    from control_plane.etoro_close_settle import (
-        apply_settlement_to_notify,
-        settle_closed_trade,
-    )
+    default_source: str = "positions",
+) -> bool:
+    """Fire-and-forget trade/history settle. Never block the close HTTP response.
 
-    settled = await settle_closed_trade(
-        client,
-        position_id=position_id,
-        order_id=order_id,
-    )
-    return apply_settlement_to_notify(notify, settled), settled
+    Waiting on eToro trade/history (several poll attempts) made Closing feel stuck
+    even after the broker already ACK'd the market close.
+    """
+    if notify is None:
+        return False
+    try:
+        from control_plane.etoro_close_settle import schedule_background_resettle
+
+        schedule_background_resettle(
+            account_env=account_env,
+            position_id=str(position_id),
+            ticker=getattr(notify, "ticker", None),
+            source=getattr(notify, "source", None) or default_source,
+            close_reason=getattr(notify, "close_reason", None),
+            order_id=order_id,
+        )
+        return True
+    except Exception as exc:
+        log.debug("[CLOSE] background settle schedule skipped: %s", exc)
+        return False
 
 
 def _position_close_notify_details(
@@ -2047,20 +2058,13 @@ async def close_execution_position(
 
     notify = req.notify
     settled = None
-    settlement_pending = False
-    try:
-        notify, settled = await _settle_close_notify(client, str(position_id), notify)
-        if settled:
-            log.info(
-                "[CONTROL_ETORO] close settled from history execution=%s position=%s sell=%s pnl=%s",
-                execution_id,
-                position_id,
-                settled.get("sell_price"),
-                settled.get("pnl"),
-            )
-    except Exception as exc:
-        log.debug("[CONTROL_ETORO] close settle skipped: %s", exc)
-        settled = None
+    # Local SQLite writes are fast; eToro history settle must not block the ACK.
+    settlement_pending = _schedule_close_settle(
+        account_env=account_env,
+        position_id=str(position_id),
+        notify=notify,
+        default_source="momentum",
+    )
 
     # Record the exit + realized P&L in the durable ledger. No-op unless this
     # execution has a momentum entry recorded. Best-effort: never fail the close.
@@ -2078,21 +2082,6 @@ async def close_execution_position(
         )
     except Exception as exc:
         log.debug("[CONTROL_ETORO] trades_pnl exit record skipped: %s", exc)
-
-    if not settled and notify:
-        try:
-            from control_plane.etoro_close_settle import schedule_background_resettle
-
-            schedule_background_resettle(
-                account_env=account_env,
-                position_id=str(position_id),
-                ticker=getattr(notify, "ticker", None),
-                source=getattr(notify, "source", None) or "momentum",
-                close_reason=getattr(notify, "close_reason", None),
-            )
-            settlement_pending = True
-        except Exception as exc:
-            log.debug("[CONTROL_ETORO] background settle schedule skipped: %s", exc)
 
     try:
         from control_plane.agent_trade_completion import log_position_close_for_execution
@@ -2533,19 +2522,13 @@ async def control_plane_etoro_close_position(
     _log_etoro_close_result("CONTROL_ETORO", closed)
     _remove_position_from_portfolio_cache("etoro", env, str(position_id))
 
-    # Prefer eToro trade/history fill (Trade Story) over client live LTP.
+    # Return on broker ACK. History settle + accurate P&L run in the background.
     notify = req.notify
     settled = None
     settlement_pending = False
-    try:
-        notify, settled = await _settle_close_notify(client, str(position_id), notify)
-    except Exception as exc:
-        log.debug("[CONTROL_ETORO] direct close settle skipped: %s", exc)
-
-    # Direct closes initiated by the Positions page (manual or bracket
-    # automation) do not have an execution id, so persist their finalized P&L
-    # explicitly. Other API callers are intentionally excluded.
     if notify and notify.source in {"positions", "bracket"}:
+        # Optimistic Order-activity row from client estimates (ms); background
+        # settle overwrites with Trade Story when history appears.
         try:
             from control_plane.trades_pnl_store import get_trades_pnl_store
 
@@ -2564,20 +2547,12 @@ async def control_plane_etoro_close_position(
         except Exception as exc:
             log.debug("[CONTROL_ETORO] UI trade P&L record skipped: %s", exc)
 
-    if not settled and notify and notify.source in {"positions", "bracket"}:
-        try:
-            from control_plane.etoro_close_settle import schedule_background_resettle
-
-            schedule_background_resettle(
-                account_env=env,
-                position_id=str(position_id),
-                ticker=notify.ticker,
-                source=notify.source,
-                close_reason=notify.close_reason,
-            )
-            settlement_pending = True
-        except Exception as exc:
-            log.debug("[CONTROL_ETORO] background settle schedule skipped: %s", exc)
+        settlement_pending = _schedule_close_settle(
+            account_env=env,
+            position_id=str(position_id),
+            notify=notify,
+            default_source=notify.source or "positions",
+        )
 
     _notify_ui_position_closed(
         account_env=env,

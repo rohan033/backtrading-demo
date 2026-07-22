@@ -329,53 +329,12 @@ class EtoroTradingClient(EtoroClient, TickClient):
         When units is omitted or <= 0, eToro closes the full position.
         Returns a dict with request/response debug info. Raises EtoroApiError on broker failure.
         """
-        logger.info("[eToro] close_position START position=%s units=%s", position_id, units)
-
-        position = await self._find_position(position_id)
-        if not position:
-            logger.error(
-                "[eToro] close_position ABORT position=%s reason=not_found_in_open_portfolio",
-                position_id,
-            )
-            raise EtoroApiError(
-                f"Position {position_id} not found in open eToro portfolio",
-                payload={"request": {"position_id": str(position_id)}},
-            )
-
-        broker_position_id = position.get("positionID") or position.get("positionId")
-        resolved_instrument_id = position.get("instrumentID") or position.get("instrumentId")
-        if resolved_instrument_id is None:
-            logger.error(
-                "[eToro] close_position ABORT position=%s reason=instrument_id_not_found",
-                position_id,
-            )
-            raise EtoroApiError(
-                f"Position {position_id} is missing instrumentID in eToro portfolio",
-                payload={"request": {"position_id": str(position_id), "position": position}},
-            )
-
-        if str(broker_position_id) == str(resolved_instrument_id):
-            logger.error(
-                "[eToro] close_position ABORT position=%s reason=position_id_matches_instrument_id",
-                position_id,
-            )
-            raise EtoroApiError(
-                f"Position {position_id} looks like an instrument id, not a broker position id",
-                payload={
-                    "request": {
-                        "position_id": str(position_id),
-                        "broker_position_id": broker_position_id,
-                        "instrument_id": resolved_instrument_id,
-                    }
-                },
-            )
-
-        if instrument_id is not None and str(instrument_id) != str(resolved_instrument_id):
-            logger.warning(
-                "[eToro] close_position instrument_id mismatch requested=%s portfolio=%s; using portfolio",
-                instrument_id,
-                resolved_instrument_id,
-            )
+        logger.info(
+            "[eToro] close_position START position=%s units=%s instrument=%s",
+            position_id,
+            units,
+            instrument_id,
+        )
 
         units_to_deduct = None
         if units is not None:
@@ -386,7 +345,73 @@ class EtoroTradingClient(EtoroClient, TickClient):
             except (TypeError, ValueError):
                 units_to_deduct = None
 
-        close_target = str(broker_position_id or position_id)
+        # Fast path: caller already knows instrument id — skip the portfolio GET
+        # that otherwise adds a full round-trip before every close.
+        if instrument_id is not None:
+            try:
+                resolved_instrument_id = int(instrument_id)
+            except (TypeError, ValueError) as exc:
+                raise EtoroApiError(
+                    f"Invalid instrument_id for close: {instrument_id}",
+                    payload={"request": {"position_id": str(position_id), "instrument_id": instrument_id}},
+                ) from exc
+            if str(position_id) == str(resolved_instrument_id):
+                raise EtoroApiError(
+                    f"Position {position_id} looks like an instrument id, not a broker position id",
+                    payload={
+                        "request": {
+                            "position_id": str(position_id),
+                            "instrument_id": resolved_instrument_id,
+                        }
+                    },
+                )
+            close_target = str(position_id)
+            logger.info(
+                "[eToro] close_position fast_path position=%s instrument=%s (skip portfolio lookup)",
+                close_target,
+                resolved_instrument_id,
+            )
+        else:
+            position = await self._find_position(position_id)
+            if not position:
+                logger.error(
+                    "[eToro] close_position ABORT position=%s reason=not_found_in_open_portfolio",
+                    position_id,
+                )
+                raise EtoroApiError(
+                    f"Position {position_id} not found in open eToro portfolio",
+                    payload={"request": {"position_id": str(position_id)}},
+                )
+
+            broker_position_id = position.get("positionID") or position.get("positionId")
+            resolved_instrument_id = position.get("instrumentID") or position.get("instrumentId")
+            if resolved_instrument_id is None:
+                logger.error(
+                    "[eToro] close_position ABORT position=%s reason=instrument_id_not_found",
+                    position_id,
+                )
+                raise EtoroApiError(
+                    f"Position {position_id} is missing instrumentID in eToro portfolio",
+                    payload={"request": {"position_id": str(position_id), "position": position}},
+                )
+
+            if str(broker_position_id) == str(resolved_instrument_id):
+                logger.error(
+                    "[eToro] close_position ABORT position=%s reason=position_id_matches_instrument_id",
+                    position_id,
+                )
+                raise EtoroApiError(
+                    f"Position {position_id} looks like an instrument id, not a broker position id",
+                    payload={
+                        "request": {
+                            "position_id": str(position_id),
+                            "broker_position_id": broker_position_id,
+                            "instrument_id": resolved_instrument_id,
+                        }
+                    },
+                )
+
+            close_target = str(broker_position_id or position_id)
         path = f"{self.execution_base_path()}/market-close-orders/positions/{close_target}"
         payload = normalize_etoro_order_payload({
             "InstrumentID": int(resolved_instrument_id),
