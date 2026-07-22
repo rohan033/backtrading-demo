@@ -208,11 +208,15 @@ export async function stopOnePercentSession(
 export async function closeOnePercentPosition(
   sessionId: string,
   reason = 'Manual close',
+  { brokerAlreadyClosed = false }: { brokerAlreadyClosed?: boolean } = {},
 ): Promise<OnePercentSessionDetail> {
   const res = await fetch(`${API}/${encodeURIComponent(sessionId)}/close-position`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
+    body: JSON.stringify({
+      reason,
+      broker_already_closed: brokerAlreadyClosed,
+    }),
   })
   return parseJson(res)
 }

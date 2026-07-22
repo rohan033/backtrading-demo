@@ -5,6 +5,7 @@ import { useCandidateChartLive } from '@/hooks/useCandidateChartLive'
 import {
   closeEtoroPosition,
   logCloseEtoroExchange,
+  watchCloseSettlement,
 } from '@/lib/closeEtoroPosition'
 import {
   closeOnePercentPosition,
@@ -272,8 +273,15 @@ type OrderMonitorRowData = {
   remainingToTp: number | null
   tpPctComplete: number | null
   takeProfitPct: number | null
+  remainingToSl: number | null
+  slPctComplete: number | null
+  stopLossPct: number | null
   canClose: boolean
   positionClosed: boolean
+  entryPrice: number | null
+  tpPrice: number | null
+  slPrice: number | null
+  currentPrice: number | null
 }
 
 function clampPct(value: number): number {
@@ -321,11 +329,79 @@ function computeTpProgress({
   return { tpPctComplete: null, remainingToTp: null }
 }
 
+function computeSlProgress({
+  pnlPct,
+  stopLossPct,
+  entry,
+  slPrice,
+  current,
+  quantity,
+  pnl,
+}: {
+  pnlPct: number | null
+  stopLossPct: number | null
+  entry: number | null
+  slPrice: number | null
+  current: number | null
+  quantity: number | null
+  pnl: number | null
+}): { slPctComplete: number | null; remainingToSl: number | null } {
+  if (stopLossPct != null && stopLossPct > 0 && pnlPct != null) {
+    // 0% at entry/green; 100% when live loss reaches configured SL %.
+    const remainingToSl = entry != null && quantity != null && quantity > 0 && pnl != null
+      ? Math.round((entry * (stopLossPct / 100) * quantity + pnl) * 100) / 100
+      : null
+    return {
+      slPctComplete: clampPct((-pnlPct / stopLossPct) * 100),
+      remainingToSl,
+    }
+  }
+  if (
+    entry != null && entry > 0
+    && slPrice != null && slPrice > 0
+    && current != null
+    && slPrice !== entry
+  ) {
+    const span = entry - slPrice
+    if (span <= 0) return { slPctComplete: null, remainingToSl: null }
+    const remainingToSl = quantity != null && quantity > 0
+      ? Math.round((current - slPrice) * quantity * 100) / 100
+      : null
+    return {
+      slPctComplete: clampPct(((entry - current) / span) * 100),
+      remainingToSl,
+    }
+  }
+  return { slPctComplete: null, remainingToSl: null }
+}
+
+function eventsForActiveAttempt(
+  events: OnePercentSessionEvent[],
+  session: OnePercentSession | null,
+): OnePercentSessionEvent[] {
+  const activeAttemptId = session?.active_attempt_id ? String(session.active_attempt_id) : ''
+  if (!activeAttemptId) return events
+  return events.filter(event => {
+    const payload = asRecord(event.payload)
+    const attemptId = payload.attempt_id
+    if (attemptId == null || attemptId === '') {
+      // Ignore prior-attempt close/complete events that lack an attempt id.
+      return !(
+        event.event_type === 'attempt_completed'
+        || event.event_type === 'force_close_started'
+        || event.event_type === 'manual_close_requested'
+      )
+    }
+    return String(attemptId) === activeAttemptId
+  })
+}
+
 function buildOrderMonitorRow(
   events: OnePercentSessionEvent[],
   session: OnePercentSession | null,
-  livePnl?: { pnl: number | null; pnlPct: number | null },
+  livePnl?: { pnl: number | null; pnlPct: number | null; currentPrice?: number | null },
 ): OrderMonitorRowData | null {
+  const scopedEvents = eventsForActiveAttempt(events, session)
   let orderId: string | null = session?.active_order_id ? String(session.active_order_id) : null
   let positionId: string | null = session?.active_position_id ? String(session.active_position_id) : null
   let symbol = String(session?.active_symbol || '')
@@ -340,12 +416,16 @@ function buildOrderMonitorRow(
   let remainingToTp: number | null = null
   let tpPctComplete: number | null = null
   let takeProfitPct: number | null = null
+  let remainingToSl: number | null = null
+  let slPctComplete: number | null = null
+  let stopLossPct: number | null = null
   let entryPrice: number | null = null
   let tpPrice: number | null = null
+  let slPrice: number | null = null
   let currentPrice: number | null = null
   let quantity: number | null = null
 
-  for (const event of events) {
+  for (const event of scopedEvents) {
     const payload = asRecord(event.payload)
     if (event.event_type === 'order_placed') {
       seenOrder = true
@@ -356,9 +436,9 @@ function buildOrderMonitorRow(
     }
     if (event.event_type === 'entry_filled' || event.event_type === 'order_configured') {
       seenOrder = true
+      positionClosed = false
       if (event.event_type === 'entry_filled') {
         filled = true
-        positionClosed = false
       }
       orderId = String(payload.order_id || orderId || '') || null
       positionId = String(payload.position_id || positionId || '') || null
@@ -367,10 +447,14 @@ function buildOrderMonitorRow(
       const buy = Number(payload.buy ?? payload.entry_price)
       const tp = Number(payload.take_profit_price)
       const tpPct = Number(payload.take_profit_pct)
+      const sl = Number(payload.stop_loss_price)
+      const slPct = Number(payload.stop_loss_pct)
       const qty = Number(payload.quantity)
       if (Number.isFinite(buy)) entryPrice = buy
       if (Number.isFinite(tp)) tpPrice = tp
       if (Number.isFinite(tpPct)) takeProfitPct = tpPct
+      if (Number.isFinite(sl)) slPrice = sl
+      if (Number.isFinite(slPct)) stopLossPct = slPct
       if (Number.isFinite(qty)) quantity = qty
     }
     if (event.event_type === 'position_snapshot') {
@@ -392,14 +476,22 @@ function buildOrderMonitorRow(
       const remTp = Number(payload.remaining_to_tp)
       if (Number.isFinite(tpDone)) tpPctComplete = tpDone
       if (Number.isFinite(remTp)) remainingToTp = remTp
+      const slDone = Number(payload.sl_pct_complete)
+      const remSl = Number(payload.remaining_to_sl)
+      if (Number.isFinite(slDone)) slPctComplete = slDone
+      if (Number.isFinite(remSl)) remainingToSl = remSl
       const buy = Number(payload.buy ?? payload.entry_price)
       const tp = Number(payload.take_profit_price)
       const tpPct = Number(payload.take_profit_pct)
+      const sl = Number(payload.stop_loss_price)
+      const slPct = Number(payload.stop_loss_pct)
       const cur = Number(payload.current_price)
       const qty = Number(payload.quantity)
       if (Number.isFinite(buy)) entryPrice = buy
       if (Number.isFinite(tp)) tpPrice = tp
       if (Number.isFinite(tpPct)) takeProfitPct = tpPct
+      if (Number.isFinite(sl)) slPrice = sl
+      if (Number.isFinite(slPct)) stopLossPct = slPct
       if (Number.isFinite(cur)) currentPrice = cur
       if (Number.isFinite(qty)) quantity = qty
     }
@@ -432,6 +524,9 @@ function buildOrderMonitorRow(
   if (livePnl?.pnlPct != null && Number.isFinite(livePnl.pnlPct)) {
     estimatedPnlPct = livePnl.pnlPct
   }
+  if (livePnl?.currentPrice != null && Number.isFinite(livePnl.currentPrice)) {
+    currentPrice = livePnl.currentPrice
+  }
 
   const target = Number(session?.target_dollars)
   const cumulative = Number(session?.cumulative_pnl)
@@ -442,9 +537,22 @@ function buildOrderMonitorRow(
     goalPctComplete = clampPct((projected / target) * 100)
   }
 
-  if (takeProfitPct == null && session?.config?.take_profit_pct != null) {
+  // Prefer configured per-stock TP/SL % (session config) over any legacy raised attempt value.
+  const configTp = Number(session?.config?.take_profit_pct)
+  if (Number.isFinite(configTp) && configTp > 0) {
+    takeProfitPct = configTp
+  } else if (takeProfitPct == null && session?.config?.take_profit_pct != null) {
     takeProfitPct = Number(session.config.take_profit_pct)
   }
+  const configSl = Number(session?.config?.stop_loss_pct)
+  if (Number.isFinite(configSl) && configSl > 0) {
+    stopLossPct = configSl
+  } else if (stopLossPct == null && session?.config?.stop_loss_pct != null) {
+    stopLossPct = Number(session.config.stop_loss_pct)
+  }
+
+  // Prefer live mark vs configured bracket prices for $ remaining (matches sticky Buy/TP/SL).
+  // Fall back to %·notional when prices are missing.
   const liveTp = computeTpProgress({
     pnlPct: estimatedPnlPct,
     takeProfitPct,
@@ -456,6 +564,40 @@ function buildOrderMonitorRow(
   })
   if (liveTp.tpPctComplete != null) tpPctComplete = liveTp.tpPctComplete
   if (liveTp.remainingToTp != null) remainingToTp = liveTp.remainingToTp
+  // When we have both live mark and TP price, dollars-to-TP must use the bracket gap
+  // (not capital·TP% which can disagree with the broker TP price / rounded qty).
+  if (
+    entryPrice != null && entryPrice > 0
+    && tpPrice != null && tpPrice > 0
+    && currentPrice != null
+    && quantity != null && quantity > 0
+  ) {
+    remainingToTp = Math.round((tpPrice - currentPrice) * quantity * 100) / 100
+    if (tpPrice !== entryPrice) {
+      tpPctComplete = clampPct(((currentPrice - entryPrice) / (tpPrice - entryPrice)) * 100)
+    }
+  }
+  const liveSl = computeSlProgress({
+    pnlPct: estimatedPnlPct,
+    stopLossPct,
+    entry: entryPrice,
+    slPrice,
+    current: currentPrice,
+    quantity,
+    pnl: estimatedPnl,
+  })
+  if (liveSl.slPctComplete != null) slPctComplete = liveSl.slPctComplete
+  if (liveSl.remainingToSl != null) remainingToSl = liveSl.remainingToSl
+  if (
+    entryPrice != null && entryPrice > 0
+    && slPrice != null && slPrice > 0
+    && currentPrice != null
+    && quantity != null && quantity > 0
+    && slPrice < entryPrice
+  ) {
+    remainingToSl = Math.round((currentPrice - slPrice) * quantity * 100) / 100
+    slPctComplete = clampPct(((entryPrice - currentPrice) / (entryPrice - slPrice)) * 100)
+  }
 
   const state = String(session?.state || '')
   let status = 'Order placed'
@@ -483,8 +625,15 @@ function buildOrderMonitorRow(
     remainingToTp,
     tpPctComplete,
     takeProfitPct,
+    remainingToSl,
+    slPctComplete,
+    stopLossPct,
     canClose: openForClose,
     positionClosed,
+    entryPrice,
+    tpPrice,
+    slPrice,
+    currentPrice,
   }
 }
 
@@ -504,23 +653,33 @@ function OrderMonitorRow({
   const remainingLabel = remaining == null
     ? null
     : remaining > 0
-      ? `${money(remaining)} to goal`
+      ? `${money(remaining)} to session`
       : remaining < 0
-        ? `${money(Math.abs(remaining))} over goal`
-        : 'Goal hit'
+        ? `${money(Math.abs(remaining))} over session`
+        : 'Session hit'
   const remTp = row.remainingToTp
   const tpRemainingLabel = remTp == null
     ? null
     : remTp > 0
-      ? `${money(remTp)} to TP`
+      ? `${money(remTp)} to stock TP`
       : remTp < 0
-        ? `${money(Math.abs(remTp))} over TP`
-        : 'TP hit'
+        ? `${money(Math.abs(remTp))} over stock TP`
+        : 'Stock TP hit'
+  const remSl = row.remainingToSl
+  const slRemainingLabel = remSl == null
+    ? null
+    : remSl > 0
+      ? `${money(remSl)} to stock SL`
+      : remSl < 0
+        ? `${money(Math.abs(remSl))} past stock SL`
+        : 'Stock SL hit'
   const showClose = Boolean(row.canClose && onClose && !closing && !row.positionClosed)
   const showProgress = remainingLabel != null
     || row.goalPctComplete != null
     || tpRemainingLabel != null
     || row.tpPctComplete != null
+    || slRemainingLabel != null
+    || row.slPctComplete != null
   return (
     <div className={`opc-order ${row.filled ? 'opc-order--live' : ''}`.trim()}>
       <div className="opc-order__head">
@@ -559,8 +718,8 @@ function OrderMonitorRow({
               className="opc-order__goal-bar opc-order__goal-bar--tp"
               title={
                 row.takeProfitPct != null
-                  ? `${row.tpPctComplete}% of ${row.takeProfitPct}% take-profit`
-                  : `${row.tpPctComplete}% of take-profit`
+                  ? `${row.tpPctComplete}% of ${row.takeProfitPct}% stock take-profit`
+                  : `${row.tpPctComplete}% of stock take-profit`
               }
             >
               <span
@@ -570,18 +729,39 @@ function OrderMonitorRow({
               <em>{row.tpPctComplete.toFixed(0)}% TP</em>
             </span>
           ) : null}
+          {slRemainingLabel ? (
+            <span className={`opc-order__remaining opc-order__remaining--sl${remSl != null && remSl <= 0 ? ' opc-order__remaining--hit-sl' : ''}`}>
+              {slRemainingLabel}
+            </span>
+          ) : null}
+          {row.slPctComplete != null ? (
+            <span
+              className="opc-order__goal-bar opc-order__goal-bar--sl"
+              title={
+                row.stopLossPct != null
+                  ? `${row.slPctComplete}% of ${row.stopLossPct}% stock stop-loss`
+                  : `${row.slPctComplete}% of stock stop-loss`
+              }
+            >
+              <span
+                className="opc-order__goal-fill opc-order__goal-fill--sl"
+                style={{ width: `${Math.max(2, Math.min(100, row.slPctComplete))}%` }}
+              />
+              <em>{row.slPctComplete.toFixed(0)}% SL</em>
+            </span>
+          ) : null}
           {remainingLabel ? (
             <span className={`opc-order__remaining${remaining != null && remaining <= 0 ? ' opc-order__remaining--hit' : ''}`}>
               {remainingLabel}
             </span>
           ) : null}
           {row.goalPctComplete != null ? (
-            <span className="opc-order__goal-bar" title={`${row.goalPctComplete}% of session target`}>
+            <span className="opc-order__goal-bar" title={`${row.goalPctComplete}% of session $ target`}>
               <span
                 className="opc-order__goal-fill"
                 style={{ width: `${Math.max(2, Math.min(100, row.goalPctComplete))}%` }}
               />
-              <em>{row.goalPctComplete.toFixed(0)}% goal</em>
+              <em>{row.goalPctComplete.toFixed(0)}% session</em>
             </span>
           ) : null}
         </div>
@@ -611,10 +791,14 @@ function AttemptHistoryRow({ attempt }: { attempt: Record<string, unknown> }) {
   const pnl = Number(attempt.realized_pnl)
   const pnlPct = Number(attempt.realized_pnl_pct)
   const takeProfitPct = Number(attempt.take_profit_pct)
+  const stopLossPct = Number(attempt.stop_loss_pct)
   const hasPnl = Number.isFinite(pnl)
   const hasPnlPct = Number.isFinite(pnlPct)
   const tpPct = Number.isFinite(takeProfitPct) && takeProfitPct > 0 && hasPnlPct
     ? clampPct((pnlPct / takeProfitPct) * 100)
+    : null
+  const slPct = Number.isFinite(stopLossPct) && stopLossPct > 0 && hasPnlPct
+    ? clampPct((-pnlPct / stopLossPct) * 100)
     : null
   const done = Boolean(attempt.finished_at || attempt.outcome)
   if (!done && !hasPnl) return null
@@ -633,18 +817,32 @@ function AttemptHistoryRow({ attempt }: { attempt: Record<string, unknown> }) {
           </span>
         ) : null}
       </div>
-      {tpPct != null ? (
+      {tpPct != null || slPct != null ? (
         <div className="opc-order__goal">
-          <span
-            className="opc-order__goal-bar opc-order__goal-bar--tp"
-            title={`${tpPct}% of ${takeProfitPct}% take-profit`}
-          >
+          {tpPct != null ? (
             <span
-              className="opc-order__goal-fill opc-order__goal-fill--tp"
-              style={{ width: `${Math.max(2, Math.min(100, tpPct))}%` }}
-            />
-            <em>{tpPct.toFixed(0)}% TP</em>
-          </span>
+              className="opc-order__goal-bar opc-order__goal-bar--tp"
+              title={`${tpPct}% of ${takeProfitPct}% take-profit`}
+            >
+              <span
+                className="opc-order__goal-fill opc-order__goal-fill--tp"
+                style={{ width: `${Math.max(2, Math.min(100, tpPct))}%` }}
+              />
+              <em>{tpPct.toFixed(0)}% TP</em>
+            </span>
+          ) : null}
+          {slPct != null ? (
+            <span
+              className="opc-order__goal-bar opc-order__goal-bar--sl"
+              title={`${slPct}% of ${stopLossPct}% stop-loss`}
+            >
+              <span
+                className="opc-order__goal-fill opc-order__goal-fill--sl"
+                style={{ width: `${Math.max(2, Math.min(100, slPct))}%` }}
+              />
+              <em>{slPct.toFixed(0)}% SL</em>
+            </span>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -763,6 +961,8 @@ export default function OnePercentSessionWorkspace({
   const [stopping, setStopping] = useState(false)
   const [closingPosition, setClosingPosition] = useState(false)
   const [locallyClosedIds, setLocallyClosedIds] = useState(() => new Set<string>())
+  const autoCloseArmedRef = useRef(true)
+  const autoCloseInFlightRef = useRef(false)
 
   const load = useCallback(async () => {
     const next = await getOnePercentSession(sessionId)
@@ -784,7 +984,17 @@ export default function OnePercentSessionWorkspace({
   useEffect(() => {
     setLocallyClosedIds(new Set())
     setClosingPosition(false)
+    autoCloseArmedRef.current = true
+    autoCloseInFlightRef.current = false
   }, [sessionId])
+
+  // New attempt → drop sticky "Closing…" from the previous position.
+  useEffect(() => {
+    setLocallyClosedIds(new Set())
+    setClosingPosition(false)
+    autoCloseArmedRef.current = true
+    autoCloseInFlightRef.current = false
+  }, [detail?.active_attempt_id])
 
   useEffect(() => {
     if (!detail || isTerminalOnePercentState(detail.state)) return
@@ -869,7 +1079,13 @@ export default function OnePercentSessionWorkspace({
 
   const liveOrderPnl = useMemo(() => {
     const payload = pinned?.payload
-    if (!payload) return { pnl: null as number | null, pnlPct: null as number | null }
+    if (!payload) {
+      return {
+        pnl: null as number | null,
+        pnlPct: null as number | null,
+        currentPrice: null as number | null,
+      }
+    }
     const entry = Number(payload.buy ?? payload.entry_price)
     const qty = Number(payload.quantity)
     const livePrice = live.ltp != null && Number.isFinite(live.ltp) ? live.ltp : null
@@ -877,13 +1093,18 @@ export default function OnePercentSessionWorkspace({
     if (Number.isFinite(entry) && Number.isFinite(current) && Number.isFinite(qty) && qty > 0) {
       const pnl = (current - entry) * qty
       const pnlPct = entry > 0 ? ((current - entry) / entry) * 100 : null
-      return { pnl, pnlPct }
+      return {
+        pnl,
+        pnlPct,
+        currentPrice: Number.isFinite(current) ? current : null,
+      }
     }
     const snap = Number(payload.estimated_pnl)
     const snapPct = Number(payload.estimated_pnl_pct)
     return {
       pnl: Number.isFinite(snap) ? snap : null,
       pnlPct: Number.isFinite(snapPct) ? snapPct : null,
+      currentPrice: Number.isFinite(current) ? current : null,
     }
   }, [live.ltp, pinned?.payload])
 
@@ -891,7 +1112,9 @@ export default function OnePercentSessionWorkspace({
     const row = buildOrderMonitorRow(events, detail, liveOrderPnl)
     if (!row) return null
     const pid = row.positionId ? String(row.positionId) : ''
-    if (pid && locallyClosedIds.has(pid)) {
+    const activePid = detail?.active_position_id ? String(detail.active_position_id) : ''
+    // Only treat local close sticky state as belonging to the *current* open position.
+    if (pid && activePid && pid === activePid && locallyClosedIds.has(pid)) {
       return {
         ...row,
         canClose: false,
@@ -924,7 +1147,7 @@ export default function OnePercentSessionWorkspace({
     }
   }, [onSessionUpdate, sessionId])
 
-  const handleClosePosition = useCallback(async () => {
+  const handleClosePosition = useCallback(async (reason = '1% manual close') => {
     if (!detail) return
     const positionId = String(
       orderRow?.positionId || detail.active_position_id || '',
@@ -942,45 +1165,97 @@ export default function OnePercentSessionWorkspace({
     setClosingPosition(true)
     setError('')
     try {
-      // Close via the same control-plane eToro path as Positions (always registered).
-      // The 1% /close-position route only sets an engine flag and may 404 until API restart.
+      // Broker close only — API returns on ACK; history settle is background.
       const result = await closeEtoroPosition(positionId, detail.account_env, {
+        units: orderRow?.quantity ?? null,
         instrumentId: feedToken,
         notify: {
           source: 'positions',
           ticker: orderRow?.symbol || detail.active_symbol || undefined,
-          close_reason: '1% manual close',
+          close_reason: reason,
         },
       })
       logCloseEtoroExchange('1pc-manual', result)
+      watchCloseSettlement(result, orderRow?.symbol || detail.active_symbol || positionId)
 
-      // Notify 1% engine when route is available; ignore Not Found until API reload.
-      try {
-        const next = await closeOnePercentPosition(sessionId)
-        setDetail(next)
-        setEvents(next.events || [])
-        onSessionUpdate?.(next)
-      } catch (notifyErr) {
-        const msg = notifyErr instanceof Error ? notifyErr.message : ''
-        if (!/not found/i.test(msg)) {
-          console.warn('[1pc] close-position notify failed', notifyErr)
-        }
-        const refreshed = await getOnePercentSession(sessionId)
-        setDetail(refreshed)
-        setEvents(refreshed.events || [])
-        onSessionUpdate?.(refreshed)
-      }
+      // Unlock UI as soon as the broker ACK lands — do not wait on engine notify.
+      setClosingPosition(false)
+      autoCloseInFlightRef.current = false
+
+      // Engine flag only (skip second eToro close). Fire-and-forget.
+      void closeOnePercentPosition(sessionId, reason, { brokerAlreadyClosed: true })
+        .then(next => {
+          setDetail(next)
+          setEvents(next.events || [])
+          onSessionUpdate?.(next)
+        })
+        .catch(notifyErr => {
+          const msg = notifyErr instanceof Error ? notifyErr.message : ''
+          if (!/not found/i.test(msg)) {
+            console.warn('[1pc] close-position notify failed', notifyErr)
+          }
+          void getOnePercentSession(sessionId)
+            .then(refreshed => {
+              setDetail(refreshed)
+              setEvents(refreshed.events || [])
+              onSessionUpdate?.(refreshed)
+            })
+            .catch(() => {})
+        })
     } catch (err) {
       setLocallyClosedIds(prev => {
         const next = new Set(prev)
         next.delete(positionId)
         return next
       })
+      autoCloseArmedRef.current = true
       setError(err instanceof Error ? err.message : 'Failed to close position')
-    } finally {
       setClosingPosition(false)
+      autoCloseInFlightRef.current = false
     }
   }, [detail, feedToken, onSessionUpdate, orderRow, sessionId])
+
+  // Auto-close when this stock's configured take-profit % is reached (frontend).
+  useEffect(() => {
+    if (!detail || detail.state !== 'monitoring') return
+    if (!orderRow?.canClose || closingPosition) return
+    if (!autoCloseArmedRef.current || autoCloseInFlightRef.current) return
+
+    const tpPct = Number(detail.config?.take_profit_pct ?? orderRow.takeProfitPct)
+    const pnlPct = liveOrderPnl.pnlPct
+    const hitByPct = Number.isFinite(tpPct) && tpPct > 0
+      && pnlPct != null && Number.isFinite(pnlPct)
+      && pnlPct >= tpPct * 0.999
+
+    const entry = orderRow.entryPrice
+    const tpPrice = orderRow.tpPrice
+    const current = live.ltp != null && Number.isFinite(live.ltp)
+      ? live.ltp
+      : orderRow.currentPrice
+    // Soft price hit must stay meaningfully above entry (mirrors engine).
+    let hitByPrice = false
+    if (
+      entry != null && entry > 0
+      && tpPrice != null && tpPrice > entry
+      && current != null && Number.isFinite(current)
+    ) {
+      const softTp = Math.max(tpPrice * 0.999, entry + (tpPrice - entry) * 0.5)
+      hitByPrice = current >= softTp
+    }
+
+    if (!hitByPct && !hitByPrice) return
+
+    autoCloseArmedRef.current = false
+    autoCloseInFlightRef.current = true
+    void handleClosePosition('1% take-profit')
+  }, [
+    closingPosition,
+    detail,
+    handleClosePosition,
+    live.ltp,
+    liveOrderPnl.pnlPct,
+    orderRow,
+  ])
   if (!detail) {
     return <div className="am-chat-empty">{error || 'Loading 1% session…'}</div>
   }

@@ -80,7 +80,8 @@ def normalize_config(raw: dict[str, Any] | None = None) -> dict[str, Any]:
     data = {**DEFAULT_CONFIG, **(raw or {})}
     capital = max(1.0, float(data.get("capital") or DEFAULT_CONFIG["capital"]))
     target_pct = max(0.1, float(data.get("target_pct") or DEFAULT_CONFIG["target_pct"]))
-    take_profit_pct = max(0.1, float(data.get("take_profit_pct") or DEFAULT_CONFIG["take_profit_pct"]))
+    # Floor TP at 0.5%: 0.1% + soft fill threshold effectively fires at entry.
+    take_profit_pct = max(0.5, float(data.get("take_profit_pct") or DEFAULT_CONFIG["take_profit_pct"]))
     stop_loss_pct = max(0.1, float(data.get("stop_loss_pct") or DEFAULT_CONFIG["stop_loss_pct"]))
     max_attempts = max(1, min(10, int(data.get("max_attempts") or DEFAULT_CONFIG["max_attempts"])))
     selection_mode = str(data.get("selection_mode") or "deterministic").strip().lower()

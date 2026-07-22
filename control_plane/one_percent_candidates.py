@@ -566,14 +566,14 @@ def compute_attempt_brackets(
     cumulative_pnl: float,
     target_dollars: float,
 ) -> dict[str, float]:
-    """Compute TP/SL prices, raising TP on retries to recover prior losses."""
+    """Compute fixed per-stock TP/SL prices from configured percentages.
+
+    Session ``target_dollars`` remains a global finish condition after attempts settle;
+    it must not inflate this attempt's take-profit percentage.
+    """
     remaining = float(target_dollars) - float(cumulative_pnl or 0)
     recovery_amount = max(0.0, -float(cumulative_pnl or 0))
-    if capital > 0 and remaining > 0:
-        needed_pct = (remaining / float(capital)) * 100.0
-        effective_tp_pct = max(float(take_profit_pct), needed_pct)
-    else:
-        effective_tp_pct = float(take_profit_pct)
+    effective_tp_pct = float(take_profit_pct)
     tp_price = round(float(entry_price) * (1 + effective_tp_pct / 100.0), 2)
     sl_price = round(float(entry_price) * (1 - float(stop_loss_pct) / 100.0), 2)
     return {

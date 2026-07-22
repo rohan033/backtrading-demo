@@ -51,6 +51,17 @@ def _parse_iso(value: str | None) -> datetime | None:
         return None
 
 
+def _is_user_manual_close(close_reason: str | None) -> bool:
+    """True when the user clicked Close (must not auto-open the next attempt)."""
+    text = str(close_reason or "").strip().lower().replace("_", " ")
+    if not text:
+        return False
+    # Frontend / engine TP+SL exits should still allow the session to continue.
+    if "take profit" in text or "take-profit" in text or text in {"take profit", "stop loss"}:
+        return False
+    return text in {"manual close", "manual"} or "manual close" in text
+
+
 def _threshold_hit(
     *,
     current: float,
@@ -58,22 +69,43 @@ def _threshold_hit(
     pnl_amount: float,
     take_profit_price: float,
     stop_loss_price: float,
+    take_profit_pct: float = 0.0,
+    stop_loss_pct: float = 0.0,
+    pnl_pct: float | None = None,
 ) -> str | None:
-    """Return take_profit / stop_loss when live price or PnL crossed attempt brackets."""
-    if current <= 0:
+    """Return take_profit / stop_loss when live price or PnL % crossed attempt brackets.
+
+    Soft price hit may fire slightly early (0.1% of the TP price) but must stay
+    meaningfully above entry — otherwise a tiny configured TP% (e.g. 0.1%) makes
+    ``tp * 0.999 ≈ entry`` and force-closes on the first mark after fill.
+    """
+    if current <= 0 and (pnl_pct is None):
         return None
     tp = float(take_profit_price or 0)
     sl = float(stop_loss_price or 0)
-    if tp > 0 and current >= tp * 0.999:
-        return "take_profit"
-    if sl > 0 and current <= sl * 1.001:
-        return "stop_loss"
-    # Dollar-band fallback from entry↔bracket prices when quantity-based PnL is available.
-    if entry_price > 0 and tp > entry_price and pnl_amount >= (tp - entry_price) * 0.999:
-        # only meaningful when qty≈1; keep price checks primary
-        pass
-    return None
+    tp_pct = float(take_profit_pct or 0)
+    sl_pct = float(stop_loss_pct or 0)
+    entry = float(entry_price or 0)
 
+    if current > 0:
+        if tp > 0:
+            soft_tp = tp * 0.999
+            if entry > 0 and tp > entry:
+                # Require at least ~50% of the configured TP distance before soft-hit.
+                soft_tp = max(soft_tp, entry + (tp - entry) * 0.5)
+            if current >= soft_tp:
+                return "take_profit"
+        if sl > 0 and current <= sl * 1.001:
+            return "stop_loss"
+
+    # Per-stock % brackets (authoritative for 1% sessions).
+    if pnl_pct is not None:
+        if tp_pct > 0 and float(pnl_pct) >= tp_pct * 0.999:
+            return "take_profit"
+        if sl_pct > 0 and float(pnl_pct) <= -sl_pct * 0.999:
+            return "stop_loss"
+
+    return None
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -267,7 +299,8 @@ class OnePercentSessionEngine:
         self.store = store or get_one_percent_session_store()
         self._tasks: dict[str, asyncio.Task] = {}
         self._stop_flags: set[str] = set()
-        self._close_flags: set[str] = set()
+        # session_id → close reason (from UI Close / frontend TP auto-close)
+        self._close_reasons: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
     async def startup(self) -> None:
@@ -284,14 +317,14 @@ class OnePercentSessionEngine:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.clear()
         self._stop_flags.clear()
-        self._close_flags.clear()
+        self._close_reasons.clear()
 
     def _ensure_runner(self, session_id: str) -> None:
         task = self._tasks.get(session_id)
         if task and not task.done():
             return
         self._stop_flags.discard(session_id)
-        self._close_flags.discard(session_id)
+        self._close_reasons.pop(session_id, None)
         self._tasks[session_id] = asyncio.create_task(
             self._run_session(session_id),
             name=f"one-percent-session-{session_id}",
@@ -345,8 +378,13 @@ class OnePercentSessionEngine:
         session_id: str,
         *,
         reason: str = "Manual close",
+        broker_already_closed: bool = False,
     ) -> dict[str, Any] | None:
-        """Market-close the active eToro position and let the monitor settle P&L."""
+        """Market-close the active eToro position and let the monitor settle P&L.
+
+        When broker_already_closed is True (UI already closed via control-plane),
+        only set the engine flag — do not hit eToro again.
+        """
         session = self.store.get_session(session_id)
         if not session:
             return None
@@ -356,7 +394,7 @@ class OnePercentSessionEngine:
         if not position_id and not session.get("active_order_id"):
             raise ValueError("No active position to close")
 
-        self._close_flags.add(session_id)
+        self._close_reasons[session_id] = str(reason or "manual_close").strip() or "manual_close"
         self.store.append_event(
             session_id,
             "manual_close_requested",
@@ -366,11 +404,12 @@ class OnePercentSessionEngine:
                 "position_id": position_id or None,
                 "order_id": session.get("active_order_id"),
                 "symbol": session.get("active_symbol"),
+                "broker_already_closed": bool(broker_already_closed),
             },
         )
 
         # Close immediately so the UI action does not depend on the next poll tick.
-        if position_id:
+        if position_id and not broker_already_closed:
             env = "live" if str(session.get("account_env") or "").lower() == "live" else "demo"
             attempt_id = session.get("active_attempt_id")
             attempt = self.store.get_attempt(attempt_id) if attempt_id else None
@@ -1180,6 +1219,26 @@ class OnePercentSessionEngine:
                         2,
                     )
                     remaining_to_tp = round((tp_price - current) * quantity, 2)
+                sl_pct = float(attempt.get("stop_loss_pct") or 0)
+                sl_price = float(attempt.get("stop_loss_price") or 0)
+                sl_pct_complete = None
+                remaining_to_sl = None
+                if sl_pct > 0:
+                    sl_pct_complete = round(max(0.0, min(100.0, (-pnl_pct / sl_pct) * 100.0)), 2)
+                    max_sl_loss = (
+                        (entry_price * (sl_pct / 100.0) * quantity)
+                        if entry_price and quantity
+                        else None
+                    )
+                    if max_sl_loss is not None:
+                        remaining_to_sl = round(max_sl_loss + pnl_amount, 2)
+                elif sl_price > 0 and entry_price > 0 and quantity > 0 and sl_price < entry_price:
+                    span = entry_price - sl_price
+                    sl_pct_complete = round(
+                        max(0.0, min(100.0, ((entry_price - current) / span) * 100.0)),
+                        2,
+                    )
+                    remaining_to_sl = round((current - sl_price) * quantity, 2)
                 ticks += 1
                 if ticks == 1 or ticks % SNAPSHOT_EVERY_N == 0:
                     self.store.append_event(
@@ -1214,6 +1273,8 @@ class OnePercentSessionEngine:
                             "goal_pct_complete": goal_pct,
                             "tp_pct_complete": tp_pct_complete,
                             "remaining_to_tp": remaining_to_tp,
+                            "sl_pct_complete": sl_pct_complete,
+                            "remaining_to_sl": remaining_to_sl,
                         },
                     )
 
@@ -1224,11 +1285,14 @@ class OnePercentSessionEngine:
                     pnl_amount=float(pnl_amount or 0),
                     take_profit_price=float(attempt.get("take_profit_price") or 0),
                     stop_loss_price=float(attempt.get("stop_loss_price") or 0),
+                    take_profit_pct=float(attempt.get("take_profit_pct") or 0),
+                    stop_loss_pct=float(attempt.get("stop_loss_pct") or 0),
+                    pnl_pct=float(pnl_pct) if pnl_pct is not None else None,
                 )
-                manual_close = session_id in self._close_flags
-                if threshold or manual_close:
-                    close_why = "manual_close" if manual_close else threshold
-                    self._close_flags.discard(session_id)
+                pending_close_reason = self._close_reasons.get(session_id)
+                if threshold or pending_close_reason:
+                    close_why = pending_close_reason or threshold
+                    self._close_reasons.pop(session_id, None)
                     await self._force_close_open_position(
                         session=session,
                         attempt=attempt,
@@ -1338,6 +1402,7 @@ class OnePercentSessionEngine:
                     )
                     return
 
+                pending_close_reason = self._close_reasons.pop(session_id, None)
                 await self._close_from_broker(
                     session=session,
                     attempt=attempt,
@@ -1350,6 +1415,7 @@ class OnePercentSessionEngine:
                     last_broker_pnl=last_broker_pnl,
                     last_matched=last_matched,
                     open_positions=positions,
+                    forced_close_reason=pending_close_reason,
                 )
                 return
 
@@ -1718,7 +1784,12 @@ class OnePercentSessionEngine:
             log.debug("[1PC] trades_pnl exit skipped: %s", exc)
 
         candidate = attempt.get("candidate") or {}
-        will_retry = cumulative < target and attempt_number < max_attempts
+        user_manual_close = _is_user_manual_close(close_reason)
+        will_retry = (
+            not user_manual_close
+            and cumulative < target
+            and attempt_number < max_attempts
+        )
         self.store.append_event(
             session_id,
             "attempt_completed",
@@ -1751,6 +1822,14 @@ class OnePercentSessionEngine:
                 refreshed,
                 outcome="target_hit",
                 reason=f"Reached target ${target:.2f}",
+            )
+            return
+        if user_manual_close:
+            # User clicked Close — settle this trade and stop. Do NOT open another buy.
+            await self._finish_session(
+                refreshed,
+                outcome="manual_close",
+                reason=str(close_reason or "Closed by user"),
             )
             return
         if attempt_number >= max_attempts:

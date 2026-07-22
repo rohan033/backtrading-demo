@@ -1301,6 +1301,18 @@
   color: #135f99;
 }
 
+.opc-order__remaining--sl {
+  border-color: #e2b4ae;
+  background: #fff3f2;
+  color: #b42318;
+}
+
+.opc-order__remaining--hit-sl {
+  border-color: #e2b4ae;
+  background: #fde8e8;
+  color: #b42318;
+}
+
 .opc-order__goal-bar--tp {
   border-color: #9ec5e8;
 }
@@ -1311,6 +1323,18 @@
 
 .opc-order__goal-bar--tp em {
   color: #126b3a;
+}
+
+.opc-order__goal-bar--sl {
+  border-color: #e2b4ae;
+}
+
+.opc-order__goal-fill--sl {
+  background: linear-gradient(90deg, #f8d9d6, #e07a6e);
+}
+
+.opc-order__goal-bar--sl em {
+  color: #b42318;
 }
 
 .opc-attempts-panel {

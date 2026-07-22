@@ -145,15 +145,19 @@ async def stop_session(session_id: str, req: StopOnePercentSessionRequest | None
 
 class CloseOnePercentPositionRequest(BaseModel):
     reason: str = "Manual close"
+    # True when the UI already closed via /api/control/etoro/positions/.../close
+    broker_already_closed: bool = False
 
 
 @router.post("/{session_id}/close-position", operation_id="close_one_percent_position")
 async def close_position(session_id: str, req: CloseOnePercentPositionRequest | None = None):
     reason = (req.reason if req else None) or "Manual close"
+    broker_already_closed = bool(req.broker_already_closed) if req else False
     try:
         detail = await get_one_percent_session_engine().request_close_position(
             session_id,
             reason=reason,
+            broker_already_closed=broker_already_closed,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
