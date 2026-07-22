@@ -36,6 +36,80 @@ def test_watchlist_crud():
         assert store.list_watchlists() == []
 
 
+def test_find_symbol_by_ticker_prefers_us_equity():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "watchlists.db")
+        store = WatchlistStore(db_path=path)
+
+        created = store.create_watchlist("Movers", broker="etoro", account_env="demo")
+        store.add_symbol(
+            created["id"],
+            symboltoken="1001",
+            tradingsymbol="STX",
+            exchange="ETORO",
+            symbol="Stacks",
+        )
+        store.add_symbol(
+            created["id"],
+            symboltoken="2002",
+            tradingsymbol="STX.US",
+            exchange="ETORO",
+            symbol="Seagate",
+        )
+
+        hit = store.find_symbol_by_ticker(broker="etoro", account_env="demo", ticker="STX")
+        assert hit is not None
+        assert hit["symboltoken"] == "2002"
+        assert hit["tradingsymbol"] == "STX.US"
+
+        exact = store.find_symbol_by_ticker(broker="etoro", account_env="demo", ticker="STX.US")
+        assert exact is not None
+        assert exact["symboltoken"] == "2002"
+
+        other_env = store.find_symbol_by_ticker(broker="etoro", account_env="live", ticker="STX")
+        assert other_env is None
+
+
+def test_merge_watchlist_into_search_rows_promotes_known_id():
+    from control_plane.instrument_resolve import merge_watchlist_into_search_rows
+    from control_plane import watchlist_store as wl_mod
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "watchlists.db")
+        store = WatchlistStore(db_path=path)
+        created = store.create_watchlist("PM", broker="etoro", account_env="demo")
+        store.add_symbol(
+            created["id"],
+            symboltoken="1051632",
+            tradingsymbol="ZYBT.US",
+            exchange="ETORO",
+            symbol="ZYBT",
+        )
+
+        prev = wl_mod._store
+        wl_mod._store = store
+        try:
+            rows = merge_watchlist_into_search_rows(
+                "etoro",
+                "demo",
+                "ZYBT",
+                [
+                    {
+                        "tradingsymbol": "ZYBT",
+                        "symboltoken": "999",
+                        "exchange": "ETORO",
+                        "name": "Wrong ZYBT",
+                    }
+                ],
+            )
+            assert rows[0]["symboltoken"] == "1051632"
+            assert rows[0]["from_watchlist"] is True
+            assert rows[0]["tradingsymbol"] == "ZYBT.US"
+            assert any(r.get("symboltoken") == "999" for r in rows[1:])
+        finally:
+            wl_mod._store = prev
+
+
 def test_watchlist_symbol_metadata_is_persisted_and_updated():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "metadata.db")
