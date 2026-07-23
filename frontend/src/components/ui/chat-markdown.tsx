@@ -4,14 +4,25 @@ import remarkGfm from 'remark-gfm'
 import { resolveMarkdownImageSrc } from '@/lib/workspaceMedia'
 import { cn } from '@/lib/utils'
 
+type ChatMarkdownVariant = 'dark' | 'light'
+
 type ChatMarkdownProps = {
   content: string
   className?: string
+  /** Light panels (Home research drawer) need explicit dark text — not theme tokens. */
+  variant?: ChatMarkdownVariant
 }
 
-export function ChatMarkdown({ content, className }: ChatMarkdownProps) {
+const VARIANT_ROOT: Record<ChatMarkdownVariant, string> = {
+  dark: 'chat-markdown--dark',
+  light: 'chat-markdown--light',
+}
+
+export function ChatMarkdown({ content, className, variant = 'dark' }: ChatMarkdownProps) {
+  const isLight = variant === 'light'
+
   return (
-    <div className={cn('chat-markdown break-words', className)}>
+    <div className={cn('chat-markdown break-words', VARIANT_ROOT[variant], className)}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
@@ -29,7 +40,14 @@ export function ChatMarkdown({ content, className }: ChatMarkdownProps) {
           ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5">{children}</ol>,
           li: ({ children }) => <li className="leading-relaxed">{children}</li>,
           blockquote: ({ children }) => (
-            <blockquote className="my-2 border-l-2 border-accent/40 pl-3 text-text-secondary italic">
+            <blockquote
+              className={cn(
+                'my-2 border-l-2 pl-3 italic',
+                isLight
+                  ? 'border-[#C8C8C8] text-[#4a5568]'
+                  : 'border-accent/40 text-text-secondary',
+              )}
+            >
               {children}
             </blockquote>
           ),
@@ -38,26 +56,48 @@ export function ChatMarkdown({ content, className }: ChatMarkdownProps) {
               href={href}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-accent underline underline-offset-2 hover:text-accent/80"
+              className={cn(
+                'underline underline-offset-2',
+                isLight ? 'text-[#2A5F9E] hover:text-[#1E4A7A]' : 'text-accent hover:text-accent/80',
+              )}
             >
               {children}
             </a>
           ),
-          strong: ({ children }) => <strong className="font-semibold text-text-primary">{children}</strong>,
-          em: ({ children }) => <em className="italic text-text-primary/90">{children}</em>,
-          hr: () => <hr className="my-3 border-border/60" />,
+          strong: ({ children }) => (
+            <strong className={cn('font-semibold', !isLight && 'text-text-primary')}>{children}</strong>
+          ),
+          em: ({ children }) => (
+            <em className={cn('italic', !isLight && 'text-text-primary/90')}>{children}</em>
+          ),
+          hr: () => (
+            <hr className={cn('my-3', isLight ? 'border-[#D8D8D8]' : 'border-border/60')} />
+          ),
           table: ({ children }) => (
-            <div className="my-2 overflow-x-auto rounded-md border border-border/60">
+            <div
+              className={cn(
+                'my-2 overflow-x-auto rounded-md border',
+                isLight ? 'border-[#D8D8D8]' : 'border-border/60',
+              )}
+            >
               <table className="w-full min-w-[240px] border-collapse text-left text-xs">{children}</table>
             </div>
           ),
-          thead: ({ children }) => <thead className="bg-primary/80">{children}</thead>,
-          tbody: ({ children }) => <tbody className="divide-y divide-border/40">{children}</tbody>,
+          thead: ({ children }) => (
+            <thead className={isLight ? 'bg-[#EFEFEF]' : 'bg-primary/80'}>{children}</thead>
+          ),
+          tbody: ({ children }) => (
+            <tbody className={cn('divide-y', isLight ? 'divide-[#E5E5E5]' : 'divide-border/40')}>
+              {children}
+            </tbody>
+          ),
           tr: ({ children }) => <tr>{children}</tr>,
           th: ({ children }) => (
-            <th className="px-2 py-1.5 font-medium text-text-primary">{children}</th>
+            <th className={cn('px-2 py-1.5 font-medium', !isLight && 'text-text-primary')}>{children}</th>
           ),
-          td: ({ children }) => <td className="px-2 py-1.5 text-text-secondary">{children}</td>,
+          td: ({ children }) => (
+            <td className={cn('px-2 py-1.5', !isLight && 'text-text-secondary')}>{children}</td>
+          ),
           img: ({ src, alt }) => {
             const resolved = resolveMarkdownImageSrc(typeof src === 'string' ? src : undefined)
             if (!resolved) return null
@@ -66,7 +106,10 @@ export function ChatMarkdown({ content, className }: ChatMarkdownProps) {
                 src={resolved}
                 alt={alt || ''}
                 loading="lazy"
-                className="my-2 max-h-72 w-full cursor-zoom-in rounded-md border border-border/60 object-contain"
+                className={cn(
+                  'my-2 max-h-72 w-full cursor-zoom-in rounded-md border object-contain',
+                  isLight ? 'border-[#D8D8D8]' : 'border-border/60',
+                )}
               />
             )
           },
@@ -76,8 +119,18 @@ export function ChatMarkdown({ content, className }: ChatMarkdownProps) {
 
             if (isBlock) {
               return (
-                <pre className="my-2 overflow-x-auto rounded-md border border-border/60 bg-[#0a1219] p-2.5 text-xs leading-relaxed">
-                  <code className={cn('font-mono text-sky-200/90', codeClassName)} {...props}>
+                <pre
+                  className={cn(
+                    'my-2 overflow-x-auto rounded-md border p-2.5 text-xs leading-relaxed',
+                    isLight
+                      ? 'border-[#D8D8D8] bg-[#EFEFEF] text-[#111]'
+                      : 'border-border/60 bg-[#0a1219]',
+                  )}
+                >
+                  <code
+                    className={cn('font-mono', !isLight && 'text-sky-200/90', codeClassName)}
+                    {...props}
+                  >
                     {text}
                   </code>
                 </pre>
@@ -86,7 +139,10 @@ export function ChatMarkdown({ content, className }: ChatMarkdownProps) {
 
             return (
               <code
-                className="rounded bg-[#0a1219] px-1 py-0.5 font-mono text-[0.85em] text-sky-200/90"
+                className={cn(
+                  'rounded px-1 py-0.5 font-mono text-[0.85em]',
+                  isLight ? 'bg-[#ECECEC] text-[#111]' : 'bg-[#0a1219] text-sky-200/90',
+                )}
                 {...props}
               >
                 {children}

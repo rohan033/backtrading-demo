@@ -9,6 +9,8 @@ import {
 import './Home.css'
 import CompanyNewsPanel from '../../components/watchlist/CompanyNewsPanel'
 import { ChatMarkdown } from '../../components/ui/chat-markdown'
+import { ChatReplySummaryPanel } from '../../components/ui/chat-reply-summary'
+import { hasReplySummary } from '../../lib/aiReplySummary'
 import { formatBrokerMoney } from '../../lib/currency'
 import { useCompanyNews } from '../../hooks/useCompanyNews'
 import { formatNewsTimestamp, type CompanyNewsItem } from '../../lib/companyNews'
@@ -49,12 +51,21 @@ import {
   RESEARCH_CHAT_TAGS,
 } from '../../lib/researchChatTags'
 import {
+  defaultParamsForModel,
+  listCursorAgentModels,
+  paramValueFor,
+  setParamValue,
+  type AgentModelParamSelection,
+  type CursorAgentModel,
+} from '../../lib/cursorAgentModels'
+import {
   buildChartRangeAgentPrompt,
   buildChartRangeChatDraft,
   formatChartRangeLabel,
   type HomeChartChatContext,
 } from '../../lib/homeChartChatContext'
 import { useCursorAgentChat, type AgentInteractionMode } from '../../lib/useCursorAgentChat'
+import type { ChatReplySummary } from '../../lib/aiReplySummary'
 import { useChartOpportunityMonitor } from '../../hooks/useChartOpportunityMonitor'
 import {
   buildChartOpportunityAgentPrompt,
@@ -622,6 +633,34 @@ const HOME_AUTO_TRADE_SCAN_KEY = 'home-chart-auto-trade-scan'
 const AI_DRAWER_MIN = 280
 const AI_DRAWER_MAX = 520
 const AI_DRAWER_DEFAULT = 340
+const HOME_CHAT_MODEL_KEY = 'home-chat-agent-model-v1'
+
+function loadStoredChatModel(): { id: string; params: AgentModelParamSelection[] } {
+  try {
+    const raw = localStorage.getItem(HOME_CHAT_MODEL_KEY)
+    if (!raw) return { id: '', params: [] }
+    const parsed = JSON.parse(raw) as { id?: string; params?: AgentModelParamSelection[] }
+    return {
+      id: typeof parsed.id === 'string' ? parsed.id : '',
+      params: Array.isArray(parsed.params)
+        ? parsed.params.filter(p => p?.id && p?.value)
+        : [],
+    }
+  } catch {
+    return { id: '', params: [] }
+  }
+}
+
+function persistChatModel(id: string, params: AgentModelParamSelection[]) {
+  try {
+    localStorage.setItem(
+      HOME_CHAT_MODEL_KEY,
+      JSON.stringify({ id, params: params.filter(p => p.id && p.value) }),
+    )
+  } catch {
+    // ignore storage errors
+  }
+}
 
 function loadDrawerBool(key: string, fallback = false) {
   try {
@@ -687,6 +726,16 @@ function HomeAiDrawer({
   statusText,
   error,
   onStop,
+  models,
+  modelsLoading,
+  modelsError,
+  agentModelId,
+  onAgentModelIdChange,
+  agentModelParams,
+  onAgentModelParamsChange,
+  selectedModel,
+  activeVariantName,
+  onModelVariantSelect,
 }: {
   collapsed: boolean
   width: number
@@ -699,12 +748,28 @@ function HomeAiDrawer({
   onChatDraftChange: (value: string) => void
   onSendChat: () => void
   onInsertTag: (mention: string) => void
-  messages: Array<{ id: string; role: 'user' | 'assistant'; content: string; streaming?: boolean }>
+  messages: Array<{
+    id: string
+    role: 'user' | 'assistant'
+    content: string
+    streaming?: boolean
+    replySummary?: ChatReplySummary
+  }>
   sending: boolean
   connected: boolean
   statusText: string
   error: string
   onStop: () => void
+  models: CursorAgentModel[]
+  modelsLoading: boolean
+  modelsError: string
+  agentModelId: string
+  onAgentModelIdChange: (modelId: string) => void
+  agentModelParams: AgentModelParamSelection[]
+  onAgentModelParamsChange: (params: AgentModelParamSelection[]) => void
+  selectedModel: CursorAgentModel | null
+  activeVariantName: string
+  onModelVariantSelect: (variantName: string) => void
 }) {
   const chatEnabled = Boolean(selection) || Boolean(chartChatContext)
   if (collapsed) {
@@ -762,13 +827,19 @@ function HomeAiDrawer({
               if (message.role === 'assistant') {
                 const parts = splitAssistantDisplayContent(message.content, Boolean(message.streaming))
                 const displayContent = stripAiActionBlocks(parts.body, Boolean(message.streaming))
+                const summary = message.streaming
+                  ? null
+                  : message.replySummary ?? parts.summary
                 return (
                   <div
                     key={message.id}
                     className="hm-chat-bubble hm-chat-bubble--assistant"
                   >
+                    {summary && hasReplySummary(summary) ? (
+                      <ChatReplySummaryPanel summary={summary} variant="light" className="hm-chat-summary" />
+                    ) : null}
                     {displayContent ? (
-                      <ChatMarkdown content={displayContent} className="hm-chat-markdown" />
+                      <ChatMarkdown content={displayContent} className="hm-chat-markdown" variant="light" />
                     ) : message.streaming ? (
                       <span className="hm-chat-thinking">Thinking…</span>
                     ) : null}
@@ -804,6 +875,76 @@ function HomeAiDrawer({
               </button>
             </div>
           ) : null}
+          <div className="hm-chat-model" aria-label="Cursor model settings">
+            <div className="hm-chat-model__row">
+              <label className="hm-chat-model__field">
+                <span className="hm-chat-model__label">Model</span>
+                <select
+                  className="hm-chat-model__select"
+                  value={agentModelId}
+                  disabled={sending || (modelsLoading && !agentModelId)}
+                  onChange={event => onAgentModelIdChange(event.target.value)}
+                >
+                  {!models.length && agentModelId ? (
+                    <option value={agentModelId}>{agentModelId}</option>
+                  ) : null}
+                  {!models.length && !agentModelId ? (
+                    <option value="">{modelsLoading ? 'Loading…' : 'No models'}</option>
+                  ) : null}
+                  {models.map(model => (
+                    <option key={model.id} value={model.id}>
+                      {model.display_name || model.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedModel?.variants?.length ? (
+                <label className="hm-chat-model__field">
+                  <span className="hm-chat-model__label">Preset</span>
+                  <select
+                    className="hm-chat-model__select"
+                    value={activeVariantName}
+                    disabled={sending}
+                    onChange={event => onModelVariantSelect(event.target.value)}
+                  >
+                    <option value="">Custom</option>
+                    {selectedModel.variants.map(variant => (
+                      <option key={variant.display_name} value={variant.display_name}>
+                        {variant.display_name}{variant.is_default ? ' (default)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </div>
+            {modelsError ? <p className="hm-chat-model__error">{modelsError}</p> : null}
+            {selectedModel?.parameters?.length ? (
+              <div className="hm-chat-model__params">
+                {selectedModel.parameters.map(param => (
+                  <label key={param.id} className="hm-chat-model__field hm-chat-model__field--param">
+                    <span className="hm-chat-model__label">{param.display_name || param.id}</span>
+                    <select
+                      className="hm-chat-model__select"
+                      value={paramValueFor(agentModelParams, param.id)}
+                      disabled={sending}
+                      onChange={event => {
+                        onAgentModelParamsChange(
+                          setParamValue(agentModelParams, param.id, event.target.value),
+                        )
+                      }}
+                    >
+                      <option value="">—</option>
+                      {(param.values || []).map(value => (
+                        <option key={value.value} value={value.value}>
+                          {value.display_name || value.value}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ))}
+              </div>
+            ) : null}
+          </div>
           <div className="hm-chat-tags" role="group" aria-label="Research tags">
             {RESEARCH_CHAT_TAGS.map(tag => (
               <button
@@ -921,6 +1062,14 @@ export default function Home() {
   const [opportunityRange, setOpportunityRange] = useState<ChartTimeRange | null>(null)
   const [eurekaRange, setEurekaRange] = useState<ChartTimeRange | null>(null)
   const [agentInteractionMode, setAgentInteractionMode] = useState<AgentInteractionMode>('ask')
+  const storedChatModel = useMemo(() => loadStoredChatModel(), [])
+  const [models, setModels] = useState<CursorAgentModel[]>([])
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsError, setModelsError] = useState('')
+  const [agentModelId, setAgentModelId] = useState(storedChatModel.id)
+  const [agentModelParams, setAgentModelParams] = useState<AgentModelParamSelection[]>(
+    storedChatModel.params,
+  )
   const autoOpportunityInFlightRef = useRef(false)
   const [aiDrawerCollapsed, setAiDrawerCollapsed] = useState(() =>
     loadDrawerBool(AI_DRAWER_COLLAPSED_KEY, false),
@@ -940,7 +1089,89 @@ export default function Home() {
     stopMessage,
     hydrateMessages,
     resetAgent,
-  } = useCursorAgentChat(!aiDrawerCollapsed, agentInteractionMode, null, undefined, true)
+  } = useCursorAgentChat(
+    !aiDrawerCollapsed,
+    agentInteractionMode,
+    null,
+    undefined,
+    true,
+    agentModelId || null,
+    agentModelParams,
+  )
+
+  useEffect(() => {
+    let cancelled = false
+    setModelsLoading(true)
+    setModelsError('')
+    void listCursorAgentModels()
+      .then(rows => {
+        if (cancelled) return
+        setModels(rows)
+        setModelsLoading(false)
+        if (!rows.length) return
+        setAgentModelId(prev => {
+          if (prev && rows.some(model => model.id === prev)) return prev
+          const preferred =
+            rows.find(model => model.id === 'composer-2.5')
+            || rows.find(model => model.variants?.some(variant => variant.is_default))
+            || rows[0]
+          return preferred.id
+        })
+        setAgentModelParams(prev => {
+          if (prev.length) return prev
+          const preferred =
+            rows.find(model => model.id === 'composer-2.5')
+            || rows.find(model => model.variants?.some(variant => variant.is_default))
+            || rows[0]
+          return defaultParamsForModel(preferred)
+        })
+      })
+      .catch(err => {
+        if (cancelled) return
+        setModels([])
+        setModelsLoading(false)
+        setModelsError(err instanceof Error ? err.message : 'Failed to load models')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    persistChatModel(agentModelId, agentModelParams)
+  }, [agentModelId, agentModelParams])
+
+  const selectedModel = useMemo(
+    () => models.find(model => model.id === agentModelId) || null,
+    [models, agentModelId],
+  )
+
+  const activeVariantName = useMemo(
+    () =>
+      selectedModel?.variants?.find(variant => {
+        const variantParams = (variant.params || []).map(p => `${p.id}=${p.value}`).sort().join('|')
+        const currentParams = [...agentModelParams].map(p => `${p.id}=${p.value}`).sort().join('|')
+        return variantParams === currentParams
+      })?.display_name || '',
+    [selectedModel, agentModelParams],
+  )
+
+  const handleAgentModelIdChange = useCallback((modelId: string) => {
+    setAgentModelId(modelId)
+    const model = models.find(item => item.id === modelId) || null
+    setAgentModelParams(defaultParamsForModel(model))
+  }, [models])
+
+  const handleModelVariantSelect = useCallback((variantDisplayName: string) => {
+    if (!selectedModel) return
+    const variant = selectedModel.variants?.find(item => item.display_name === variantDisplayName)
+    if (!variant) return
+    setAgentModelParams(
+      (variant.params || [])
+        .filter(param => param.id && param.value)
+        .map(param => ({ id: String(param.id), value: String(param.value) })),
+    )
+  }, [selectedModel])
 
   const chatMessages = useMemo(
     () => agentMessages.filter(
@@ -1709,6 +1940,16 @@ export default function Home() {
           statusText={chatStatusText}
           error={chatError}
           onStop={stopMessage}
+          models={models}
+          modelsLoading={modelsLoading}
+          modelsError={modelsError}
+          agentModelId={agentModelId}
+          onAgentModelIdChange={handleAgentModelIdChange}
+          agentModelParams={agentModelParams}
+          onAgentModelParamsChange={setAgentModelParams}
+          selectedModel={selectedModel}
+          activeVariantName={activeVariantName}
+          onModelVariantSelect={handleModelVariantSelect}
         />
       </div>
     </div>

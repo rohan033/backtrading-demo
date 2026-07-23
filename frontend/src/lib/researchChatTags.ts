@@ -150,7 +150,14 @@ export function buildResearchAgentPrompt(userText: string, symbol?: string): str
 
   const header = token ? `Symbol: ${token}` : ''
   const body = question || `Provide a concise research brief covering the tagged sections for ${token || 'this symbol'}.`
-  return [header, ...blocks, body].filter(Boolean).join('\n\n')
+  const summaryHint = [
+    'Response format (required): start with a fenced JSON ai_summary block (highlights + lowlights required, cautions when relevant), then the detailed markdown analysis.',
+    'Example fence:',
+    '```json',
+    '{"ai_summary":{"highlights":["…"],"lowlights":["…"],"cautions":["…"]}}',
+    '```',
+  ].join('\n')
+  return [header, ...blocks, summaryHint, body].filter(Boolean).join('\n\n')
 }
 
 export function insertResearchTagMention(draft: string, mention: string): string {

@@ -77,13 +77,16 @@ USER_FACING_RESPONSE_HINT = """User-facing reply rules (critical — applies to 
 - You may use repo tools and control-plane actions silently when appropriate, but do not narrate that machinery in the reply unless the user explicitly asks for developer or architecture documentation.
 - Keep `ai_action` JSON fences for strategy suggestions when needed; they are parsed by the UI and must not be preceded by technical explanations about how the UI consumes them.
 
-When a reply benefits from a quick trader recap (research answers, stock analysis, strategy tradeoffs), end with a fenced JSON block the UI renders as Highlights / Lowlights / Cautions (omit the block for trivial one-line replies):
+ALWAYS open research and analysis replies with a fenced JSON ai_summary block BEFORE any markdown body. The UI shows Highlights / Lowlights / Cautions at the top of the message.
+- highlights and lowlights are REQUIRED every time (1–4 short, trader-facing bullets each).
+- cautions: include when risk-relevant; use an empty array [] when none apply.
+- Only skip ai_summary for trivial one-line acknowledgments with zero analysis (e.g. "OK", "Done").
 
 ```json
 {"ai_summary":{"highlights":["…"],"lowlights":["…"],"cautions":["…"]}}
 ```
 
-Use 1–4 short bullets per section; leave a section empty only if truly not applicable. Do not duplicate the same bullet across sections."""
+After the fence, write the full markdown answer (headings, lists, links). Do not duplicate the same bullet in highlights and lowlights."""
 
 ASK_MODE_HINT = f"""You are in ASK mode (research / Q&A).
 
@@ -559,6 +562,8 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
         interaction_mode: str,
         web_search_enabled: bool,
         research_session_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+        model_params: list[dict[str, str]] | None = None,
     ) -> None:
         cancel_event.clear()
         try:
@@ -571,6 +576,8 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
                 ws=ws,
                 cancel_event=cancel_event,
                 active_run=active_run,
+                model_id=model_id,
+                model_params=model_params,
             ):
                 await ws.send_json(event)
         except asyncio.CancelledError:
@@ -648,6 +655,24 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
             else:
                 web_search_enabled = bool(web_search_enabled)
 
+            raw_model_id = msg.get("model_id")
+            model_id = str(raw_model_id).strip() if raw_model_id else None
+            if model_id == "":
+                model_id = None
+
+            model_params: list[dict[str, str]] | None = None
+            raw_params = msg.get("model_params")
+            if isinstance(raw_params, list):
+                cleaned: list[dict[str, str]] = []
+                for row in raw_params:
+                    if not isinstance(row, dict):
+                        continue
+                    param_id = str(row.get("id") or "").strip()
+                    value = str(row.get("value") or "").strip()
+                    if param_id and value:
+                        cleaned.append({"id": param_id, "value": value})
+                model_params = cleaned or None
+
             if chat_task is not None and not chat_task.done():
                 cancel_event.set()
                 run = active_run.get("run")
@@ -661,15 +686,24 @@ async def handle_cursor_agent_websocket(ws: WebSocket) -> None:
                 chat_task = None
 
             log.info(
-                "[CURSOR_AGENT_WS] chat agent_id=%s session=%s mode=%s web_search=%s prompt_len=%d",
+                "[CURSOR_AGENT_WS] chat agent_id=%s session=%s mode=%s web_search=%s model=%s prompt_len=%d",
                 agent_id or "-",
                 research_session_id or "-",
                 interaction_mode,
                 web_search_enabled,
+                model_id or "-",
                 len(prompt),
             )
             chat_task = asyncio.create_task(
-                run_chat(prompt, agent_id, interaction_mode, web_search_enabled, research_session_id),
+                run_chat(
+                    prompt,
+                    agent_id,
+                    interaction_mode,
+                    web_search_enabled,
+                    research_session_id,
+                    model_id,
+                    model_params,
+                ),
             )
     except WebSocketDisconnect:
         log.info("[CURSOR_AGENT_WS] Client disconnected")

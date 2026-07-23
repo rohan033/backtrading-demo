@@ -15,6 +15,7 @@ import {
   mergeAttachments,
   type ChatMediaAttachment,
 } from '@/lib/workspaceMedia'
+import type { AgentModelParamSelection } from '@/lib/cursorAgentModels'
 
 export type AgentInteractionMode = 'ask' | 'execute'
 
@@ -71,6 +72,8 @@ export function useCursorAgentChat(
   researchSessionId: string | null = null,
   onResearchSessionUpdated?: () => void,
   webSearchEnabled = true,
+  modelId: string | null = null,
+  modelParams: AgentModelParamSelection[] = [],
 ) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [health, setHealth] = useState<AgentHealth | null>(null)
@@ -82,6 +85,8 @@ export function useCursorAgentChat(
   const agentIdRef = useRef<string | null>(null)
   const researchSessionIdRef = useRef<string | null>(researchSessionId)
   const webSearchEnabledRef = useRef(webSearchEnabled)
+  const modelIdRef = useRef(modelId)
+  const modelParamsRef = useRef(modelParams)
   const onResearchSessionUpdatedRef = useRef(onResearchSessionUpdated)
   const assistantDraftIdRef = useRef<string | null>(null)
   const reconnectTimerRef = useRef<number | null>(null)
@@ -105,6 +110,14 @@ export function useCursorAgentChat(
   useEffect(() => {
     webSearchEnabledRef.current = webSearchEnabled
   }, [webSearchEnabled])
+
+  useEffect(() => {
+    modelIdRef.current = modelId
+  }, [modelId])
+
+  useEffect(() => {
+    modelParamsRef.current = modelParams
+  }, [modelParams])
 
   useEffect(() => {
     onResearchSessionUpdatedRef.current = onResearchSessionUpdated
@@ -420,6 +433,10 @@ export function useCursorAgentChat(
 
       setMessages(prev => [...prev, userMessage, assistantMessage])
 
+      const cleanedParams = (modelParamsRef.current || [])
+        .filter(row => row.id && row.value)
+        .map(row => ({ id: row.id, value: row.value }))
+
       socket.send(
         JSON.stringify({
           type: 'chat',
@@ -428,6 +445,8 @@ export function useCursorAgentChat(
           interaction_mode: interactionMode,
           research_session_id: researchSessionIdRef.current,
           web_search_enabled: webSearchEnabledRef.current,
+          model_id: modelIdRef.current || null,
+          model_params: cleanedParams.length ? cleanedParams : undefined,
         }),
       )
       return true
