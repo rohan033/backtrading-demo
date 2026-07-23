@@ -17,6 +17,7 @@ import {
   type ScreenerField,
   type ScreenerFilterCond,
   type ScreenerPreset,
+  type ScreenerResultRow,
   type WatchlistSyncSummary,
 } from '../../lib/screenerApi'
 import {
@@ -32,9 +33,11 @@ import {
   emptyDefinition,
   formatScreenerNumber,
   tickerSymbol,
+  yahooFinanceUrl,
 } from '../../lib/screenerDefinition'
 import { showPlatformToast } from '../../lib/platform-toast'
 import { safeSetItem } from '../../lib/safeStorage'
+import { useUrlState } from '../../layout/minimal/useUrlState'
 import './Screener.css'
 
 type EditorMode = 'filters' | 'dsl' | 'ai'
@@ -62,6 +65,20 @@ function loadEditorWidth(): number {
 }
 
 const PAGE_SIZES = [10, 20, 50] as const
+const PRESET_REFRESH_SECONDS = [10, 15, 30, 60, 120, 300] as const
+const MIN_REFRESH_SECONDS = 10
+const MAX_REFRESH_SECONDS = 3600
+const STOCK_CATALYST_SOURCE = 'stock_catalyst_nyse_pm'
+const STOCK_CATALYST_FIELDS: ScreenerField[] = [
+  { key: 'mover_direction', label: 'Mover', type: 'text', ops: [] },
+  { key: 'change_pct', label: 'Change %', type: 'percent', ops: [] },
+  { key: 'change_abs', label: 'Change', type: 'price', ops: [] },
+  { key: 'last_price', label: 'Last', type: 'price', ops: [] },
+  { key: 'volume', label: 'Volume', type: 'number', ops: [] },
+  { key: 'free_float', label: 'Free float', type: 'number', ops: [] },
+  { key: 'short_float', label: 'Short float', type: 'number', ops: [] },
+  { key: 'recent_headlines', label: 'Recent headlines', type: 'headlines', ops: [] },
+]
 const PERCENT_KEYS = new Set([
   'change',
   'premarket_change',
@@ -76,6 +93,7 @@ const PERCENT_KEYS = new Set([
   'Perf.YTD',
   'Perf.1Y.MarketCap',
   'dividends_yield_current',
+  'change_pct',
 ])
 const PRICE_KEYS = new Set([
   'close',
@@ -84,6 +102,7 @@ const PRICE_KEYS = new Set([
   'low',
   'premarket_close',
   'premarket_change_abs',
+  'postmarket_close',
   'change_abs',
   'SMA20',
   'SMA50',
@@ -92,6 +111,7 @@ const PRICE_KEYS = new Set([
   'EMA50',
   'EMA200',
   'VWAP',
+  'last_price',
 ])
 
 const COLUMN_LABELS: Record<string, string> = {
@@ -109,12 +129,62 @@ const COLUMN_LABELS: Record<string, string> = {
   premarket_gap: 'Pre-mkt gap %',
   postmarket_change: 'Post-mkt chg %',
   postmarket_volume: 'Post-mkt vol',
+  postmarket_close: 'Post-mkt price',
+  mover_direction: 'Mover',
+  change_pct: 'Change %',
+  change_abs: 'Change',
+  last_price: 'Last',
+  free_float: 'Free float',
+  short_float: 'Short float',
+  recent_headlines: 'Recent headlines',
+}
+
+const CARD_FACE_PRICE_KEYS = ['premarket_close', 'postmarket_close', 'close', 'change'] as const
+const CARD_FACE_VOLUME_KEYS = ['premarket_volume', 'postmarket_volume', 'volume'] as const
+const CARD_FACE_SHORT_LABELS: Record<string, string> = {
+  premarket_close: 'Pre',
+  postmarket_close: 'Post',
+  close: 'Price',
+  change: 'Chg',
+  premarket_volume: 'Pre vol',
+  postmarket_volume: 'Post vol',
+  volume: 'Vol',
+}
+
+function cardFaceMetricKeys(
+  row: ScreenerResultRow,
+  keys: readonly string[],
+  columns: string[],
+): string[] {
+  return keys.filter(key => {
+    if (columns.includes(key)) return true
+    const raw = row.cells?.[key]
+    if (raw === null || raw === undefined || raw === '') return false
+    const n = Number(raw)
+    return Number.isFinite(n) ? true : String(raw).trim() !== ''
+  })
 }
 
 function cellKind(key: string): 'percent' | 'price' | 'number' {
   if (PERCENT_KEYS.has(key)) return 'percent'
   if (PRICE_KEYS.has(key)) return 'price'
   return 'number'
+}
+
+type StockCatalystHeadline = { title: string; url: string }
+
+function stockCatalystHeadlines(value: unknown): StockCatalystHeadline[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap(item => {
+    if (!item || typeof item !== 'object') return []
+    const title = String((item as { title?: unknown }).title || '').trim()
+    const url = String((item as { url?: unknown }).url || '').trim()
+    return title && url ? [{ title, url }] : []
+  })
+}
+
+function isNumericColumn(key: string): boolean {
+  return key !== 'ticker' && key !== 'mover_direction' && key !== 'recent_headlines'
 }
 
 function changeClass(value: unknown): string {
@@ -151,11 +221,46 @@ function watchlistButtonLabel(status: RowSyncStatus[string] | undefined): string
   return 'Add'
 }
 
+function watchlistSummaryMessage(summary: WatchlistSyncSummary): string {
+  return `Synced to ${summary.watchlist_name}: +${summary.added} added, `
+    + `${summary.already_present} existing, ${summary.unmatched} unmatched`
+    + (summary.failed ? `, ${summary.failed} failed` : '')
+}
+
+function clampRefreshSeconds(seconds: number): number {
+  return Math.min(MAX_REFRESH_SECONDS, Math.max(MIN_REFRESH_SECONDS, Math.round(seconds)))
+}
+
+function isPresetRefreshSeconds(seconds: number): boolean {
+  return (PRESET_REFRESH_SECONDS as readonly number[]).includes(seconds)
+}
+
+function findScreenerByName(list: Screener[], name: string): Screener | undefined {
+  const needle = name.trim().toLowerCase()
+  if (!needle) return undefined
+  return list.find(item => item.name.trim().toLowerCase() === needle)
+}
+
+function coalesceDefinition(defn: ScreenerDefinition | null | undefined): ScreenerDefinition {
+  if (defn && Array.isArray(defn.columns)) {
+    return defn
+  }
+  return emptyDefinition()
+}
+
+function definitionsEqual(a: ScreenerDefinition, b: ScreenerDefinition): boolean {
+  const colsA = [...(a.columns || [])].sort().join('|')
+  const colsB = [...(b.columns || [])].sort().join('|')
+  if (colsA !== colsB) return false
+  return JSON.stringify({ ...a, columns: undefined }) === JSON.stringify({ ...b, columns: undefined })
+}
+
 function defaultFilter(): ScreenerFilterCond {
   return { left: 'premarket_change', operation: 'greater', right: 5 }
 }
 
 export default function ScreenerPage() {
+  const { state, navigate } = useUrlState()
   const [screeners, setScreeners] = useState<Screener[]>([])
   const [presets, setPresets] = useState<ScreenerPreset[]>([])
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
@@ -172,7 +277,6 @@ export default function ScreenerPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState('')
-  const [editorOpen, setEditorOpen] = useState(true)
   const [editorWidth, setEditorWidth] = useState(loadEditorWidth)
   const editorResizeRef = useRef<{ startX: number; startWidth: number } | null>(null)
   const [editorMode, setEditorMode] = useState<EditorMode>('filters')
@@ -182,6 +286,8 @@ export default function ScreenerPage() {
   const [saving, setSaving] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(false)
   const [autoInterval, setAutoInterval] = useState(60)
+  const [autoIntervalCustom, setAutoIntervalCustom] = useState(false)
+  const [customIntervalDraft, setCustomIntervalDraft] = useState('60')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(20)
   const [sort, setSort] = useState<SortState>(null)
@@ -189,14 +295,49 @@ export default function ScreenerPage() {
   const [cardHeroField, setCardHeroField] = useState<string>(loadCardHeroField)
   const [rowStatus, setRowStatus] = useState<RowSyncStatus>({})
   const [syncingBulk, setSyncingBulk] = useState(false)
-  const [lastSummary, setLastSummary] = useState<WatchlistSyncSummary | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [nameDraft, setNameDraft] = useState('')
   const nameInputRef = useRef<HTMLInputElement>(null)
   const refreshInFlight = useRef(false)
   const visibleRef = useRef(typeof document !== 'undefined' ? document.visibilityState === 'visible' : true)
+  const draftDefinitionRef = useRef(draftDefinition)
+  const draftDslRef = useRef(draftDsl)
+  const selectedRef = useRef<Screener | null>(null)
+  const editorModeRef = useRef(editorMode)
+  const persistQueueRef = useRef(Promise.resolve<Screener | null>(null))
+
+  draftDefinitionRef.current = draftDefinition
+  draftDslRef.current = draftDsl
+  selectedRef.current = screener
+  editorModeRef.current = editorMode
+
+  const applyDraftLocally = useCallback((next: ScreenerDefinition) => {
+    draftDefinitionRef.current = next
+    setDraftDefinition(next)
+    setDraftDsl(definitionToDsl(next))
+  }, [])
+
+  const syncRefreshIntervalState = useCallback((seconds: number) => {
+    const interval = clampRefreshSeconds(seconds)
+    setAutoInterval(interval)
+    setCustomIntervalDraft(String(interval))
+  }, [])
 
   const selected = screener
+  const isStockCatalyst = selected?.source_type === STOCK_CATALYST_SOURCE
+  const urlScreenerName = state.screener?.trim() || ''
+  const editorOpen = state.screener_columns !== 'hidden'
+
+  const setEditorOpen = useCallback((open: boolean) => {
+    navigate(
+      { screener_columns: open ? '' : 'hidden' },
+      { replace: true },
+    )
+  }, [navigate])
+
+  const syncScreenerQuery = useCallback((name: string | null | undefined, replace = true) => {
+    navigate({ screener: name?.trim() || '' }, { replace })
+  }, [navigate])
 
   useEffect(() => {
     if (editingId) nameInputRef.current?.focus()
@@ -218,6 +359,7 @@ export default function ScreenerPage() {
       const updated = await updateScreener(id, { name: trimmed })
       setScreener(prev => (prev?.id === id ? { ...prev, name: updated.name } : prev))
       setScreeners(prev => prev.map(s => (s.id === updated.id ? { ...s, name: updated.name } : s)))
+      if (selectedId === id) syncScreenerQuery(updated.name)
     } catch (err) {
       showPlatformToast({
         variant: 'error',
@@ -226,7 +368,7 @@ export default function ScreenerPage() {
     }
   }
 
-  const loadList = useCallback(async (preferId?: string | null) => {
+  const loadList = useCallback(async (preferId?: string | null, preferName?: string | null) => {
     setLoading(true)
     setError('')
     try {
@@ -238,24 +380,43 @@ export default function ScreenerPage() {
       setScreeners(list)
       setFields(fieldList)
       setPresets(presetList)
-      const nextId = preferId || selectedId || list[0]?.id || null
+      let nextId: string | null = null
+      if (preferId && list.some(item => item.id === preferId)) {
+        nextId = preferId
+      } else if (preferName) {
+        nextId = findScreenerByName(list, preferName)?.id ?? null
+      }
+      if (!nextId && selectedId && list.some(item => item.id === selectedId)) {
+        nextId = selectedId
+      }
+      if (!nextId) {
+        nextId = list[0]?.id ?? null
+      }
       setSelectedId(nextId)
       if (nextId) {
         const full = await fetchScreener(nextId)
+        const defn = coalesceDefinition(full.definition)
         setScreener(full)
-        setDraftDefinition(full.definition || emptyDefinition())
-        setDraftDsl(full.dsl_text || definitionToDsl(full.definition || emptyDefinition()))
+        setDraftDefinition(defn)
+        setDraftDsl(full.source_type === STOCK_CATALYST_SOURCE ? '' : full.dsl_text || definitionToDsl(defn))
+        if (full.source_type === STOCK_CATALYST_SOURCE) setEditorMode('filters')
         setAutoRefresh(Boolean(full.auto_refresh_seconds && full.auto_refresh_seconds > 0))
-        setAutoInterval(full.auto_refresh_seconds > 0 ? full.auto_refresh_seconds : 60)
+        const refreshSeconds = full.auto_refresh_seconds > 0 ? full.auto_refresh_seconds : 60
+        syncRefreshIntervalState(refreshSeconds)
+        setAutoIntervalCustom(
+          full.auto_refresh_seconds > 0 && !isPresetRefreshSeconds(refreshSeconds),
+        )
+        syncScreenerQuery(full.name)
       } else {
         setScreener(null)
+        syncScreenerQuery(null)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load screeners')
     } finally {
       setLoading(false)
     }
-  }, [selectedId])
+  }, [selectedId, syncRefreshIntervalState, syncScreenerQuery])
 
   const builtinNames = useMemo(
     () => new Set(presets.map(p => p.name.trim().toLowerCase())),
@@ -268,7 +429,7 @@ export default function ScreenerPage() {
   }, [presets, screeners])
 
   useEffect(() => {
-    void loadList()
+    void loadList(null, urlScreenerName || null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -360,34 +521,145 @@ export default function ScreenerPage() {
     window.addEventListener('mouseup', onUp)
   }, [editorWidth])
 
-  const selectScreener = async (id: string) => {
+  const selectScreener = async (id: string, opts?: { syncUrl?: boolean }) => {
     setSelectedId(id)
     setPage(1)
     setSort(null)
     setRowStatus({})
-    setLastSummary(null)
     setError('')
     try {
       const full = await fetchScreener(id)
+      const defn = coalesceDefinition(full.definition)
       setScreener(full)
-      setDraftDefinition(full.definition || emptyDefinition())
-      setDraftDsl(full.dsl_text || definitionToDsl(full.definition || emptyDefinition()))
+      setDraftDefinition(defn)
+      setDraftDsl(full.source_type === STOCK_CATALYST_SOURCE ? '' : full.dsl_text || definitionToDsl(defn))
+      if (full.source_type === STOCK_CATALYST_SOURCE) setEditorMode('filters')
       setAutoRefresh(Boolean(full.auto_refresh_seconds && full.auto_refresh_seconds > 0))
-      setAutoInterval(full.auto_refresh_seconds > 0 ? full.auto_refresh_seconds : 60)
+      const refreshSeconds = full.auto_refresh_seconds > 0 ? full.auto_refresh_seconds : 60
+      syncRefreshIntervalState(refreshSeconds)
+      setAutoIntervalCustom(
+        full.auto_refresh_seconds > 0 && !isPresetRefreshSeconds(refreshSeconds),
+      )
       setDslError('')
+      if (opts?.syncUrl !== false) {
+        syncScreenerQuery(full.name, false)
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load screener')
     }
   }
 
-  const doRefresh = useCallback(async () => {
+  useEffect(() => {
+    if (loading || !screeners.length || !urlScreenerName) return
+    const match = findScreenerByName(screeners, urlScreenerName)
+    if (!match || match.id === selectedId) return
+    void selectScreener(match.id, { syncUrl: false })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlScreenerName, screeners, loading, selectedId])
+
+  const isDraftDirty = useMemo(() => {
+    if (!selected) return false
+    if (editorMode === 'dsl') {
+      return draftDsl.trim() !== (selected.dsl_text || '').trim()
+    }
+    return !definitionsEqual(draftDefinition, coalesceDefinition(selected.definition))
+  }, [selected, draftDefinition, draftDsl, editorMode])
+
+  const isDraftDirtyNow = useCallback(() => {
+    const currentSelected = selectedRef.current
+    if (!currentSelected) return false
+    if (editorModeRef.current === 'dsl') {
+      return draftDslRef.current.trim() !== (currentSelected.dsl_text || '').trim()
+    }
+    return !definitionsEqual(
+      draftDefinitionRef.current,
+      coalesceDefinition(currentSelected.definition),
+    )
+  }, [])
+
+  const syncSavedDefinition = useCallback((updated: Screener) => {
+    const defn = coalesceDefinition(updated.definition)
+    setScreener(updated)
+    setDraftDefinition(defn)
+    setDraftDsl(
+      updated.source_type === STOCK_CATALYST_SOURCE
+        ? ''
+        : updated.dsl_text || definitionToDsl(defn),
+    )
+    setScreeners(prev => prev.map(s => (
+      s.id === updated.id ? { ...s, name: updated.name, definition: updated.definition, dsl_text: updated.dsl_text } : s
+    )))
+  }, [])
+
+  const persistDraftDefinition = useCallback(async (opts?: {
+    silent?: boolean
+    definition?: ScreenerDefinition
+  }) => {
+    const run = async (): Promise<Screener | null> => {
+      if (!selectedId) return null
+      const definition = opts?.definition ?? draftDefinitionRef.current
+      if (!definition.columns?.length) {
+        showPlatformToast({ variant: 'error', message: 'Keep at least one column in the query' })
+        return null
+      }
+      setDslError('')
+      try {
+        let payload: { definition?: ScreenerDefinition; dsl_text?: string }
+        if (editorModeRef.current === 'dsl' && !opts?.definition) {
+          const validated = await validateScreenerDsl(draftDslRef.current)
+          applyDraftLocally(validated.definition)
+          setDraftDsl(validated.dsl_text)
+          payload = { dsl_text: validated.dsl_text }
+        } else {
+          payload = { definition }
+          setDraftDsl(definitionToDsl(definition))
+        }
+        const updated = await updateScreener(selectedId, payload)
+        syncSavedDefinition(updated)
+        if (!opts?.silent) {
+          showPlatformToast({ variant: 'success', message: 'Screener saved' })
+        }
+        return updated
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Save failed'
+        setDslError(message)
+        if (!opts?.silent) {
+          showPlatformToast({ variant: 'error', message })
+        }
+        throw err
+      }
+    }
+    const queued = persistQueueRef.current.then(() => run(), () => run())
+    persistQueueRef.current = queued.then(() => null, () => null)
+    return queued
+  }, [selectedId, syncSavedDefinition, applyDraftLocally])
+
+  const commitDefinitionChange = useCallback((next: ScreenerDefinition) => {
+    if (!next.columns?.length) {
+      showPlatformToast({ variant: 'error', message: 'Keep at least one column in the query' })
+      return
+    }
+    applyDraftLocally(next)
+    setDslError('')
+    void persistDraftDefinition({ silent: true, definition: next }).catch(err => {
+      showPlatformToast({
+        variant: 'error',
+        message: err instanceof Error ? err.message : 'Failed to save query change',
+      })
+    })
+  }, [applyDraftLocally, persistDraftDefinition])
+
+  const doRefresh = useCallback(async (opts?: { skipPersist?: boolean }) => {
     if (!selectedId || refreshInFlight.current) return
     refreshInFlight.current = true
     setRefreshing(true)
     setError('')
     try {
+      if (isDraftDirtyNow() && !opts?.skipPersist) {
+        await persistDraftDefinition({ silent: true })
+      }
       const updated = await refreshScreener(selectedId)
-      setScreener(updated)
+      syncSavedDefinition(updated)
       setScreeners(prev => prev.map(s => (s.id === updated.id ? { ...s, ...updated, results: [] } : s)))
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Refresh failed'
@@ -395,7 +667,7 @@ export default function ScreenerPage() {
       // Keep previous results; re-fetch to pick up error status
       try {
         const latest = await fetchScreener(selectedId)
-        setScreener(latest)
+        syncSavedDefinition(latest)
       } catch {
         /* ignore */
       }
@@ -403,7 +675,7 @@ export default function ScreenerPage() {
       refreshInFlight.current = false
       setRefreshing(false)
     }
-  }, [selectedId])
+  }, [selectedId, isDraftDirtyNow, persistDraftDefinition, syncSavedDefinition])
 
   useEffect(() => {
     const onVis = () => {
@@ -415,7 +687,7 @@ export default function ScreenerPage() {
 
   useEffect(() => {
     if (!autoRefresh || !selectedId) return
-    const ms = Math.max(15, autoInterval) * 1000
+    const ms = clampRefreshSeconds(autoInterval) * 1000
     const timer = window.setInterval(() => {
       if (!visibleRef.current) return
       void doRefresh()
@@ -425,11 +697,12 @@ export default function ScreenerPage() {
 
   const persistAutoRefresh = async (enabled: boolean, seconds: number) => {
     if (!selectedId) return
+    const interval = clampRefreshSeconds(seconds)
     setAutoRefresh(enabled)
-    setAutoInterval(seconds)
+    syncRefreshIntervalState(interval)
     try {
       const updated = await updateScreener(selectedId, {
-        auto_refresh_seconds: enabled ? seconds : 0,
+        auto_refresh_seconds: enabled ? interval : 0,
       })
       setScreener(prev => (prev ? { ...prev, auto_refresh_seconds: updated.auto_refresh_seconds } : prev))
     } catch (err) {
@@ -440,22 +713,41 @@ export default function ScreenerPage() {
     }
   }
 
+  const commitCustomInterval = useCallback(() => {
+    const parsed = Number(customIntervalDraft)
+    if (!Number.isFinite(parsed)) {
+      setCustomIntervalDraft(String(autoInterval))
+      return
+    }
+    void persistAutoRefresh(autoRefresh, parsed)
+  }, [autoRefresh, autoInterval, customIntervalDraft, selectedId])
+
+  const customIntervalRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (autoIntervalCustom) {
+      customIntervalRef.current?.focus()
+      customIntervalRef.current?.select()
+    }
+  }, [autoIntervalCustom])
+
   const columnLabel = (key: string) => {
+    const fromStockCatalyst = STOCK_CATALYST_FIELDS.find(f => f.key === key)?.label
     const fromFields = fields.find(f => f.key === key)?.label
-    return fromFields || COLUMN_LABELS[key] || key
+    return (isStockCatalyst ? fromStockCatalyst : null) || fromFields || COLUMN_LABELS[key] || key
   }
 
+  const cardMetricLabel = (key: string) => CARD_FACE_SHORT_LABELS[key] || columnLabel(key)
+
   const columns = useMemo(() => {
-    const defCols = selected?.definition?.columns || draftDefinition.columns || []
+    const defCols = draftDefinition.columns || []
     const ordered: string[] = ['ticker']
     for (const col of defCols) {
       if (col === 'ticker' || col === 'name') continue
       if (!ordered.includes(col)) ordered.push(col)
     }
-    return ordered.length > 1
-      ? ordered
-      : ['ticker', 'close', 'premarket_change', 'premarket_volume', 'market_cap_basic']
-  }, [selected, draftDefinition])
+    return ordered.length > 0 ? ordered : ['ticker']
+  }, [draftDefinition.columns])
 
   const percentColumnOptions = useMemo(
     () => columns.filter(col => col !== 'ticker' && cellKind(col) === 'percent'),
@@ -466,25 +758,6 @@ export default function ScreenerPage() {
     if (percentColumnOptions.includes(cardHeroField)) return cardHeroField
     return percentColumnOptions[0] || 'change'
   }, [cardHeroField, percentColumnOptions])
-
-  const cardFootFields = useMemo(() => {
-    const preferred = ['close', 'volume', 'premarket_volume', 'postmarket_volume']
-    const fromCols = preferred.filter(key => columns.includes(key))
-    if (fromCols.length) return fromCols.slice(0, 3)
-    const price = columns.find(col => cellKind(col) === 'price')
-    const vol = columns.find(col => col.includes('volume'))
-    return [price, vol].filter((col): col is string => Boolean(col))
-  }, [columns])
-
-  const cardHoverFields = useMemo(
-    () => columns.filter(col => {
-      if (col === 'ticker') return false
-      if (col === effectiveCardHeroField) return false
-      if (cardFootFields.includes(col)) return false
-      return true
-    }),
-    [columns, effectiveCardHeroField, cardFootFields],
-  )
 
   const handleViewModeChange = (mode: ResultsViewMode) => {
     setViewMode(mode)
@@ -533,38 +806,20 @@ export default function ScreenerPage() {
   }
 
   const updateDraftFilters = (filters: ScreenerFilterCond[]) => {
-    const next = { ...draftDefinition, filters }
-    setDraftDefinition(next)
-    setDraftDsl(definitionToDsl(next))
+    applyDraftLocally({ ...draftDefinitionRef.current, filters })
     setDslError('')
   }
 
   const saveDefinition = async () => {
     if (!selectedId) return
     setSaving(true)
-    setDslError('')
     try {
-      let payload: { definition?: ScreenerDefinition; dsl_text?: string }
-      if (editorMode === 'dsl') {
-        const validated = await validateScreenerDsl(draftDsl)
-        setDraftDefinition(validated.definition)
-        setDraftDsl(validated.dsl_text)
-        payload = { dsl_text: validated.dsl_text }
-      } else {
-        payload = { definition: draftDefinition }
-        setDraftDsl(definitionToDsl(draftDefinition))
-      }
-      const updated = await updateScreener(selectedId, payload)
-      setScreener(updated)
-      setDraftDefinition(updated.definition)
-      setDraftDsl(updated.dsl_text)
-      setScreeners(prev => prev.map(s => (s.id === updated.id ? { ...s, name: updated.name } : s)))
-      showPlatformToast({ variant: 'success', message: 'Screener saved' })
-      await doRefresh()
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Save failed'
-      setDslError(message)
-      showPlatformToast({ variant: 'error', message })
+      // Always persist the latest in-memory draft; queue ensures we don't race an in-flight auto-save.
+      const saved = await persistDraftDefinition({ definition: draftDefinitionRef.current })
+      if (!saved) return
+      await doRefresh({ skipPersist: true })
+    } catch {
+      // persistDraftDefinition surfaces errors
     } finally {
       setSaving(false)
     }
@@ -671,6 +926,7 @@ export default function ScreenerPage() {
         else {
           setSelectedId(null)
           setScreener(null)
+          syncScreenerQuery(null)
         }
       }
     } catch (err) {
@@ -690,7 +946,6 @@ export default function ScreenerPage() {
         account_env: 'demo',
       })
       setScreener(updated)
-      setLastSummary(summary)
       const item = summary.items[0]
       setRowStatus(prev => ({
         ...prev,
@@ -699,12 +954,12 @@ export default function ScreenerPage() {
       if (item?.status === 'added' || item?.status === 'already_present') {
         showPlatformToast({
           variant: 'success',
-          message: `${tickerSymbol(ticker)} → ${summary.watchlist_name}`,
+          message: watchlistSummaryMessage(summary),
         })
       } else {
         showPlatformToast({
           variant: 'error',
-          message: `${tickerSymbol(ticker)} not available on eToro`,
+          message: watchlistSummaryMessage(summary),
         })
       }
     } catch (err) {
@@ -724,7 +979,6 @@ export default function ScreenerPage() {
         account_env: 'demo',
       })
       setScreener(updated)
-      setLastSummary(summary)
       const next: RowSyncStatus = {}
       for (const item of summary.items) {
         next[item.ticker] = item.status as RowSyncStatus[string]
@@ -732,7 +986,7 @@ export default function ScreenerPage() {
       setRowStatus(next)
       showPlatformToast({
         variant: 'success',
-        message: `Watchlist: +${summary.added} added, ${summary.already_present} existing, ${summary.unmatched} unmatched`,
+        message: watchlistSummaryMessage(summary),
       })
     } catch (err) {
       showPlatformToast({
@@ -744,7 +998,9 @@ export default function ScreenerPage() {
     }
   }
 
-  const fieldOptions = fields.length
+  const fieldOptions = isStockCatalyst
+    ? STOCK_CATALYST_FIELDS
+    : fields.length
     ? fields
     : (draftDefinition.columns || []).map(key => ({
         key,
@@ -772,15 +1028,6 @@ export default function ScreenerPage() {
     <div className="scr-root">
       <div className="scr-toolbar">
         <span className="scr-toolbar-title">Screener</span>
-        <a
-          className="scr-helpful-link"
-          href="https://www.thestockcatalyst.com/NYSEPMMovers#autoreload"
-          target="_blank"
-          rel="noopener noreferrer"
-          title="NYSE pre-market movers (Stock Catalyst)"
-        >
-          Helpful: NYSE PM Movers
-        </a>
         <div className="scr-pills" role="tablist" aria-label="Saved screeners">
           {screeners.map(item => {
             const active = item.id === selectedId
@@ -887,10 +1134,12 @@ export default function ScreenerPage() {
         <button
           type="button"
           className="scr-btn"
-          onClick={() => setEditorOpen(v => !v)}
+          onClick={() => setEditorOpen(!editorOpen)}
           aria-pressed={editorOpen}
         >
-          {editorOpen ? 'Hide editor' : 'Edit query'}
+          {isStockCatalyst
+            ? (editorOpen ? 'Hide columns' : 'Choose columns')
+            : (editorOpen ? 'Hide editor' : 'Edit query')}
         </button>
       </div>
 
@@ -915,7 +1164,7 @@ export default function ScreenerPage() {
                 Cards
               </button>
             </div>
-            {viewMode === 'cards' && percentColumnOptions.length ? (
+            {viewMode === 'cards' && percentColumnOptions.length && !isStockCatalyst ? (
               <label className="scr-toggle">
                 Hero %
                 <select
@@ -944,16 +1193,51 @@ export default function ScreenerPage() {
         </label>
         <select
           className="scr-select"
-          value={autoInterval}
+          value={autoIntervalCustom ? 'custom' : String(autoInterval)}
           disabled={!selected}
-          onChange={e => void persistAutoRefresh(autoRefresh, Number(e.target.value))}
+          onChange={e => {
+            const value = e.target.value
+            if (value === 'custom') {
+              setAutoIntervalCustom(true)
+              return
+            }
+            setAutoIntervalCustom(false)
+            void persistAutoRefresh(autoRefresh, Number(value))
+          }}
           aria-label="Auto refresh interval"
         >
-          <option value={30}>30s</option>
-          <option value={60}>60s</option>
-          <option value={120}>2m</option>
-          <option value={300}>5m</option>
+          {PRESET_REFRESH_SECONDS.map(seconds => (
+            <option key={seconds} value={seconds}>
+              {seconds < 60 ? `${seconds}s` : `${seconds / 60}m`}
+            </option>
+          ))}
+          <option value="custom">Custom</option>
         </select>
+        {autoIntervalCustom ? (
+          <label className="scr-toggle scr-toggle--interval">
+            <input
+              ref={customIntervalRef}
+              className="scr-input scr-input--interval"
+              type="number"
+              min={MIN_REFRESH_SECONDS}
+              max={MAX_REFRESH_SECONDS}
+              step={1}
+              value={customIntervalDraft}
+              disabled={!selected}
+              aria-label="Custom auto refresh seconds"
+              title={`${MIN_REFRESH_SECONDS}–${MAX_REFRESH_SECONDS} seconds`}
+              onChange={e => setCustomIntervalDraft(e.target.value)}
+              onBlur={() => commitCustomInterval()}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  commitCustomInterval()
+                }
+              }}
+            />
+            <span>s</span>
+          </label>
+        ) : null}
         <button
           type="button"
           className="scr-btn scr-btn--primary"
@@ -971,16 +1255,6 @@ export default function ScreenerPage() {
           {syncingBulk ? 'Syncing…' : 'Add all to eToro watchlist'}
         </button>
       </div>
-
-      {lastSummary ? (
-        <div className="scr-meta">
-          <div className="scr-summary-toast" role="status">
-            Synced to <strong>{lastSummary.watchlist_name}</strong>: +{lastSummary.added} added,{' '}
-            {lastSummary.already_present} existing, {lastSummary.unmatched} unmatched
-            {lastSummary.failed ? `, ${lastSummary.failed} failed` : ''}
-          </div>
-        </div>
-      ) : null}
 
       <div className="scr-body">
         <div className="scr-main">
@@ -1013,7 +1287,11 @@ export default function ScreenerPage() {
             </div>
           ) : !selected.results?.length ? (
             <div className="scr-empty">
-              <p>{error || 'No results yet. Refresh to run this screener against TradingView.'}</p>
+              <p>
+                {error || (isStockCatalyst
+                  ? 'No results yet. Refresh to load the Stock Catalyst pre-market tables.'
+                  : 'No results yet. Refresh to run this screener against TradingView.')}
+              </p>
               <button type="button" className="scr-btn scr-btn--primary" onClick={() => void doRefresh()}>
                 Run screener
               </button>
@@ -1029,7 +1307,8 @@ export default function ScreenerPage() {
                           <th
                             key={col}
                             className={[
-                              col !== 'ticker' ? 'scr-th--num' : '',
+                              isNumericColumn(col) ? 'scr-th--num' : '',
+                              col === 'recent_headlines' ? 'scr-th--headlines' : '',
                               sort?.key === col ? 'scr-th--sorted' : '',
                             ].filter(Boolean).join(' ') || undefined}
                             onClick={() => toggleSort(col)}
@@ -1055,13 +1334,53 @@ export default function ScreenerPage() {
                                 return (
                                   <td key={col}>
                                     <span className="scr-symbol">
-                                      <span className="scr-symbol-badge">{symbol}</span>
+                                      <a
+                                        className="scr-symbol-badge scr-symbol-badge--link"
+                                        href={yahooFinanceUrl(ticker)}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        title={`Open ${symbol} on Yahoo Finance`}
+                                      >
+                                        {symbol}
+                                      </a>
                                       <span className="scr-symbol-name">{row.name || row.cells?.description || ''}</span>
                                     </span>
                                   </td>
                                 )
                               }
                               const raw = row.cells?.[col]
+                              if (isStockCatalyst && col === 'mover_direction') {
+                                const direction = String(raw || '')
+                                return (
+                                  <td key={col}>
+                                    <span className={`scr-mover scr-mover--${direction.toLowerCase()}`}>
+                                      {direction || '—'}
+                                    </span>
+                                  </td>
+                                )
+                              }
+                              if (isStockCatalyst && col === 'recent_headlines') {
+                                const headlines = stockCatalystHeadlines(raw)
+                                return (
+                                  <td key={col} className="scr-headlines-cell">
+                                    {headlines.length ? (
+                                      <div className="scr-headlines">
+                                        {headlines.map((headline, index) => (
+                                          <a
+                                            key={`${headline.url}-${index}`}
+                                            href={headline.url}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            title={headline.title}
+                                          >
+                                            {headline.title}
+                                          </a>
+                                        ))}
+                                      </div>
+                                    ) : <span className="scr-muted">—</span>}
+                                  </td>
+                                )
+                              }
                               const kind = cellKind(col)
                               const formatted = formatScreenerNumber(raw, kind)
                               if (kind === 'percent') {
@@ -1110,11 +1429,37 @@ export default function ScreenerPage() {
                       const status = rowStatus[ticker]
                       const heroRaw = row.cells?.[effectiveCardHeroField]
                       const heroFormatted = formatScreenerNumber(heroRaw, 'percent')
-                      return (
-                        <article key={row.id || ticker} className="scr-card">
-                          <div className="scr-card__face">
-                            <div className="scr-card__head">
-                              <span className="scr-symbol-badge">{symbol}</span>
+                      if (isStockCatalyst) {
+                        const direction = String(row.cells?.mover_direction || '')
+                        const metricColumns = columns.filter(
+                          col => col !== 'ticker'
+                            && col !== 'mover_direction'
+                            && col !== 'change_pct'
+                            && col !== 'recent_headlines',
+                        )
+                        const showChangePercent = columns.includes('change_pct')
+                        const headlines = columns.includes('recent_headlines')
+                          ? stockCatalystHeadlines(row.cells?.recent_headlines)
+                          : []
+                        return (
+                          <article key={row.id || ticker} className="scr-card scr-source-card">
+                            <header className="scr-card__header">
+                              <div className="scr-source-card__identity">
+                                <a
+                                  className="scr-card__ticker-link"
+                                  href={yahooFinanceUrl(ticker)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title={`Open ${symbol} on Yahoo Finance`}
+                                >
+                                  {symbol}
+                                </a>
+                                {columns.includes('mover_direction') ? (
+                                  <span className={`scr-mover scr-mover--${direction.toLowerCase()}`}>
+                                    {direction || '—'}
+                                  </span>
+                                ) : null}
+                              </div>
                               <button
                                 type="button"
                                 className={`scr-card__watch${
@@ -1129,45 +1474,123 @@ export default function ScreenerPage() {
                               >
                                 {watchlistButtonLabel(status)}
                               </button>
+                            </header>
+                            <div className="scr-card__face scr-source-card__face">
+                              {showChangePercent ? (
+                                <>
+                                  <div className={`scr-card__hero ${changeClass(row.cells?.change_pct)}`}>
+                                    {formatScreenerNumber(row.cells?.change_pct, 'percent')}
+                                  </div>
+                                  <div className="scr-card__hero-label">Change %</div>
+                                </>
+                              ) : null}
+                              {metricColumns.length || columns.includes('recent_headlines') ? (
+                                <div className="scr-card__foot">
+                                  {metricColumns.length ? (
+                                    <div className="scr-card__foot-row">
+                                  {metricColumns.map(col => {
+                                    const raw = row.cells?.[col]
+                                    const kind = cellKind(col)
+                                    return (
+                                      <div
+                                        key={col}
+                                        className="scr-card__foot-item"
+                                      >
+                                        <span className="scr-card__foot-label">{columnLabel(col)}</span>
+                                        <span className="scr-card__foot-value">
+                                          {formatScreenerNumber(raw, kind)}
+                                        </span>
+                                      </div>
+                                    )
+                                  })}
+                                    </div>
+                                  ) : null}
+                                  {columns.includes('recent_headlines') ? (
+                                    <div className="scr-source-card__news">
+                                      <span>Recent headlines</span>
+                                      {headlines.length ? headlines.map((headline, index) => (
+                                        <a
+                                          key={`${headline.url}-${index}`}
+                                          href={headline.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                        >
+                                          {headline.title}
+                                        </a>
+                                      )) : <p>No recent headlines</p>}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : null}
                             </div>
+                          </article>
+                        )
+                      }
+                      return (
+                        <article key={row.id || ticker} className="scr-card">
+                          <header className="scr-card__header">
+                            <a
+                              className="scr-card__ticker-link"
+                              href={yahooFinanceUrl(ticker)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              title={`Open ${symbol} on Yahoo Finance`}
+                            >
+                              {symbol}
+                            </a>
+                            <button
+                              type="button"
+                              className={`scr-card__watch${
+                                status === 'added' || status === 'already_present'
+                                  ? ' scr-card__watch--ok'
+                                  : status === 'unmatched' || status === 'failed'
+                                    ? ' scr-card__watch--miss'
+                                    : ''
+                              }`}
+                              disabled={status === 'adding'}
+                              onClick={() => void addRowToWatchlist(ticker)}
+                            >
+                              {watchlistButtonLabel(status)}
+                            </button>
+                          </header>
+                          <div className="scr-card__face">
                             <div className={`scr-card__hero ${changeClass(heroRaw)}`}>
                               {heroFormatted}
                             </div>
                             <div className="scr-card__hero-label">{columnLabel(effectiveCardHeroField)}</div>
                             <div className="scr-card__foot">
-                              {cardFootFields.map(col => {
-                                const raw = row.cells?.[col]
-                                const kind = cellKind(col)
+                              {(() => {
+                                const priceKeys = cardFaceMetricKeys(row, CARD_FACE_PRICE_KEYS, columns)
+                                const volumeKeys = cardFaceMetricKeys(row, CARD_FACE_VOLUME_KEYS, columns)
+                                const renderMetric = (col: string) => {
+                                  const raw = row.cells?.[col]
+                                  const kind = cellKind(col)
+                                  const isPercent = kind === 'percent'
+                                  return (
+                                    <div key={col} className={`scr-card__foot-item${isPercent ? ' scr-card__foot-item--pct' : ''}`}>
+                                      <span className="scr-card__foot-label">{cardMetricLabel(col)}</span>
+                                      <span className={`scr-card__foot-value${isPercent ? ` scr-chg ${changeClass(raw)}` : ''}`}>
+                                        {formatScreenerNumber(raw, kind)}
+                                      </span>
+                                    </div>
+                                  )
+                                }
                                 return (
-                                  <div key={col} className="scr-card__foot-item">
-                                    <span className="scr-card__foot-label">{columnLabel(col)}</span>
-                                    <span className="scr-card__foot-value">{formatScreenerNumber(raw, kind)}</span>
-                                  </div>
+                                  <>
+                                    {priceKeys.length ? (
+                                      <div className="scr-card__foot-row">
+                                        {priceKeys.map(renderMetric)}
+                                      </div>
+                                    ) : null}
+                                    {volumeKeys.length ? (
+                                      <div className="scr-card__foot-row">
+                                        {volumeKeys.map(renderMetric)}
+                                      </div>
+                                    ) : null}
+                                  </>
                                 )
-                              })}
+                              })()}
                             </div>
-                          </div>
-                          <div className="scr-card__hover" aria-hidden="true">
-                            <div className="scr-card__hover-title">
-                              {symbol}
-                              {row.name || row.cells?.description ? (
-                                <span>{row.name || row.cells?.description}</span>
-                              ) : null}
-                            </div>
-                            <dl className="scr-card__hover-grid">
-                              {cardHoverFields.map(col => {
-                                const raw = row.cells?.[col]
-                                const kind = cellKind(col)
-                                return (
-                                  <div key={col} className="scr-card__hover-row">
-                                    <dt>{columnLabel(col)}</dt>
-                                    <dd className={kind === 'percent' ? changeClass(raw) : undefined}>
-                                      {formatScreenerNumber(raw, kind)}
-                                    </dd>
-                                  </div>
-                                )
-                              })}
-                            </dl>
                           </div>
                         </article>
                       )
@@ -1230,36 +1653,76 @@ export default function ScreenerPage() {
               onMouseDown={startEditorResize}
             />
             <div className="scr-editor-header">
-              <span className="scr-editor-title">Query</span>
-              <div className="scr-editor-tabs">
-                <button
-                  type="button"
-                  className={`scr-editor-tab${editorMode === 'filters' ? ' scr-editor-tab--active' : ''}`}
-                  onClick={() => setEditorMode('filters')}
-                >
-                  Filters
-                </button>
-                <button
-                  type="button"
-                  className={`scr-editor-tab${editorMode === 'dsl' ? ' scr-editor-tab--active' : ''}`}
-                  onClick={() => {
-                    setDraftDsl(definitionToDsl(draftDefinition))
-                    setEditorMode('dsl')
-                  }}
-                >
-                  Python DSL
-                </button>
-                <button
-                  type="button"
-                  className={`scr-editor-tab${editorMode === 'ai' ? ' scr-editor-tab--active' : ''}`}
-                  onClick={() => setEditorMode('ai')}
-                >
-                  AI
-                </button>
-              </div>
+              <span className="scr-editor-title">{isStockCatalyst ? 'Visible columns' : 'Query'}</span>
+              {!isStockCatalyst ? (
+                <div className="scr-editor-tabs">
+                  <button
+                    type="button"
+                    className={`scr-editor-tab${editorMode === 'filters' ? ' scr-editor-tab--active' : ''}`}
+                    onClick={() => setEditorMode('filters')}
+                  >
+                    Filters
+                  </button>
+                  <button
+                    type="button"
+                    className={`scr-editor-tab${editorMode === 'dsl' ? ' scr-editor-tab--active' : ''}`}
+                    onClick={() => {
+                      setDraftDsl(definitionToDsl(draftDefinition))
+                      setEditorMode('dsl')
+                    }}
+                  >
+                    Python DSL
+                  </button>
+                  <button
+                    type="button"
+                    className={`scr-editor-tab${editorMode === 'ai' ? ' scr-editor-tab--active' : ''}`}
+                    onClick={() => setEditorMode('ai')}
+                  >
+                    AI
+                  </button>
+                </div>
+              ) : null}
             </div>
             <div className="scr-editor-body">
-              {editorMode === 'ai' ? (
+              {isStockCatalyst ? (
+                <section className="scr-source-columns" aria-label="Stock Catalyst visible columns">
+                  <p>
+                    This screener mirrors the source tables. Choose which source columns appear
+                    in table and card views.
+                  </p>
+                  <div className="scr-source-columns__list">
+                    {STOCK_CATALYST_FIELDS.map(field => {
+                      const checked = draftDefinition.columns.includes(field.key)
+                      return (
+                        <label key={field.key} className="scr-source-column">
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={event => {
+                              const current = draftDefinitionRef.current.columns
+                              const nextColumns = event.target.checked
+                                ? [...current, field.key]
+                                : current.filter(col => col !== field.key)
+                              commitDefinitionChange({
+                                ...draftDefinitionRef.current,
+                                columns: nextColumns,
+                              })
+                            }}
+                          />
+                          <span>
+                            <strong>{field.label}</strong>
+                            <small>{field.key}</small>
+                          </span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                  <p className="scr-hint">
+                    Symbol and company name remain visible so every row can be identified.
+                    Changes save automatically.
+                  </p>
+                </section>
+              ) : editorMode === 'ai' ? (
                 <section className="scr-ai-panel scr-ai-panel--tab" aria-label="AI screener generator">
                   <div className="scr-ai-panel__head">
                     <strong>AI</strong>
@@ -1378,12 +1841,10 @@ export default function ScreenerPage() {
                             type="button"
                             aria-label={`Remove ${col}`}
                             onClick={() => {
-                              const next = {
-                                ...draftDefinition,
-                                columns: draftDefinition.columns.filter(c => c !== col),
-                              }
-                              setDraftDefinition(next)
-                              setDraftDsl(definitionToDsl(next))
+                              commitDefinitionChange({
+                                ...draftDefinitionRef.current,
+                                columns: draftDefinitionRef.current.columns.filter(c => c !== col),
+                              })
                             }}
                           >
                             ×
@@ -1397,12 +1858,10 @@ export default function ScreenerPage() {
                       onChange={e => {
                         const key = e.target.value
                         if (!key || draftDefinition.columns.includes(key)) return
-                        const next = {
-                          ...draftDefinition,
-                          columns: [...draftDefinition.columns, key],
-                        }
-                        setDraftDefinition(next)
-                        setDraftDsl(definitionToDsl(next))
+                        commitDefinitionChange({
+                          ...draftDefinitionRef.current,
+                          columns: [...draftDefinitionRef.current.columns, key],
+                        })
                       }}
                       aria-label="Add column"
                     >
@@ -1421,7 +1880,7 @@ export default function ScreenerPage() {
                           className="scr-select"
                           value={filt.left}
                           onChange={e => {
-                            const filters = [...(draftDefinition.filters || [])]
+                            const filters = [...(draftDefinitionRef.current.filters || [])]
                             filters[idx] = { ...filt, left: e.target.value }
                             updateDraftFilters(filters)
                           }}
@@ -1434,7 +1893,7 @@ export default function ScreenerPage() {
                           className="scr-select"
                           value={filt.operation}
                           onChange={e => {
-                            const filters = [...(draftDefinition.filters || [])]
+                            const filters = [...(draftDefinitionRef.current.filters || [])]
                             filters[idx] = { ...filt, operation: e.target.value }
                             updateDraftFilters(filters)
                           }}
@@ -1455,7 +1914,7 @@ export default function ScreenerPage() {
                             onChange={e => {
                               const parts = e.target.value.split(',').map(s => s.trim()).filter(Boolean)
                               const nums = parts.map(p => (Number.isFinite(Number(p)) ? Number(p) : p))
-                              const filters = [...(draftDefinition.filters || [])]
+                              const filters = [...(draftDefinitionRef.current.filters || [])]
                               filters[idx] = { ...filt, right: nums }
                               updateDraftFilters(filters)
                             }}
@@ -1467,7 +1926,7 @@ export default function ScreenerPage() {
                             onChange={e => {
                               const raw = e.target.value
                               const num = Number(raw)
-                              const filters = [...(draftDefinition.filters || [])]
+                              const filters = [...(draftDefinitionRef.current.filters || [])]
                               filters[idx] = {
                                 ...filt,
                                 right: raw === '' ? '' : Number.isFinite(num) && raw.trim() !== '' ? num : raw,
@@ -1481,8 +1940,10 @@ export default function ScreenerPage() {
                           className="scr-btn scr-btn--ghost"
                           aria-label="Remove filter"
                           onClick={() => {
-                            const filters = (draftDefinition.filters || []).filter((_, i) => i !== idx)
-                            updateDraftFilters(filters)
+                            commitDefinitionChange({
+                              ...draftDefinitionRef.current,
+                              filters: (draftDefinitionRef.current.filters || []).filter((_, i) => i !== idx),
+                            })
                           }}
                         >
                           ×
@@ -1492,7 +1953,7 @@ export default function ScreenerPage() {
                     <button
                       type="button"
                       className="scr-btn"
-                      onClick={() => updateDraftFilters([...(draftDefinition.filters || []), defaultFilter()])}
+                      onClick={() => updateDraftFilters([...(draftDefinitionRef.current.filters || []), defaultFilter()])}
                     >
                       + Filter
                     </button>
@@ -1505,9 +1966,7 @@ export default function ScreenerPage() {
                         className="scr-select"
                         value={draftDefinition.order_by || ''}
                         onChange={e => {
-                          const next = { ...draftDefinition, order_by: e.target.value || null }
-                          setDraftDefinition(next)
-                          setDraftDsl(definitionToDsl(next))
+                          applyDraftLocally({ ...draftDefinitionRef.current, order_by: e.target.value || null })
                         }}
                       >
                         <option value="">None</option>
@@ -1522,9 +1981,10 @@ export default function ScreenerPage() {
                         className="scr-select"
                         value={draftDefinition.ascending ? 'asc' : 'desc'}
                         onChange={e => {
-                          const next = { ...draftDefinition, ascending: e.target.value === 'asc' }
-                          setDraftDefinition(next)
-                          setDraftDsl(definitionToDsl(next))
+                          applyDraftLocally({
+                            ...draftDefinitionRef.current,
+                            ascending: e.target.value === 'asc',
+                          })
                         }}
                       >
                         <option value="desc">Desc</option>
@@ -1540,9 +2000,10 @@ export default function ScreenerPage() {
                         max={500}
                         value={draftDefinition.limit ?? 50}
                         onChange={e => {
-                          const next = { ...draftDefinition, limit: Number(e.target.value) || 50 }
-                          setDraftDefinition(next)
-                          setDraftDsl(definitionToDsl(next))
+                          applyDraftLocally({
+                            ...draftDefinitionRef.current,
+                            limit: Number(e.target.value) || 50,
+                          })
                         }}
                       />
                     </div>
@@ -1580,7 +2041,8 @@ export default function ScreenerPage() {
                 </>
               )}
             </div>
-            <div className="scr-editor-footer">
+            {!isStockCatalyst ? (
+              <div className="scr-editor-footer">
               {editorMode === 'ai' ? (
                 <p className="scr-hint scr-editor-footer-hint">
                   Generate creates a new screener and switches to Filters so you can review it.
@@ -1601,8 +2063,9 @@ export default function ScreenerPage() {
                     disabled={!selected}
                     onClick={() => {
                       if (!selected) return
-                      setDraftDefinition(selected.definition || emptyDefinition())
-                      setDraftDsl(selected.dsl_text || definitionToDsl(selected.definition || emptyDefinition()))
+                      const defn = coalesceDefinition(selected.definition)
+                      setDraftDefinition(defn)
+                      setDraftDsl(selected.dsl_text || definitionToDsl(defn))
                       setDslError('')
                     }}
                   >
@@ -1610,7 +2073,8 @@ export default function ScreenerPage() {
                   </button>
                 </>
               )}
-            </div>
+              </div>
+            ) : null}
           </aside>
         ) : null}
       </div>

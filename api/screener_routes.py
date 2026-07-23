@@ -18,6 +18,10 @@ from control_plane.screener_query import (
 )
 from control_plane.screener_store import get_screener_store
 from control_plane.screener_watchlist_sync import sync_screener_to_watchlist
+from control_plane.stock_catalyst_screener import (
+    STOCK_CATALYST_SOURCE_TYPE,
+    run_stock_catalyst_screener,
+)
 
 router = APIRouter(prefix="/api/screeners", tags=["screeners"])
 
@@ -196,7 +200,11 @@ def delete_screener(screener_id: str):
     return {"status": True}
 
 
-@router.post("/{screener_id}/refresh", operation_id="refresh_screener", summary="Refresh screener results")
+@router.post(
+    "/{screener_id}/refresh",
+    operation_id="refresh_screener",
+    summary="Refresh screener results",
+)
 async def refresh_screener(screener_id: str):
     store = get_screener_store()
     screener = store.get_screener(screener_id, include_results=False)
@@ -205,15 +213,22 @@ async def refresh_screener(screener_id: str):
 
     store.set_refresh_status(screener_id, "running", error=None)
     try:
-        defn = ScreenerDefinition.from_dict(screener.get("definition") or {})
-        total, rows, _columns = await asyncio.to_thread(run_scanner, defn)
+        source_type = screener.get("source_type") or "tradingview"
+        if source_type == STOCK_CATALYST_SOURCE_TYPE:
+            total, rows, _columns = await asyncio.to_thread(
+                run_stock_catalyst_screener,
+                screener.get("source_url") or None,
+            )
+        else:
+            defn = ScreenerDefinition.from_dict(screener.get("definition") or {})
+            total, rows, _columns = await asyncio.to_thread(run_scanner, defn)
         updated = store.replace_results(screener_id, rows=rows, total_count=total)
         return {"status": True, "data": updated}
     except ScreenerQueryError as exc:
         store.mark_refresh_failed(screener_id, str(exc))
         raise _http_query_error(exc) from exc
     except Exception as exc:
-        message = str(exc) or "TradingView scanner request failed"
+        message = str(exc) or "Screener source request failed"
         updated = store.mark_refresh_failed(screener_id, message)
         raise HTTPException(status_code=502, detail=message) from exc
 

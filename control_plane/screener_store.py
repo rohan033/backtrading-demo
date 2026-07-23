@@ -18,8 +18,17 @@ from control_plane.screener_query import (
     ScreenerDefinition,
     definition_to_dsl,
 )
+from control_plane.stock_catalyst_screener import (
+    STOCK_CATALYST_COLUMNS,
+    STOCK_CATALYST_NAME,
+    STOCK_CATALYST_SOURCE_TYPE,
+    STOCK_CATALYST_URL,
+)
 
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "control_plane.db")
+DB_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "control_plane.db",
+)
 
 
 def _now_utc() -> str:
@@ -53,6 +62,8 @@ class ScreenerStore:
                 refresh_status TEXT NOT NULL DEFAULT 'idle',
                 last_refreshed_at TEXT,
                 last_error TEXT,
+                source_type TEXT NOT NULL DEFAULT 'tradingview',
+                source_url TEXT,
                 position INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -74,16 +85,50 @@ class ScreenerStore:
             """
         )
         conn.commit()
+        self._migrate_schema(conn)
         self._seed_defaults(conn)
         conn.close()
 
+    def _migrate_schema(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(screeners)").fetchall()}
+        if "customized" not in cols:
+            conn.execute(
+                "ALTER TABLE screeners ADD COLUMN customized INTEGER NOT NULL DEFAULT 0"
+            )
+        if "source_type" not in cols:
+            conn.execute(
+                "ALTER TABLE screeners ADD COLUMN source_type TEXT NOT NULL DEFAULT 'tradingview'"
+            )
+        if "source_url" not in cols:
+            conn.execute("ALTER TABLE screeners ADD COLUMN source_url TEXT")
+        conn.commit()
+
     def _seed_defaults(self, conn: sqlite3.Connection) -> None:
         now = _now_utc()
-        rows = conn.execute("SELECT id, name, definition_json FROM screeners").fetchall()
+        rows = conn.execute(
+            "SELECT id, name, definition_json, customized FROM screeners"
+        ).fetchall()
         by_name = {str(row["name"]).strip().lower(): row for row in rows}
-        seeds: list[tuple[str, ScreenerDefinition]] = [
-            (PRE_MARKET_GAINERS_NAME, PRE_MARKET_GAINERS_DEFINITION),
-            ("Pre-market Movers", PREMARKET_MOVERS_DEFINITION),
+        seeds: list[tuple[str, ScreenerDefinition, str, str | None]] = [
+            (
+                STOCK_CATALYST_NAME,
+                ScreenerDefinition(
+                    columns=list(STOCK_CATALYST_COLUMNS),
+                    filters=[],
+                    order_by="change_pct",
+                    ascending=False,
+                    limit=500,
+                ),
+                STOCK_CATALYST_SOURCE_TYPE,
+                STOCK_CATALYST_URL,
+            ),
+            (
+                PRE_MARKET_GAINERS_NAME,
+                PRE_MARKET_GAINERS_DEFINITION,
+                "tradingview",
+                None,
+            ),
+            ("Pre-market Movers", PREMARKET_MOVERS_DEFINITION, "tradingview", None),
         ]
         # Built-in 1% / Agent Mode query presets — same defs the session starter uses.
         for key in ONE_PERCENT_PRESET_UI_KEYS:
@@ -92,28 +137,15 @@ class ScreenerStore:
             name = str(preset.get("name") or key).strip()
             if not name or not isinstance(definition, ScreenerDefinition):
                 continue
-            seeds.append((name, definition))
+            seeds.append((name, definition, "tradingview", None))
         position = len(rows)
-        for name, definition in seeds:
+        for name, definition, source_type, source_url in seeds:
             key = name.strip().lower()
             defn = definition.to_dict()
-            dsl = definition_to_dsl(definition)
+            dsl = "" if source_type != "tradingview" else definition_to_dsl(definition)
             existing = by_name.get(key)
             if existing:
-                # Keep built-in screeners aligned with the curated definition/columns.
-                conn.execute(
-                    """
-                    UPDATE screeners
-                    SET definition_json = ?, dsl_text = ?, updated_at = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        json.dumps(defn, separators=(",", ":")),
-                        dsl,
-                        now,
-                        existing["id"],
-                    ),
-                )
+                # Never overwrite saved rows. Seed only inserts missing built-ins.
                 continue
             screener_id = str(uuid.uuid4())
             conn.execute(
@@ -121,8 +153,8 @@ class ScreenerStore:
                 INSERT INTO screeners (
                     id, name, definition_json, dsl_text, auto_refresh_seconds,
                     watchlist_id, total_count, refresh_status, last_refreshed_at,
-                    last_error, position, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    last_error, source_type, source_url, position, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     screener_id,
@@ -135,6 +167,8 @@ class ScreenerStore:
                     "idle",
                     None,
                     None,
+                    source_type,
+                    source_url,
                     position,
                     now,
                     now,
@@ -159,7 +193,13 @@ class ScreenerStore:
             "cells": cells,
         }
 
-    def _payload(self, conn: sqlite3.Connection, row: sqlite3.Row, *, include_results: bool = True) -> dict[str, Any]:
+    def _payload(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row,
+        *,
+        include_results: bool = True,
+    ) -> dict[str, Any]:
         data = dict(row)
         try:
             definition = json.loads(data["definition_json"])
@@ -182,11 +222,14 @@ class ScreenerStore:
             "definition": definition,
             "dsl_text": data["dsl_text"],
             "auto_refresh_seconds": int(data["auto_refresh_seconds"] or 0),
+            "customized": int(data.get("customized") or 0),
             "watchlist_id": data.get("watchlist_id"),
             "total_count": int(data.get("total_count") or 0),
             "refresh_status": data.get("refresh_status") or "idle",
             "last_refreshed_at": data.get("last_refreshed_at"),
             "last_error": data.get("last_error"),
+            "source_type": data.get("source_type") or "tradingview",
+            "source_url": data.get("source_url"),
             "position": int(data.get("position") or 0),
             "created_at": data["created_at"],
             "updated_at": data["updated_at"],
@@ -195,8 +238,6 @@ class ScreenerStore:
 
     def list_screeners(self, *, include_results: bool = False) -> list[dict[str, Any]]:
         conn = self._connect()
-        # Re-run seeds so newly added built-in presets appear without a full DB wipe.
-        self._seed_defaults(conn)
         rows = conn.execute(
             "SELECT * FROM screeners ORDER BY position ASC, created_at ASC"
         ).fetchall()
@@ -204,7 +245,12 @@ class ScreenerStore:
         conn.close()
         return out
 
-    def get_screener(self, screener_id: str, *, include_results: bool = True) -> dict[str, Any] | None:
+    def get_screener(
+        self,
+        screener_id: str,
+        *,
+        include_results: bool = True,
+    ) -> dict[str, Any] | None:
         conn = self._connect()
         row = conn.execute("SELECT * FROM screeners WHERE id = ?", (screener_id,)).fetchone()
         if not row:
@@ -228,7 +274,9 @@ class ScreenerStore:
             defn = parse_dsl(dsl_text)
         else:
             defn = ScreenerDefinition.from_dict(
-                definition.to_dict() if isinstance(definition, ScreenerDefinition) else (definition or {})
+                definition.to_dict()
+                if isinstance(definition, ScreenerDefinition)
+                else (definition or {})
             )
         normalized_dsl = definition_to_dsl(defn)
         screener_id = str(uuid.uuid4())
@@ -283,16 +331,23 @@ class ScreenerStore:
         next_name = (name if name is not None else existing["name"]).strip() or existing["name"]
         next_definition = existing["definition"]
         next_dsl = existing["dsl_text"]
+        definition_changed = False
         if dsl_text is not None and definition is None:
             defn = parse_dsl(dsl_text)
             next_definition = defn.to_dict()
             next_dsl = definition_to_dsl(defn)
+            definition_changed = True
         elif definition is not None:
             defn = ScreenerDefinition.from_dict(
                 definition.to_dict() if isinstance(definition, ScreenerDefinition) else definition
             )
             next_definition = defn.to_dict()
             next_dsl = definition_to_dsl(defn)
+            definition_changed = True
+
+        next_customized = int(existing.get("customized") or 0)
+        if definition_changed:
+            next_customized = 1
 
         next_refresh = existing["auto_refresh_seconds"]
         if auto_refresh_seconds is not None:
@@ -309,7 +364,7 @@ class ScreenerStore:
             """
             UPDATE screeners
             SET name = ?, definition_json = ?, dsl_text = ?, auto_refresh_seconds = ?,
-                watchlist_id = ?, updated_at = ?
+                watchlist_id = ?, customized = ?, updated_at = ?
             WHERE id = ?
             """,
             (
@@ -318,6 +373,7 @@ class ScreenerStore:
                 next_dsl,
                 next_refresh,
                 next_watchlist,
+                next_customized,
                 _now_utc(),
                 screener_id,
             ),

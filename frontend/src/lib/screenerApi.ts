@@ -48,6 +48,8 @@ export type ScreenerResultRow = {
   cells: Record<string, unknown>
 }
 
+export type ScreenerSourceType = 'tradingview' | 'stock_catalyst_nyse_pm' | string
+
 export type Screener = {
   id: string
   name: string
@@ -59,6 +61,8 @@ export type Screener = {
   refresh_status: 'idle' | 'running' | 'ok' | 'error' | string
   last_refreshed_at?: string | null
   last_error?: string | null
+  source_type?: ScreenerSourceType
+  source_url?: string | null
   position: number
   created_at: string
   updated_at: string

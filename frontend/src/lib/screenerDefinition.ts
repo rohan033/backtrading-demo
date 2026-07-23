@@ -133,6 +133,12 @@ export function tickerSymbol(ticker: string): string {
   return idx >= 0 ? raw.slice(idx + 1) : raw
 }
 
+export function yahooFinanceUrl(ticker: string): string {
+  const symbol = tickerSymbol(ticker)
+  if (!symbol) return ''
+  return `https://finance.yahoo.com/quote/${encodeURIComponent(symbol)}/`
+}
+
 export function isFilterGroup(
   item: ScreenerFilterCond | ScreenerFilterGroup,
 ): item is ScreenerFilterGroup {
