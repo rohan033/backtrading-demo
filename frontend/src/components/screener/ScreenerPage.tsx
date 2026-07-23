@@ -40,8 +40,11 @@ import './Screener.css'
 type EditorMode = 'filters' | 'dsl' | 'ai'
 type SortState = { key: string; dir: 'asc' | 'desc' } | null
 type RowSyncStatus = Record<string, 'adding' | 'added' | 'already_present' | 'unmatched' | 'failed'>
+type ResultsViewMode = 'table' | 'cards'
 
 const EDITOR_WIDTH_KEY = 'screener-editor-width-v1'
+const VIEW_MODE_KEY = 'screener-view-mode-v1'
+const CARD_HERO_KEY = 'screener-card-hero-v1'
 const EDITOR_MIN_WIDTH = 320
 const EDITOR_MAX_WIDTH = 720
 const EDITOR_DEFAULT_WIDTH = 420
@@ -104,6 +107,8 @@ const COLUMN_LABELS: Record<string, string> = {
   premarket_change_abs: 'Pre-mkt chg',
   premarket_volume: 'Pre-mkt vol',
   premarket_gap: 'Pre-mkt gap %',
+  postmarket_change: 'Post-mkt chg %',
+  postmarket_volume: 'Post-mkt vol',
 }
 
 function cellKind(key: string): 'percent' | 'price' | 'number' {
@@ -116,6 +121,34 @@ function changeClass(value: unknown): string {
   const n = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(n) || n === 0) return 'scr-chg--flat'
   return n > 0 ? 'scr-chg--up' : 'scr-chg--down'
+}
+
+function loadViewMode(): ResultsViewMode {
+  try {
+    const value = localStorage.getItem(VIEW_MODE_KEY)
+    if (value === 'table' || value === 'cards') return value
+  } catch {
+    // ignore
+  }
+  return 'table'
+}
+
+function loadCardHeroField(): string {
+  try {
+    const value = localStorage.getItem(CARD_HERO_KEY)
+    if (value) return value
+  } catch {
+    // ignore
+  }
+  return 'change'
+}
+
+function watchlistButtonLabel(status: RowSyncStatus[string] | undefined): string {
+  if (status === 'adding') return '…'
+  if (status === 'added') return 'Added'
+  if (status === 'already_present') return 'In list'
+  if (status === 'unmatched') return 'N/A'
+  return 'Add'
 }
 
 function defaultFilter(): ScreenerFilterCond {
@@ -152,6 +185,8 @@ export default function ScreenerPage() {
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(20)
   const [sort, setSort] = useState<SortState>(null)
+  const [viewMode, setViewMode] = useState<ResultsViewMode>(loadViewMode)
+  const [cardHeroField, setCardHeroField] = useState<string>(loadCardHeroField)
   const [rowStatus, setRowStatus] = useState<RowSyncStatus>({})
   const [syncingBulk, setSyncingBulk] = useState(false)
   const [lastSummary, setLastSummary] = useState<WatchlistSyncSummary | null>(null)
@@ -421,6 +456,45 @@ export default function ScreenerPage() {
       ? ordered
       : ['ticker', 'close', 'premarket_change', 'premarket_volume', 'market_cap_basic']
   }, [selected, draftDefinition])
+
+  const percentColumnOptions = useMemo(
+    () => columns.filter(col => col !== 'ticker' && cellKind(col) === 'percent'),
+    [columns],
+  )
+
+  const effectiveCardHeroField = useMemo(() => {
+    if (percentColumnOptions.includes(cardHeroField)) return cardHeroField
+    return percentColumnOptions[0] || 'change'
+  }, [cardHeroField, percentColumnOptions])
+
+  const cardFootFields = useMemo(() => {
+    const preferred = ['close', 'volume', 'premarket_volume', 'postmarket_volume']
+    const fromCols = preferred.filter(key => columns.includes(key))
+    if (fromCols.length) return fromCols.slice(0, 3)
+    const price = columns.find(col => cellKind(col) === 'price')
+    const vol = columns.find(col => col.includes('volume'))
+    return [price, vol].filter((col): col is string => Boolean(col))
+  }, [columns])
+
+  const cardHoverFields = useMemo(
+    () => columns.filter(col => {
+      if (col === 'ticker') return false
+      if (col === effectiveCardHeroField) return false
+      if (cardFootFields.includes(col)) return false
+      return true
+    }),
+    [columns, effectiveCardHeroField, cardFootFields],
+  )
+
+  const handleViewModeChange = (mode: ResultsViewMode) => {
+    setViewMode(mode)
+    safeSetItem(VIEW_MODE_KEY, mode)
+  }
+
+  const handleCardHeroChange = (field: string) => {
+    setCardHeroField(field)
+    safeSetItem(CARD_HERO_KEY, field)
+  }
 
   const sortedRows = useMemo(() => {
     const rows = [...(selected?.results || [])]
@@ -821,6 +895,43 @@ export default function ScreenerPage() {
       </div>
 
       <div className="scr-meta">
+        {selected?.results?.length ? (
+          <>
+            <div className="scr-view-toggle" role="group" aria-label="Results view">
+              <button
+                type="button"
+                className={`scr-view-btn${viewMode === 'table' ? ' scr-view-btn--active' : ''}`}
+                aria-pressed={viewMode === 'table'}
+                onClick={() => handleViewModeChange('table')}
+              >
+                Table
+              </button>
+              <button
+                type="button"
+                className={`scr-view-btn${viewMode === 'cards' ? ' scr-view-btn--active' : ''}`}
+                aria-pressed={viewMode === 'cards'}
+                onClick={() => handleViewModeChange('cards')}
+              >
+                Cards
+              </button>
+            </div>
+            {viewMode === 'cards' && percentColumnOptions.length ? (
+              <label className="scr-toggle">
+                Hero %
+                <select
+                  className="scr-select"
+                  value={effectiveCardHeroField}
+                  onChange={e => handleCardHeroChange(e.target.value)}
+                  aria-label="Card hero percent field"
+                >
+                  {percentColumnOptions.map(col => (
+                    <option key={col} value={col}>{columnLabel(col)}</option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+          </>
+        ) : null}
         <div className="scr-toolbar-spacer" />
         <label className="scr-toggle">
           <input
@@ -909,94 +1020,161 @@ export default function ScreenerPage() {
             </div>
           ) : (
             <>
-              <div className="scr-table-wrap">
-                <table className="scr-table">
-                  <thead>
-                    <tr>
-                      {columns.map(col => (
-                        <th
-                          key={col}
-                          className={[
-                            col !== 'ticker' ? 'scr-th--num' : '',
-                            sort?.key === col ? 'scr-th--sorted' : '',
-                          ].filter(Boolean).join(' ') || undefined}
-                          onClick={() => toggleSort(col)}
-                        >
-                          {columnLabel(col)}
-                          {sort?.key === col ? (
-                            <span className="scr-th-sort">{sort.dir === 'asc' ? ' ↑' : ' ↓'}</span>
-                          ) : null}
-                        </th>
-                      ))}
-                      <th>Watchlist</th>
-                    </tr>
-                  </thead>
-                  <tbody>
+              {viewMode === 'table' ? (
+                <div className="scr-table-wrap">
+                  <table className="scr-table">
+                    <thead>
+                      <tr>
+                        {columns.map(col => (
+                          <th
+                            key={col}
+                            className={[
+                              col !== 'ticker' ? 'scr-th--num' : '',
+                              sort?.key === col ? 'scr-th--sorted' : '',
+                            ].filter(Boolean).join(' ') || undefined}
+                            onClick={() => toggleSort(col)}
+                          >
+                            {columnLabel(col)}
+                            {sort?.key === col ? (
+                              <span className="scr-th-sort">{sort.dir === 'asc' ? ' ↑' : ' ↓'}</span>
+                            ) : null}
+                          </th>
+                        ))}
+                        <th>Watchlist</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {pagedRows.map(row => {
+                        const ticker = row.ticker
+                        const symbol = tickerSymbol(ticker)
+                        const status = rowStatus[ticker]
+                        return (
+                          <tr key={row.id || ticker}>
+                            {columns.map(col => {
+                              if (col === 'ticker') {
+                                return (
+                                  <td key={col}>
+                                    <span className="scr-symbol">
+                                      <span className="scr-symbol-badge">{symbol}</span>
+                                      <span className="scr-symbol-name">{row.name || row.cells?.description || ''}</span>
+                                    </span>
+                                  </td>
+                                )
+                              }
+                              const raw = row.cells?.[col]
+                              const kind = cellKind(col)
+                              const formatted = formatScreenerNumber(raw, kind)
+                              if (kind === 'percent') {
+                                return (
+                                  <td key={col} className="scr-td--num">
+                                    <span className={`scr-chg ${changeClass(raw)}`}>{formatted}</span>
+                                  </td>
+                                )
+                              }
+                              return (
+                                <td key={col} className="scr-td--num">
+                                  {formatted}
+                                </td>
+                              )
+                            })}
+                            <td>
+                              <div className="scr-row-actions">
+                                <button
+                                  type="button"
+                                  className={`scr-row-btn${
+                                    status === 'added' || status === 'already_present'
+                                      ? ' scr-row-btn--ok'
+                                      : status === 'unmatched' || status === 'failed'
+                                        ? ' scr-row-btn--miss'
+                                        : ''
+                                  }`}
+                                  disabled={status === 'adding'}
+                                  onClick={() => void addRowToWatchlist(ticker)}
+                                >
+                                  {watchlistButtonLabel(status)}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="scr-cards-wrap">
+                  <div className="scr-cards-grid">
                     {pagedRows.map(row => {
                       const ticker = row.ticker
                       const symbol = tickerSymbol(ticker)
                       const status = rowStatus[ticker]
+                      const heroRaw = row.cells?.[effectiveCardHeroField]
+                      const heroFormatted = formatScreenerNumber(heroRaw, 'percent')
                       return (
-                        <tr key={row.id || ticker}>
-                          {columns.map(col => {
-                            if (col === 'ticker') {
-                              return (
-                                <td key={col}>
-                                  <span className="scr-symbol">
-                                    <span className="scr-symbol-badge">{symbol}</span>
-                                    <span className="scr-symbol-name">{row.name || row.cells?.description || ''}</span>
-                                  </span>
-                                </td>
-                              )
-                            }
-                            const raw = row.cells?.[col]
-                            const kind = cellKind(col)
-                            const formatted = formatScreenerNumber(raw, kind)
-                            if (kind === 'percent') {
-                              return (
-                                <td key={col} className="scr-td--num">
-                                  <span className={`scr-chg ${changeClass(raw)}`}>{formatted}</span>
-                                </td>
-                              )
-                            }
-                            return (
-                              <td key={col} className="scr-td--num">
-                                {formatted}
-                              </td>
-                            )
-                          })}
-                          <td>
-                            <div className="scr-row-actions">
+                        <article key={row.id || ticker} className="scr-card">
+                          <div className="scr-card__face">
+                            <div className="scr-card__head">
+                              <span className="scr-symbol-badge">{symbol}</span>
                               <button
                                 type="button"
-                                className={`scr-row-btn${
+                                className={`scr-card__watch${
                                   status === 'added' || status === 'already_present'
-                                    ? ' scr-row-btn--ok'
+                                    ? ' scr-card__watch--ok'
                                     : status === 'unmatched' || status === 'failed'
-                                      ? ' scr-row-btn--miss'
+                                      ? ' scr-card__watch--miss'
                                       : ''
                                 }`}
                                 disabled={status === 'adding'}
                                 onClick={() => void addRowToWatchlist(ticker)}
                               >
-                                {status === 'adding'
-                                  ? '…'
-                                  : status === 'added'
-                                    ? 'Added'
-                                    : status === 'already_present'
-                                      ? 'In list'
-                                      : status === 'unmatched'
-                                        ? 'N/A'
-                                        : 'Add'}
+                                {watchlistButtonLabel(status)}
                               </button>
                             </div>
-                          </td>
-                        </tr>
+                            <div className={`scr-card__hero ${changeClass(heroRaw)}`}>
+                              {heroFormatted}
+                            </div>
+                            <div className="scr-card__hero-label">{columnLabel(effectiveCardHeroField)}</div>
+                            <div className="scr-card__foot">
+                              {cardFootFields.map(col => {
+                                const raw = row.cells?.[col]
+                                const kind = cellKind(col)
+                                return (
+                                  <div key={col} className="scr-card__foot-item">
+                                    <span className="scr-card__foot-label">{columnLabel(col)}</span>
+                                    <span className="scr-card__foot-value">{formatScreenerNumber(raw, kind)}</span>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                          <div className="scr-card__hover" aria-hidden="true">
+                            <div className="scr-card__hover-title">
+                              {symbol}
+                              {row.name || row.cells?.description ? (
+                                <span>{row.name || row.cells?.description}</span>
+                              ) : null}
+                            </div>
+                            <dl className="scr-card__hover-grid">
+                              {cardHoverFields.map(col => {
+                                const raw = row.cells?.[col]
+                                const kind = cellKind(col)
+                                return (
+                                  <div key={col} className="scr-card__hover-row">
+                                    <dt>{columnLabel(col)}</dt>
+                                    <dd className={kind === 'percent' ? changeClass(raw) : undefined}>
+                                      {formatScreenerNumber(raw, kind)}
+                                    </dd>
+                                  </div>
+                                )
+                              })}
+                            </dl>
+                          </div>
+                        </article>
                       )
                     })}
-                  </tbody>
-                </table>
-              </div>
+                  </div>
+                </div>
+              )}
               <div className="scr-pagination">
                 <label className="scr-toggle">
                   Rows
