@@ -1395,10 +1395,12 @@ class OnePercentSessionEngine:
                             "error": "Order did not open a position in time",
                         },
                     )
-                    await self._finish_session(
+                    await self._complete_attempt(
                         session,
-                        outcome="order_timeout",
-                        reason="Order did not open a position in time",
+                        attempt,
+                        exit_price=entry_price,
+                        close_reason="Order did not open a position in time",
+                        realized_pnl=0.0,
                     )
                     return
 

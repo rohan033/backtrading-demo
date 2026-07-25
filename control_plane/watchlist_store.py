@@ -325,13 +325,22 @@ class WatchlistStore:
 
         by_watchlist: dict[str, list[dict[str, Any]]] = {}
         for row in symbols:
-            item = dict(row)
-            by_watchlist.setdefault(item["watchlist_id"], []).append(self._symbol_payload(item))
+            item = self._symbol_payload(row)
+            by_watchlist.setdefault(dict(row)["watchlist_id"], []).append(item)
 
-        return [
-            self._watchlist_payload(row, by_watchlist.get(row["id"], []))
-            for row in rows
-        ]
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            wl = dict(row)
+            broker = str(wl.get("broker") or "angel").lower()
+            env = str(wl.get("account_env") or ("demo" if broker == "etoro" else "live"))
+            symbols_for_wl = by_watchlist.get(wl["id"], [])
+            if broker == "etoro":
+                symbols_for_wl = [
+                    self._repair_numeric_etoro_symbol(item, account_env=env)
+                    for item in symbols_for_wl
+                ]
+            out.append(self._watchlist_payload(row, symbols_for_wl))
+        return out
 
     @staticmethod
     def _symbol_payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -349,6 +358,71 @@ class WatchlistStore:
             "logo150x150": data.get("logo150x150"),
             "raw_metadata_json": data.get("raw_metadata_json"),
             "metadata_updated_at": data.get("metadata_updated_at"),
+        }
+
+    def _repair_numeric_etoro_symbol(
+        self,
+        payload: dict[str, Any],
+        *,
+        account_env: str,
+    ) -> dict[str, Any]:
+        from brokers.etoro.adapters.portfolio import (
+            _is_numeric_symbol,
+            coalesce_etoro_display_name,
+            coalesce_etoro_tradingsymbol,
+        )
+
+        tradingsymbol = str(payload.get("tradingsymbol") or "").strip()
+        if not _is_numeric_symbol(tradingsymbol):
+            return payload
+
+        match: dict[str, Any] = dict(payload)
+        raw_json = payload.get("raw_metadata_json")
+        if raw_json:
+            try:
+                raw = json.loads(raw_json) if isinstance(raw_json, str) else raw_json
+                if isinstance(raw, dict):
+                    match.update(raw)
+                    match.setdefault("raw_metadata", raw.get("raw") or raw)
+            except (TypeError, json.JSONDecodeError):
+                pass
+
+        try:
+            from control_plane.etoro_db import get_etoro_db
+
+            cached = get_etoro_db().find_by_instrument_id(account_env, tradingsymbol)
+            if cached:
+                match.update(cached)
+        except Exception:
+            pass
+
+        resolved = coalesce_etoro_tradingsymbol(match, fallback="")
+        if _is_numeric_symbol(resolved):
+            display = str(payload.get("instrument_display_name") or "").strip()
+            if display and not _is_numeric_symbol(display):
+                return {
+                    **payload,
+                    "symbol": display,
+                }
+            return payload
+
+        display_name = coalesce_etoro_display_name(match, resolved)
+        conn = self._connect()
+        conn.execute(
+            """
+            UPDATE watchlist_symbols
+            SET tradingsymbol = ?, symbol = ?
+            WHERE id = ?
+            """,
+            (resolved, display_name, payload["id"]),
+        )
+        conn.commit()
+        conn.close()
+        return {
+            **payload,
+            "tradingsymbol": resolved,
+            "symbol": display_name,
+            "instrument_display_name": payload.get("instrument_display_name") or display_name,
         }
 
     def create_watchlist(
@@ -390,7 +464,16 @@ class WatchlistStore:
             (watchlist_id,),
         ).fetchall()
         conn.close()
-        return self._watchlist_payload(row, [self._symbol_payload(item) for item in symbols])
+        wl = dict(row)
+        broker = str(wl.get("broker") or "angel").lower()
+        env = str(wl.get("account_env") or ("demo" if broker == "etoro" else "live"))
+        symbol_payloads = [self._symbol_payload(item) for item in symbols]
+        if broker == "etoro":
+            symbol_payloads = [
+                self._repair_numeric_etoro_symbol(item, account_env=env)
+                for item in symbol_payloads
+            ]
+        return self._watchlist_payload(row, symbol_payloads)
 
     def update_watchlist(
         self,
@@ -452,6 +535,9 @@ class WatchlistStore:
         raw_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         if not self.get_watchlist(watchlist_id):
+            return None
+        watchlist = self.get_watchlist(watchlist_id)
+        if not watchlist:
             return None
         symbol_id = str(uuid.uuid4())
         now = _now_utc()
@@ -532,6 +618,28 @@ class WatchlistStore:
         )
         conn.commit()
         conn.close()
+        if str(watchlist.get("broker") or "").lower() == "etoro":
+            try:
+                from control_plane.etoro_db import get_etoro_db
+
+                get_etoro_db().upsert_from_watchlist_symbol(
+                    {
+                        "symboltoken": str(symboltoken),
+                        "tradingsymbol": tradingsymbol.strip().upper(),
+                        "exchange": (exchange or "ETORO").upper(),
+                        "symbol": (symbol or tradingsymbol).strip().upper(),
+                        "internal_asset_class_name": internal_asset_class_name,
+                        "instrument_display_name": instrument_display_name,
+                        "logo35x35": logo35x35,
+                        "logo50x50": logo50x50,
+                        "logo150x150": logo150x150,
+                        "raw_metadata_json": raw_metadata_json,
+                    },
+                    account_env=str(watchlist.get("account_env") or "demo"),
+                    source="watchlist",
+                )
+            except Exception:
+                pass
         return self.get_watchlist(watchlist_id)
 
     def remove_symbol(self, watchlist_id: str, symboltoken: str) -> dict[str, Any] | None:

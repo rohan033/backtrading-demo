@@ -80,6 +80,29 @@ export async function searchWatchlistSymbol(
   const q = query.trim()
   if (!q) return []
 
+  const cacheKey = `${broker}:${accountEnv}:${q.toUpperCase()}`
+  const cached = searchCache.get(cacheKey)
+  if (cached && Date.now() - cached.at < SEARCH_CACHE_MS) {
+    return cached.promise
+  }
+
+  const promise = fetchSearchHits(broker, q, accountEnv)
+  searchCache.set(cacheKey, { at: Date.now(), promise })
+  void promise.catch(() => {
+    const entry = searchCache.get(cacheKey)
+    if (entry?.promise === promise) searchCache.delete(cacheKey)
+  })
+  return promise
+}
+
+const SEARCH_CACHE_MS = 60_000
+const searchCache = new Map<string, { at: number; promise: Promise<WatchlistSymbolHit[]> }>()
+
+async function fetchSearchHits(
+  broker: WatchlistBroker,
+  q: string,
+  accountEnv: string,
+): Promise<WatchlistSymbolHit[]> {
   if (broker === 'etoro') {
     const params = new URLSearchParams({
       q,

@@ -37,6 +37,7 @@ from api.screener_routes import router as screener_router
 from api.traded_instruments_routes import router as traded_instruments_router
 from api.trades_pnl_routes import router as trades_pnl_router
 from api.market_news_routes import router as market_news_router
+from api.yahoo_finance_routes import router as yahoo_finance_router
 from api.trade_halts_routes import router as trade_halts_router
 from api.trading_session_routes import get_trading_session_store, handle_trading_session_websocket, router as trading_session_router
 from api.one_percent_session_routes import (
@@ -146,6 +147,7 @@ app.include_router(screener_router)
 app.include_router(traded_instruments_router)
 app.include_router(trades_pnl_router)
 app.include_router(market_news_router)
+app.include_router(yahoo_finance_router)
 app.include_router(trade_halts_router)
 app.include_router(trading_session_router)
 app.include_router(one_percent_session_router)
@@ -403,6 +405,9 @@ async def control_plane_lifespan(_app: FastAPI):
     from control_plane.one_percent_session_engine import get_one_percent_session_engine
 
     await get_one_percent_session_engine().startup()
+    from control_plane.etoro_db import get_etoro_db
+
+    get_etoro_db().seed_from_watchlists()
     try:
         yield
     finally:
@@ -640,13 +645,14 @@ async def control_plane_search(
             return {"status": True, "data": rows}
 
         if broker_name == "etoro":
-            client = await _etoro_trading_client(account_env)
-            instruments = await client.asearch_instruments(q)
-            rows = merge_watchlist_into_search_rows(
+            from control_plane.instrument_resolve import search_instruments
+
+            rows = await search_instruments(
                 broker_name,
                 account_env,
                 q,
-                [_etoro_instrument_to_search_row(item) for item in instruments],
+                exchange=exchange or "ETORO",
+                use_fake=use_fake_client,
             )
             if rows:
                 log.info(

@@ -122,6 +122,44 @@ def _is_numeric_symbol(text: str) -> bool:
     return bool(text) and text.isdigit()
 
 
+def coalesce_etoro_tradingsymbol(
+    match: dict,
+    *,
+    fallback: str = "",
+) -> str:
+    """Pick a human ticker for watchlists; never prefer a bare instrument ID."""
+    for candidate in (match.get("tradingsymbol"), fallback):
+        text = str(candidate or "").strip().upper()
+        if text and not _is_numeric_symbol(text):
+            return text
+
+    raw = match.get("raw") or match.get("raw_metadata")
+    if isinstance(raw, dict):
+        for key in ("symbolFull", "internalSymbolFull", "symbol"):
+            text = str(raw.get(key) or "").strip().upper()
+            if text and not _is_numeric_symbol(text):
+                return text
+
+    for key in ("instrument_display_name", "instrumentDisplayName", "name", "symbol"):
+        text = str(match.get(key) or "").strip()
+        if text and not _is_numeric_symbol(text) and len(text) <= 12 and " " not in text:
+            return text.upper()
+
+    fb = str(fallback or "").strip().upper()
+    if fb and not _is_numeric_symbol(fb):
+        return fb
+    token = str(match.get("symboltoken") or "").strip()
+    return fb or token
+
+
+def coalesce_etoro_display_name(match: dict, tradingsymbol: str) -> str:
+    for key in ("instrument_display_name", "instrumentDisplayName", "name", "symbol"):
+        text = str(match.get(key) or "").strip()
+        if text and not _is_numeric_symbol(text):
+            return text
+    return tradingsymbol
+
+
 def _logos_from_images(images: list | None) -> dict[str, str]:
     if not isinstance(images, list):
         return {}

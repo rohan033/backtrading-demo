@@ -131,6 +131,102 @@ async def _etoro_trading_client(account_env: str):
     return client
 
 
+async def resolve_etoro_instrument_by_id(
+    instrument_id: int,
+    *,
+    account_env: str,
+    fallback_symbol: str | None = None,
+) -> dict[str, Any] | None:
+    """Resolve a numeric eToro instrument ID to a watchlist/search row.
+
+    Checks etoro_db first; only calls the eToro API on cache miss.
+    """
+    if instrument_id <= 0:
+        return None
+
+    from control_plane.etoro_db import get_etoro_db
+
+    db = get_etoro_db()
+    cached = db.find_by_instrument_id(account_env, instrument_id)
+    if cached:
+        row = db.to_search_row(cached)
+        if fallback_symbol:
+            from brokers.etoro.adapters.portfolio import (
+                coalesce_etoro_display_name,
+                coalesce_etoro_tradingsymbol,
+            )
+
+            ts = coalesce_etoro_tradingsymbol({**row, **cached}, fallback=fallback_symbol)
+            row["tradingsymbol"] = ts
+            row["symbol"] = coalesce_etoro_display_name({**row, **cached}, ts)
+            row["name"] = row["symbol"]
+        return row
+
+    from brokers.etoro.adapters.portfolio import (
+        coalesce_etoro_display_name,
+        coalesce_etoro_tradingsymbol,
+        etoro_display_map_for_records,
+        etoro_instrument_to_search_row,
+    )
+
+    client = await _etoro_trading_client(account_env)
+    records = await client.aget_instrument_records([instrument_id])
+    record = records.get(instrument_id)
+    if record:
+        row = etoro_instrument_to_search_row(record)
+        token = str(row.get("symboltoken") or instrument_id).strip()
+        if token:
+            row["symboltoken"] = token
+            db.upsert_from_search_row(row, account_env=account_env, source="api")
+            return row
+
+    symbol_map = await client.aget_instrument_symbol_map([instrument_id])
+    display_map = await etoro_display_map_for_records(
+        client,
+        [{"instrumentID": instrument_id}],
+    )
+    display = dict(display_map.get(instrument_id, {}))
+    mapped_symbol = symbol_map.get(instrument_id)
+    ticker = (
+        mapped_symbol
+        or display.get("tradingsymbol")
+        or display.get("instrument_display_name")
+    )
+    if not ticker or str(ticker).isdigit():
+        ticker = str(fallback_symbol or instrument_id)
+
+    row = {
+        "tradingsymbol": coalesce_etoro_tradingsymbol(
+            {
+                "tradingsymbol": str(ticker),
+                "symboltoken": str(instrument_id),
+                "instrument_display_name": display.get("instrument_display_name"),
+                "instrumentDisplayName": display.get("instrument_display_name"),
+            },
+            fallback=str(fallback_symbol or ""),
+        ),
+        "symboltoken": str(instrument_id),
+        "exchange": "ETORO",
+        "name": display.get("instrument_display_name") or str(ticker),
+        "symbol": coalesce_etoro_display_name(
+            {"instrument_display_name": display.get("instrument_display_name")},
+            coalesce_etoro_tradingsymbol(
+                {"tradingsymbol": str(ticker), "symboltoken": str(instrument_id)},
+                fallback=str(fallback_symbol or ""),
+            ),
+        ),
+        "instrumentDisplayName": display.get("instrument_display_name"),
+        "instrument_display_name": display.get("instrument_display_name"),
+        "internalAssetClassName": display.get("internal_asset_class_name"),
+        "internal_asset_class_name": display.get("internal_asset_class_name"),
+        "logo35x35": display.get("logo35x35"),
+        "logo50x50": display.get("logo50x50"),
+        "logo150x150": display.get("logo150x150"),
+    }
+    db.upsert_from_search_row(row, account_env=account_env, source="api")
+    return row
+
+
 async def search_instruments(
     broker: str,
     account_env: str,
@@ -151,6 +247,14 @@ async def search_instruments(
 
     if broker_name == "etoro":
         from brokers.etoro.adapters.portfolio import etoro_instrument_to_search_row
+        from control_plane.etoro_db import get_etoro_db
+
+        db = get_etoro_db()
+        cached = db.find_by_ticker(account_env, q)
+        if cached:
+            rows = [db.to_search_row(cached)]
+            return merge_watchlist_into_search_rows(broker_name, account_env, q, rows)
+
         try:
             client = await _etoro_trading_client(account_env)
             instruments = await client.asearch_instruments(q)
@@ -158,6 +262,8 @@ async def search_instruments(
         except Exception as exc:
             log.warning("[INSTRUMENT] etoro search failed for %r: %s", q, exc)
             rows = []
+        for row in rows:
+            db.upsert_from_search_row(row, account_env=account_env, source="api")
         return merge_watchlist_into_search_rows(broker_name, account_env, q, rows)
 
     from api.server import get_client
@@ -212,6 +318,19 @@ async def resolve_instrument(
             tradingsymbol=tradingsymbol,
         )
 
+    if broker_name == "etoro":
+        from control_plane.etoro_db import get_etoro_db
+
+        db_hit = get_etoro_db().find_by_ticker(account_env, sym)
+        if db_hit and str(db_hit.get("symboltoken") or "").strip():
+            tradingsymbol = str(db_hit.get("tradingsymbol") or sym).strip()
+            return ResolvedInstrument(
+                symbol=tradingsymbol,
+                token=str(db_hit.get("symboltoken") or "").strip(),
+                exchange=str(db_hit.get("exchange") or default_exchange).strip(),
+                tradingsymbol=tradingsymbol,
+            )
+
     rows = await search_instruments(
         broker_name,
         account_env,
@@ -222,6 +341,11 @@ async def resolve_instrument(
     hit = pick_best_match(rows, sym)
     if not hit:
         return None
+
+    if broker_name == "etoro":
+        from control_plane.etoro_db import get_etoro_db
+
+        get_etoro_db().upsert_from_search_row(hit, account_env=account_env, source="api")
 
     tradingsymbol = str(hit.get("tradingsymbol") or sym).strip()
     return ResolvedInstrument(
