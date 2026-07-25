@@ -1,0 +1,29 @@
+.yahoo-card-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 2px 6px;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  background: #fff;
+  color: #111;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.yahoo-card-toggle input {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  accent-color: #c9a227;
+  cursor: pointer;
+}
+
+.yahoo-card-toggle__label {
+  letter-spacing: 0.02em;
+}

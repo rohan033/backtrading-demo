@@ -1,0 +1,74 @@
+.yahoo-ext__pct-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.yahoo-ext__pct-row--compact {
+  gap: 3px;
+}
+
+.yahoo-ext__pct {
+  font-size: 1.05rem;
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: #111;
+}
+
+.yahoo-ext__pct--up {
+  font-size: clamp(1.25rem, 2.4vw, 1.55rem);
+  color: #1b5e20;
+}
+
+.yahoo-ext__pct--down {
+  color: #9e1b1b;
+}
+
+.yahoo-ext__pct--flat,
+.yahoo-ext__pct--none {
+  color: #4a5568;
+}
+
+.yahoo-ext__arrow {
+  flex-shrink: 0;
+  font-size: 0.95rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.yahoo-ext__arrow--up { color: #1b5e20; }
+.yahoo-ext__arrow--down { color: #9e1b1b; }
+.yahoo-ext__arrow--flat { color: #4a5568; }
+
+.yahoo-ext__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #4a5568;
+}
+
+.yahoo-ext__price { color: #111; }
+.yahoo-ext__abs--up { color: #1b5e20; }
+.yahoo-ext__abs--down { color: #9e1b1b; }
+.yahoo-ext__abs--flat,
+.yahoo-ext__abs--none { color: #4a5568; }
+
+.yahoo-ext__tag {
+  margin-top: 2px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #4a5568;
+}
+
+.scr-card__hero-block--yahoo {
+  gap: 4px;
+}
