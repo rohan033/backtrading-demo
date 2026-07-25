@@ -105,6 +105,7 @@ import {
   HomeSentimentPanel,
 } from './HomeResearchPanels'
 import HomeIndicesChart from './HomeIndicesChart'
+import HomeMarketMoversPanel from './HomeMarketMoversPanel'
 import HomeQuickInsights from './HomeQuickInsights'
 
 type InfoTab = 'news' | 'filings' | 'earnings' | 'insider' | 'sentiment' | 'recommendations'
@@ -1071,6 +1072,7 @@ export default function Home() {
     storedChatModel.params,
   )
   const autoOpportunityInFlightRef = useRef(false)
+  const logoFetchAttemptedRef = useRef<string | null>(null)
   const [aiDrawerCollapsed, setAiDrawerCollapsed] = useState(() =>
     loadDrawerBool(AI_DRAWER_COLLAPSED_KEY, false),
   )
@@ -1259,13 +1261,24 @@ export default function Home() {
   }, [accountEnv, broker, navigate])
 
   useEffect(() => {
-    if (!selection || selection.logo35x35 || selection.logo50x50 || selection.logo150x150) return
+    if (!selection) {
+      logoFetchAttemptedRef.current = null
+      return
+    }
+    if (selection.logo35x35 || selection.logo50x50 || selection.logo150x150) return
+
+    const attemptKey = `${selection.broker}:${selection.accountEnv}:${selection.symboltoken}`
+    if (logoFetchAttemptedRef.current === attemptKey) return
+    logoFetchAttemptedRef.current = attemptKey
+
     let cancelled = false
     searchWatchlistSymbol(selection.broker, selection.tradingsymbol, selection.accountEnv)
       .then(hits => {
         if (cancelled) return
         const hit = pickWatchlistSymbolMatch(hits, selection.tradingsymbol)
         if (!hit) return
+        const hasLogo = Boolean(hit.logo35x35 || hit.logo50x50 || hit.logo150x150)
+        if (!hasLogo) return
         setSelection(prev => {
           if (!prev || prev.symboltoken !== selection.symboltoken) return prev
           return {
@@ -1279,7 +1292,15 @@ export default function Home() {
       })
       .catch(() => {})
     return () => { cancelled = true }
-  }, [selection])
+  }, [
+    selection?.broker,
+    selection?.accountEnv,
+    selection?.symboltoken,
+    selection?.tradingsymbol,
+    selection?.logo35x35,
+    selection?.logo50x50,
+    selection?.logo150x150,
+  ])
 
   const selectHit = (hit: WatchlistSymbolHit) => {
     const next: HomeSelection = {
@@ -1700,7 +1721,7 @@ export default function Home() {
 
       <div className="hm-body-row">
         <div className={`hm-main${infoPanelCollapsed ? ' hm-main--info-collapsed' : ''}`}>
-          <div className={`hm-top-row${selection ? '' : ' hm-top-row--full'}${selection && insightsCollapsed ? ' hm-top-row--insights-collapsed' : ''}`}>
+          <div className={`hm-top-row${selection ? '' : ' hm-top-row--with-movers'}${selection && insightsCollapsed ? ' hm-top-row--insights-collapsed' : ''}`}>
             <section className="hm-card hm-chart-card">
               {selection ? (
                 <>
@@ -1844,6 +1865,10 @@ export default function Home() {
                 />
               )}
             </section>
+
+            {!selection ? (
+              <HomeMarketMoversPanel />
+            ) : null}
 
             {selection ? (
               <HomeQuickInsights

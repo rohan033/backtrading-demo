@@ -230,6 +230,10 @@
   grid-template-columns: minmax(0, 1fr);
 }
 
+.hm-top-row--with-movers {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
 .hm-top-row--insights-collapsed {
   grid-template-columns: minmax(0, 1fr) 40px;
 }
@@ -2069,6 +2073,10 @@
   .hm-top-row {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(220px, 320px) auto;
+  }
+
+  .hm-top-row--with-movers {
+    grid-template-rows: minmax(220px, 320px) minmax(180px, 280px);
   }
 
   .hm-rec-card {
