@@ -7,6 +7,8 @@ import {
 } from 'lightweight-charts'
 import './WatchAndTrade.css'
 import { useWatchlistStream } from '../../context/WatchlistStreamContext'
+import { useTradeHalts } from '../../context/TradeHaltsContext'
+import HaltedSymbolDot from '../../components/tradeHalts/HaltedSymbolDot'
 import { formatBrokerMoney } from '../../lib/currency'
 import {
   createWatchlist,
@@ -164,6 +166,26 @@ function formatChangePill(value: number | null | undefined): string {
   if (value == null || Number.isNaN(value)) return '—'
   const sign = value > 0 ? '+' : ''
   return `${sign}${value.toFixed(2)}%`
+}
+
+function isNumericSymbol(text: string | null | undefined): boolean {
+  return /^\d+$/.test(String(text || '').trim())
+}
+
+function watchlistTickerLabel(symbol: WatchlistSymbol): string {
+  const ts = String(symbol.tradingsymbol || '').trim()
+  if (ts && !isNumericSymbol(ts)) return ts
+  const sym = String(symbol.symbol || '').trim()
+  if (sym && !isNumericSymbol(sym)) return sym
+  return ts || sym
+}
+
+function watchlistNameLabel(symbol: WatchlistSymbol, ticker: string): string {
+  const display = String(symbol.instrument_display_name || '').trim()
+  if (display && !isNumericSymbol(display)) return display
+  const sym = String(symbol.symbol || '').trim()
+  if (sym && !isNumericSymbol(sym) && sym.toUpperCase() !== ticker.toUpperCase()) return sym
+  return display || (sym && !isNumericSymbol(sym) ? sym : ticker)
 }
 
 function toMomentumConfig(cfg: MomentumCfg): MomentumConfig {
@@ -501,6 +523,7 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
   const [dragSymToken, setDragSymToken] = useState<string | null>(null)
   const [dragOverToken, setDragOverToken] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const { haltFor } = useTradeHalts()
 
   const openSearch = () => { setAdding(true); setQuery(''); setResults([]); setError(''); setTimeout(()=>inputRef.current?.focus(),0) }
   const closeSearch = () => { setAdding(false); setQuery(''); setResults([]); setError('') }
@@ -716,7 +739,10 @@ function WatchlistCard({ watchlist, selectedSymbolId, onSelectSymbol,
                   ) : null}
                   <span className="wt-sym-icon"><SymbolLogo sym={sym} size="small" /></span>
                   <div className="wt-sym-name-block">
-                    <div className="wt-sym-ticker">{sym.ticker}</div>
+                    <div className="wt-sym-ticker">
+                      {sym.ticker}
+                      <HaltedSymbolDot halt={haltFor(sym.ticker)} className="halt-dot--inline" />
+                    </div>
                     <div className="wt-sym-name-small">{sym.name}</div>
                   </div>
                   </div>
@@ -1313,6 +1339,7 @@ function DetailPanel({ selected, width, onResizeStart }: {
   // per-stock config map: each stock keeps its own override + custom flag
   const [configs, setConfigs] = useState<Record<string, MomentumCfg>>({})
   const [customMap, setCustomMap] = useState<Record<string, boolean>>({})
+  const { haltFor } = useTradeHalts()
 
   const handleChartResizeStart = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -1379,7 +1406,10 @@ function DetailPanel({ selected, width, onResizeStart }: {
                     <SymbolLogo sym={sym} size="large" />
                   </div>
                   <div className="wt-detail-title-copy">
-                    <div className="wt-detail-ticker">{sym.ticker}</div>
+                    <div className="wt-detail-ticker">
+                      {sym.ticker}
+                      <HaltedSymbolDot halt={haltFor(sym.ticker)} className="halt-dot--inline" />
+                    </div>
                     <div className="wt-detail-fullname">{sym.name}</div>
                     {sym.symboltoken ? (
                       <div className="wt-detail-id" title="Instrument ID">
@@ -1618,8 +1648,8 @@ export default function WatchAndTrade() {
     const c1m = changes?.['1m']
     const c5m = changes?.['5m']
     const dayChange = tick?.change_pct
-    const ticker = symbol.tradingsymbol || symbol.symbol
-    const name = symbol.symbol || symbol.tradingsymbol
+    const ticker = watchlistTickerLabel(symbol)
+    const name = watchlistNameLabel(symbol, ticker)
     return {
       id: `${wl.id}:${symbol.symboltoken}`,
       symboltoken: symbol.symboltoken,

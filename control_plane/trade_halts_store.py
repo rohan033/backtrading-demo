@@ -6,6 +6,9 @@ import sqlite3
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+
+US_EASTERN = ZoneInfo("America/New_York")
 
 DB_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -34,8 +37,64 @@ def _parse_us_date(value: str | None) -> str | None:
     return None
 
 
-def halt_status(resumption_date: str | None, resumption_trade_time: str | None) -> str:
-    if (resumption_date or "").strip() or (resumption_trade_time or "").strip():
+def _parse_nasdaq_market_datetime(
+    date_str: str | None,
+    time_str: str | None,
+) -> datetime | None:
+    """Parse Nasdaq MM/DD/YYYY + HH:MM:SS into US/Eastern aware datetime."""
+    date_raw = (date_str or "").strip()
+    if not date_raw:
+        return None
+
+    parsed_date = None
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d"):
+        try:
+            parsed_date = datetime.strptime(date_raw, fmt).date()
+            break
+        except ValueError:
+            continue
+    if parsed_date is None:
+        return None
+
+    time_raw = (time_str or "").strip()
+    if not time_raw:
+        return None
+
+    clean = time_raw.split(".")[0]
+    parts = clean.split(":")
+    try:
+        hour = int(parts[0]) if parts else 0
+        minute = int(parts[1]) if len(parts) > 1 else 0
+        second = int(parts[2]) if len(parts) > 2 else 0
+    except ValueError:
+        return None
+
+    return datetime(
+        parsed_date.year,
+        parsed_date.month,
+        parsed_date.day,
+        hour,
+        minute,
+        second,
+        tzinfo=US_EASTERN,
+    )
+
+
+def _halt_recency_key(row: dict[str, Any]) -> tuple[str, str]:
+    day = str(row.get("halt_day") or row.get("halt_date") or "").strip()
+    time = str(row.get("halt_time") or "").strip()
+    return (day, time)
+
+
+def halt_status(
+    resumption_date: str | None,
+    resumption_trade_time: str | None,
+    *,
+    now: datetime | None = None,
+) -> str:
+    """NASDAQ marks resume with ResumptionTradeTime; quote-only rows are still halted."""
+    _ = (resumption_date, now)
+    if (resumption_trade_time or "").strip():
         return "resumed"
     return "halted"
 
@@ -339,7 +398,7 @@ class TradeHaltsStore:
                 if existing is None:
                     events.append("resumed" if status == "resumed" else "halted")
                 else:
-                    prev_status = existing["status"]
+                    prev_status = str(existing["status"] or "").lower()
                     if prev_status != "resumed" and status == "resumed":
                         events.append("resumed")
 
@@ -494,20 +553,17 @@ class TradeHaltsStore:
                 }
                 counts[symbol] = bucket
             bucket["halt_count"] = int(bucket["halt_count"]) + 1
-            if str(row.get("status") or "").lower() == "resumed":
+            row_status = str(row.get("status") or "halted").lower()
+            if row_status == "resumed":
                 bucket["resumed_count"] = int(bucket["resumed_count"]) + 1
             else:
                 bucket["halted_count"] = int(bucket["halted_count"]) + 1
-                bucket["last_status"] = "halted"
-            # Prefer freshest day / currently halted as last_status when mixed.
-            day = str(row.get("halt_day") or "")
-            prev_day = str(bucket.get("last_halt_day") or "")
-            if day >= prev_day:
-                bucket["last_halt_day"] = day
-                if str(row.get("status") or "").lower() != "resumed":
-                    bucket["last_status"] = "halted"
-                elif bucket["last_status"] != "halted":
-                    bucket["last_status"] = "resumed"
+            recency = _halt_recency_key(row)
+            prev_recency = bucket.get("_recency") or ("", "")
+            if recency >= prev_recency:
+                bucket["_recency"] = recency
+                bucket["last_halt_day"] = row.get("halt_day")
+                bucket["last_status"] = "resumed" if row_status == "resumed" else "halted"
                 if row.get("issue_name"):
                     bucket["issue_name"] = row.get("issue_name")
 
@@ -515,11 +571,14 @@ class TradeHaltsStore:
             counts.values(),
             key=lambda item: (
                 -int(item.get("halt_count") or 0),
-                -int(item.get("halted_count") or 0),
                 str(item.get("symbol") or ""),
             ),
         )
-        return ranked[: max(1, min(int(limit or 6), 20))]
+        for item in ranked:
+            item.pop("_recency", None)
+        active = [item for item in ranked if item.get("last_status") == "halted"]
+        pool = active if active else ranked
+        return pool[: max(1, min(int(limit or 6), 20))]
 
     def list_recent_halts(self, *, days: int = 2) -> list[dict[str, Any]]:
         """Return halt rows for the last N calendar days (inclusive of today)."""
@@ -624,31 +683,57 @@ class TradeHaltsStore:
         conn.close()
         return deleted
 
-    def purge_missing_ids(self, keep_ids: set[str]) -> dict[str, int]:
-        """Drop halt rows that are no longer present in the latest feed snapshot."""
+    def purge_missing_ids(self, keep_ids: set[str]) -> dict[str, Any]:
+        """Drop halt rows no longer in the feed; notify when an active halt clears."""
         conn = self._connect()
         existing = [row["id"] for row in conn.execute("SELECT id FROM trade_halts").fetchall()]
         stale_ids = [halt_id for halt_id in existing if halt_id not in keep_ids]
+        notifications: list[dict[str, Any]] = []
         notifications_deleted = 0
-        if stale_ids:
-            placeholders = ",".join("?" for _ in stale_ids)
-            cur = conn.execute(
-                f"DELETE FROM trade_halt_notifications WHERE halt_id IN ({placeholders})",
-                stale_ids,
-            )
-            notifications_deleted = int(cur.rowcount or 0)
-            cur = conn.execute(
-                f"DELETE FROM trade_halts WHERE id IN ({placeholders})",
-                stale_ids,
-            )
-            halts_deleted = int(cur.rowcount or 0)
-        else:
-            halts_deleted = 0
-        conn.commit()
-        conn.close()
+        halts_deleted = 0
+        try:
+            global_enabled = self.get_global_notifications_enabled(conn)
+            muted = self.muted_symbols(conn) if global_enabled else set()
+            now = _now_utc()
+
+            if stale_ids:
+                placeholders = ",".join("?" for _ in stale_ids)
+                stale_rows = conn.execute(
+                    f"SELECT * FROM trade_halts WHERE id IN ({placeholders})",
+                    stale_ids,
+                ).fetchall()
+                for row in stale_rows:
+                    symbol = str(row["symbol"] or "").strip().upper()
+                    if (
+                        global_enabled
+                        and symbol
+                        and symbol not in muted
+                        and str(row["status"] or "").lower() == "halted"
+                    ):
+                        payload = self._halt_payload(row)
+                        notification = self._insert_notification(
+                            conn,
+                            halt_id=str(row["id"]),
+                            symbol=symbol,
+                            event_type="resumed",
+                            payload=payload,
+                            created_at=now,
+                        )
+                        if notification:
+                            notifications.append(notification)
+
+                cur = conn.execute(
+                    f"DELETE FROM trade_halts WHERE id IN ({placeholders})",
+                    stale_ids,
+                )
+                halts_deleted = int(cur.rowcount or 0)
+            conn.commit()
+        finally:
+            conn.close()
         return {
             "halts_deleted": halts_deleted,
             "notifications_deleted": notifications_deleted,
+            "notifications": notifications,
         }
 
     def purge_older_than(self, keep_day: str | None = None) -> dict[str, int]:

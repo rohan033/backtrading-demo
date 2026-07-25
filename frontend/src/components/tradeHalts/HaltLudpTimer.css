@@ -1,0 +1,99 @@
+.halt-ludp-timer {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 108px;
+  color: #111;
+}
+
+.halt-ludp-timer--compact {
+  min-width: 0;
+  gap: 3px;
+}
+
+.halt-ludp-timer__meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.halt-ludp-timer__label {
+  font-variant-numeric: tabular-nums;
+  color: #111;
+}
+
+.halt-ludp-timer__cycle {
+  color: #4a5568;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.halt-ludp-timer__track {
+  height: 8px;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.halt-ludp-timer--compact .halt-ludp-timer__track {
+  height: 6px;
+}
+
+.halt-ludp-timer--pill {
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.halt-ludp-timer--pill .halt-ludp-timer__meta {
+  gap: 3px;
+  font-size: 10px;
+}
+
+.halt-ludp-timer--pill .halt-ludp-timer__label {
+  font-size: 10px;
+}
+
+.halt-ludp-timer--pill .halt-ludp-timer__cycle {
+  font-size: 9px;
+}
+
+.halt-ludp-timer--pill .halt-ludp-timer__track {
+  width: 54px;
+  height: 5px;
+}
+
+.halt-ludp-timer--pill .halt-ludp-timer__hint {
+  display: none;
+}
+
+.halt-ludp-timer__fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #f59e0b, #ea580c);
+  transition: width 0.25s linear;
+}
+
+.halt-ludp-timer__fill--gap {
+  background: linear-gradient(90deg, #94a3b8, #64748b);
+}
+
+.halt-ludp-timer__fill--urgent {
+  background: linear-gradient(90deg, #ef4444, #dc2626);
+}
+
+.halt-ludp-timer__hint {
+  font-size: 10px;
+  font-weight: 600;
+  color: #4a5568;
+  line-height: 1.2;
+}

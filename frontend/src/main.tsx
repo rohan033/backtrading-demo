@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 
 import { WatchlistStreamProvider } from './context/WatchlistStreamContext'
+import { TradeHaltsProvider } from './context/TradeHaltsContext'
 import MinimalShell from './layout/minimal/MinimalShell'
 import { PlatformToastHost } from './lib/platform-toast'
 
@@ -14,7 +15,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <BrowserRouter>
       <WatchlistStreamProvider sessionQueueOnly>
-        <MinimalShell />
+        <TradeHaltsProvider>
+          <MinimalShell />
+        </TradeHaltsProvider>
         <PlatformToastHost />
       </WatchlistStreamProvider>
     </BrowserRouter>

@@ -25,8 +25,10 @@ import EarningsMonitorBar from './EarningsMonitorBar'
 import MarketClockBar from './MarketClockBar'
 import TradeHaltNotificationsBar from './TradeHaltNotificationsBar'
 import { useUrlState, buildShellUrl } from './useUrlState'
+import HaltedSymbolDot from '../../components/tradeHalts/HaltedSymbolDot'
+import PinnedHaltHeaderBar from '../../components/tradeHalts/PinnedHaltHeaderBar'
 import { useWatchlistEarnings } from '../../hooks/useWatchlistEarnings'
-import { useTradeHaltNotifications } from '../../hooks/useTradeHaltNotifications'
+import { useTradeHalts } from '../../context/TradeHaltsContext'
 import type { WatchlistEarningsRef } from '../../lib/marketResearch'
 
 /* ─── types ─────────────────────────────────────────────── */
@@ -198,6 +200,7 @@ function MainPanel({
           <MarketClockBar />
         </div>
       </div>
+      <PinnedHaltHeaderBar />
       <div className="ms-body" style={{ padding: 0, overflow: 'hidden' }}>
         {tab === 'home' ? (
           <Home />
@@ -243,6 +246,7 @@ function WatchlistDrawerPanel({
   filterText: string
   onSelectSymbol: (watchlist: Watchlist, symboltoken: string) => void
 }) {
+  const { haltFor } = useTradeHalts()
   const rows = useMemo(() => {
     const seen = new Set<string>()
     const query = filterText.trim().toLowerCase()
@@ -313,7 +317,10 @@ function WatchlistDrawerPanel({
           key={row.key}
           onClick={() => onSelectSymbol(row.watchlist, row.symboltoken)}
         >
-          <span className="ms-side-symbol__name">{row.label}</span>
+          <span className="ms-side-symbol__name">
+            {row.label}
+            <HaltedSymbolDot halt={haltFor(row.label)} className="halt-dot--inline" />
+          </span>
           <span className="ms-side-symbol__price">{row.price}</span>
           <span className={`ms-side-symbol__change ${row.c1mUp ? 'wt-up' : 'wt-down'}`}>
             {row.c1m}
@@ -548,7 +555,7 @@ export default function MinimalShell() {
   const [clearNewsError, setClearNewsError] = useState('')
   const [rightCollapsed, setRightCollapsed] = useState(() => loadStoredBool(LEFT_COLLAPSED_KEY))
   const { groups: newsGroups, clearNotifications } = useNewsNotifications()
-  const tradeHalts = useTradeHaltNotifications()
+  const tradeHalts = useTradeHalts()
   const handleClearNewsUpdates = () => {
     setClearNewsError('')
     setClearingNewsUpdates(true)

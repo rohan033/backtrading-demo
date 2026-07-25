@@ -400,7 +400,14 @@
 .wt-sym-icon-letter { font-size: 9px; font-weight: 700; color: #404040; }
 .wt-symbol-logo { width: 100%; height: 100%; object-fit: cover; display: block; }
 .wt-symbol-logo--large { width: 52px; height: 52px; border-radius: 12px; object-fit: contain; }
-.wt-sym-ticker { font-size: 11.5px; font-weight: 700; color: #202020; }
+.wt-sym-ticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #202020;
+}
 .wt-sym-name-small { font-size: 9.5px; color: #AAAAAA; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .wt-up   { color: #1A8C4A; }
@@ -529,7 +536,16 @@
   display: flex; align-items: center; justify-content: center;
 }
 .wt-detail-title-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.wt-detail-ticker { font-size: 13px; font-weight: 700; color: #888; letter-spacing: 0.06em; text-transform: uppercase; }
+.wt-detail-ticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #888;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
 .wt-detail-fullname { font-size: 10px; color: #4a5568; }
 .wt-detail-id {
   font-size: 11px;

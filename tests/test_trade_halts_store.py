@@ -55,7 +55,8 @@ def test_parse_trade_halts_rss():
 
 def test_halt_status():
     assert halt_status(None, None) == "halted"
-    assert halt_status("07/21/2026", None) == "resumed"
+    assert halt_status("07/21/2026", None) == "halted"
+    assert halt_status("07/21/2026", "09:00:00") == "resumed"
     assert halt_status(None, "09:00:00") == "resumed"
 
 
@@ -75,22 +76,27 @@ def test_upsert_creates_halted_and_resumed_notifications():
         assert first[0]["event_type"] == "halted"
         assert first[0]["symbol"] == "CCRN"
 
-        # Same payload again → no duplicate notification
         assert store.upsert_halts([halted]) == []
+
+        scheduled = {
+            **halted,
+            "resumption_date": "07/21/2026",
+            "resumption_quote_time": "08:55:00",
+        }
+        second = store.upsert_halts([scheduled])
+        assert second == []
+        assert store.list_halts_for_day("2026-07-20")[0]["status"] == "halted"
 
         resumed = {
             **halted,
             "resumption_date": "07/21/2026",
+            "resumption_quote_time": "08:55:00",
             "resumption_trade_time": "09:00:00",
         }
-        second = store.upsert_halts([resumed])
-        assert len(second) == 1
-        assert second[0]["event_type"] == "resumed"
-
-        day_rows = store.list_halts_for_day("2026-07-20")
-        assert len(day_rows) == 1
-        assert day_rows[0]["status"] == "resumed"
-        assert len(store.active_notifications()) == 2
+        third = store.upsert_halts([resumed])
+        assert len(third) == 1
+        assert third[0]["event_type"] == "resumed"
+        assert store.list_halts_for_day("2026-07-20")[0]["status"] == "resumed"
 
         already_resumed = store.upsert_halts(
             [
@@ -100,6 +106,7 @@ def test_upsert_creates_halted_and_resumed_notifications():
                     "halt_time": "19:50:00.000",
                     "reason_code": "T3",
                     "resumption_date": "07/21/2026",
+                    "resumption_quote_time": "08:55:00",
                     "resumption_trade_time": "09:00:00",
                 }
             ]
@@ -137,7 +144,6 @@ def test_dismiss_and_purge_older():
         assert store.dismiss_notification(notes[0]["id"]) is True
         assert len(store.active_notifications()) == 1
 
-        # Poller keeps today + yesterday; purge anything older than yesterday.
         keep_from = (today - timedelta(days=1)).isoformat()
         purged = store.purge_older_than(keep_from)
         assert purged["halts_deleted"] == 1
@@ -180,7 +186,6 @@ def test_notify_pref_mutes_new_notifications():
                     "halt_date": "07/20/2026",
                     "halt_time": "10:00:00",
                     "reason_code": "T1",
-                    "resumption_date": "07/21/2026",
                     "resumption_trade_time": "09:00:00",
                 }
             ]
@@ -200,6 +205,8 @@ def test_purge_missing_ids_keeps_feed_snapshot():
         )
         purged = store.purge_missing_ids({"KEEP|07/20/2026|10:00:00"})
         assert purged["halts_deleted"] == 1
+        assert len(purged["notifications"]) == 1
+        assert purged["notifications"][0]["symbol"] == "DROP"
         assert [row["symbol"] for row in store.list_all_halts()] == ["KEEP"]
 
 
@@ -223,32 +230,20 @@ def test_global_notifications_disable_blocks_all():
         assert len(store.list_all_halts()) == 2
 
         store.set_global_notifications_enabled(True)
-        resumed = store.upsert_halts(
-            [
-                {
-                    "symbol": "BBB",
-                    "halt_date": "07/20/2026",
-                    "halt_time": "11:00:00",
-                    "resumption_date": "07/21/2026",
-                    "resumption_trade_time": "09:00:00",
-                }
-            ]
-        )
+        purged = store.purge_missing_ids({"BBB|07/20/2026|11:00:00"})
+        resumed = [n for n in purged["notifications"] if n["symbol"] == "AAA"]
         assert len(resumed) == 1
         assert resumed[0]["event_type"] == "resumed"
 
 
 def test_hot_symbols_ranks_ludp_repeats():
     rows = [
-        {"symbol": "AAA", "reason_code": "LUDP", "status": "halted", "halt_day": "2026-07-21"},
-        {"symbol": "AAA", "reason_code": "LUDP", "status": "resumed", "halt_day": "2026-07-21"},
-        {"symbol": "AAA", "reason_code": "LUDP", "status": "halted", "halt_day": "2026-07-20"},
-        {"symbol": "BBB", "reason_code": "LUDP", "status": "halted", "halt_day": "2026-07-21"},
-        {"symbol": "CCC", "reason_code": "T12", "status": "halted", "halt_day": "2026-07-21"},
-        {"symbol": "CCC", "reason_code": "T12", "status": "halted", "halt_day": "2026-07-20"},
+        {"symbol": "AAA", "reason_code": "LUDP", "status": "resumed", "halt_day": "2026-07-24", "halt_time": "10:00:00"},
+        {"symbol": "AAA", "reason_code": "LUDP", "status": "halted", "halt_day": "2026-07-24", "halt_time": "11:00:00"},
+        {"symbol": "BBB", "reason_code": "LUDP", "status": "resumed", "halt_day": "2026-07-24", "halt_time": "10:30:00"},
+        {"symbol": "CCC", "reason_code": "T12", "status": "halted", "halt_day": "2026-07-24", "halt_time": "09:00:00"},
     ]
     hot = TradeHaltsStore.hot_symbols(rows, reason_code="LUDP", limit=6)
-    assert [item["symbol"] for item in hot] == ["AAA", "BBB"]
-    assert hot[0]["halt_count"] == 3
-    assert hot[1]["halt_count"] == 1
-
+    assert [item["symbol"] for item in hot] == ["AAA"]
+    assert hot[0]["halt_count"] == 2
+    assert hot[0]["last_status"] == "halted"

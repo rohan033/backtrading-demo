@@ -58,7 +58,7 @@ export function useTradeHaltNotifications(options: UseTradeHaltNotificationsOpti
 
   const refreshDayHalts = useCallback(async () => {
     const result = await fetchTradeHaltsForDay(day ?? null)
-    setHalts(result.data.filter(item => item.status === 'halted'))
+    setHalts(result.data)
     setHaltsDay(result.day)
   }, [day])
 
@@ -148,7 +148,7 @@ export function useTradeHaltNotifications(options: UseTradeHaltNotificationsOpti
   return useMemo(
     () => ({
       notifications: notificationsEnabled ? notifications : [],
-      halts: notificationsEnabled ? halts : [],
+      halts,
       day: haltsDay,
       notificationsEnabled,
       dismiss,

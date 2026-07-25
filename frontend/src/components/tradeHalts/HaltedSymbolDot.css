@@ -1,0 +1,16 @@
+.halt-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #dc2626;
+  border: 1px solid #b91c1c;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85);
+  flex-shrink: 0;
+  cursor: help;
+}
+
+.halt-dot--inline {
+  vertical-align: middle;
+  margin-left: 4px;
+}

@@ -399,6 +399,9 @@ a.ms-pill {
 }
 
 .ms-side-symbol__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   min-width: 0;
   overflow: hidden;
   font-size: 11px;

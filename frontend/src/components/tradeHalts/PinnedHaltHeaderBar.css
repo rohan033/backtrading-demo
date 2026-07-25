@@ -1,0 +1,15 @@
+.ms-pinned-halt-strip {
+  padding: 5px 10px;
+  border-bottom: 1.5px solid #f59e0b;
+  background: #fff7ed;
+  flex-shrink: 0;
+}
+
+.ms-pinned-halt-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}

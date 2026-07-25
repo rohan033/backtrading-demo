@@ -20,6 +20,9 @@ import {
   setTradeHaltNotifyEnabled,
   type TradeHalt,
 } from '../lib/tradeHalts'
+import { currentlyHaltedHalts } from '../lib/tradeHaltsUi'
+import HaltLudpTimer from '../components/tradeHalts/HaltLudpTimer'
+import { MAX_PINNED_HALTS, useTradeHalts } from '../context/TradeHaltsContext'
 import './SettingsPage.css'
 
 type SettingsSection = 'order-activity' | 'halts'
@@ -294,6 +297,7 @@ function formatHaltWhen(dateValue: string | null | undefined, timeValue: string 
 }
 
 function HaltsPanel() {
+  const { isPinnedHalt, togglePinnedHalt, pinnedHalts } = useTradeHalts()
   const [dayFilter, setDayFilter] = useState<'all' | string>('all')
   const [halts, setHalts] = useState<TradeHalt[]>([])
   const [notificationsEnabled, setNotificationsEnabled] = useState(true)
@@ -397,6 +401,14 @@ function HaltsPanel() {
   }
 
   const hotSymbols = useMemo(() => rankHotHaltSymbols(halts, 6), [halts])
+  const tableHalts = useMemo(() => currentlyHaltedHalts(halts), [halts])
+  const activeHaltBySymbol = useMemo(() => {
+    const map = new Map<string, TradeHalt>()
+    for (const halt of tableHalts) {
+      map.set(halt.symbol.toUpperCase(), halt)
+    }
+    return map
+  }, [tableHalts])
 
   return (
     <section className="set-content" aria-labelledby="trade-halts-title">
@@ -494,7 +506,9 @@ function HaltsPanel() {
           ) : !hotSymbols.length ? (
             <div className="set-halt-ticker__empty">No LUDP repeats yet</div>
           ) : (
-            hotSymbols.map(item => (
+            hotSymbols.map(item => {
+              const activeHalt = activeHaltBySymbol.get(item.symbol.toUpperCase())
+              return (
               <article
                 key={item.symbol}
                 className={`set-halt-ticker-card set-halt-ticker-card--${
@@ -510,8 +524,10 @@ function HaltsPanel() {
                 <em className="set-halt-ticker-card__status">
                   {item.last_status === 'resumed' ? 'Resumed' : 'Halted'}
                 </em>
+                {activeHalt ? <HaltLudpTimer halt={activeHalt} compact /> : null}
               </article>
-            ))
+              )
+            })
           )}
         </div>
       </div>
@@ -524,6 +540,11 @@ function HaltsPanel() {
           <div className="set-empty">
             <strong>No LUDP trade halts stored</strong>
             <p>Use Poll feed to refresh from NASDAQ, or pick All (feed) / another day.</p>
+          </div>
+        ) : !tableHalts.length ? (
+          <div className="set-empty">
+            <strong>No active LUDP halts right now</strong>
+            <p>NASDAQ shows a halt until Resumption Trade Time is published. Historical rows are kept in the feed.</p>
           </div>
         ) : (
           <div className="set-table-scroll">
@@ -547,6 +568,9 @@ function HaltsPanel() {
                       Halted
                     </th>
                     <th className="set-th" scope="col">
+                      5m window
+                    </th>
+                    <th className="set-th" scope="col">
                       Resumption
                     </th>
                     <th className="set-th" scope="col">
@@ -555,10 +579,13 @@ function HaltsPanel() {
                     <th className="set-th" scope="col">
                       Notify
                     </th>
+                    <th className="set-th" scope="col">
+                      Pin
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {halts.map(halt => {
+                  {tableHalts.map(halt => {
                     const notifyOn = halt.notify_enabled !== false
                     const busy = togglingSymbol === halt.symbol
                     return (
@@ -579,6 +606,9 @@ function HaltsPanel() {
                         <td className="set-td">{halt.market || '—'}</td>
                         <td className="set-td">
                           {formatHaltWhen(halt.halt_date, halt.halt_time)}
+                        </td>
+                        <td className="set-td">
+                          <HaltLudpTimer halt={halt} />
                         </td>
                         <td className="set-td">
                           {formatHaltWhen(halt.resumption_date, halt.resumption_trade_time)}
@@ -611,6 +641,25 @@ function HaltsPanel() {
                             )}
                             <span>{notifyOn ? 'On' : 'Off'}</span>
                           </button>
+                        </td>
+                        <td className="set-td">
+                          <label
+                            className="set-pin-check"
+                            title={`Show in top header on all pages (max ${MAX_PINNED_HALTS})`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isPinnedHalt(halt.id)}
+                              disabled={
+                                !isPinnedHalt(halt.id) && pinnedHalts.length >= MAX_PINNED_HALTS
+                              }
+                              aria-label={`Pin ${halt.symbol} to header`}
+                              onChange={event => {
+                                togglePinnedHalt(halt, event.target.checked)
+                              }}
+                            />
+                            <span>Header</span>
+                          </label>
                         </td>
                       </tr>
                     )

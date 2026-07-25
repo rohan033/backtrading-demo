@@ -132,6 +132,7 @@ class TradeHaltsPoller:
             if str(entry.get("symbol") or "").strip() and str(entry.get("halt_date") or "").strip()
         }
         purged = self.store.purge_missing_ids(keep_ids)
+        notifications.extend(purged.get("notifications") or [])
         if purged["halts_deleted"]:
             log.info(
                 "[HALTS] Removed %s stale halt row(s) no longer in feed",

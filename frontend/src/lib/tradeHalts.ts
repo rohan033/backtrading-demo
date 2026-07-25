@@ -80,7 +80,7 @@ export async function deleteOlderTradeHalts(keepDay?: string | null): Promise<{
 
 /** Rank symbols by halt frequency from an already-loaded list. */
 export function rankHotHaltSymbols(halts: TradeHalt[], limit = 6): HotHaltSymbol[] {
-  const counts = new Map<string, HotHaltSymbol>()
+  const counts = new Map<string, HotHaltSymbol & { _recency: number }>()
   for (const row of halts) {
     const symbol = (row.symbol || '').trim().toUpperCase()
     if (!symbol) continue
@@ -95,36 +95,54 @@ export function rankHotHaltSymbols(halts: TradeHalt[], limit = 6): HotHaltSymbol
         last_status: row.status || 'halted',
         last_halt_day: row.halt_day,
         reason_code: row.reason_code || undefined,
+        _recency: haltRecencyScore(row),
       }
       counts.set(symbol, bucket)
     }
     bucket.halt_count += 1
-    if (String(row.status).toLowerCase() === 'resumed') {
+    const rowStatus = String(row.status || '').toLowerCase()
+    if (rowStatus === 'resumed') {
       bucket.resumed_count += 1
     } else {
       bucket.halted_count += 1
-      bucket.last_status = 'halted'
     }
-    const day = row.halt_day || ''
-    const prev = bucket.last_halt_day || ''
-    if (day >= prev) {
-      bucket.last_halt_day = day
-      if (String(row.status).toLowerCase() !== 'resumed') {
-        bucket.last_status = 'halted'
-      } else if (bucket.last_status !== 'halted') {
-        bucket.last_status = 'resumed'
-      }
+    const recency = haltRecencyScore(row)
+    if (recency >= bucket._recency) {
+      bucket._recency = recency
+      bucket.last_halt_day = row.halt_day
+      bucket.last_status = rowStatus === 'resumed' ? 'resumed' : 'halted'
       if (row.issue_name) bucket.issue_name = row.issue_name
     }
   }
-  return [...counts.values()]
+  const ranked = [...counts.values()]
     .sort(
       (a, b) =>
         b.halt_count - a.halt_count ||
-        b.halted_count - a.halted_count ||
         a.symbol.localeCompare(b.symbol),
     )
+  const active = ranked.filter(item => item.last_status === 'halted')
+  const pool = active.length ? active : ranked
+  return pool
     .slice(0, Math.max(1, Math.min(limit, 20)))
+    .map(({ _recency, ...item }) => item)
+}
+
+function haltRecencyScore(row: TradeHalt): number {
+  const day = String(row.halt_day || row.halt_date || '').trim()
+  const match = String(row.halt_date || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  let ms = day ? Date.parse(`${day}T00:00:00Z`) || 0 : 0
+  if (match) {
+    const month = Number(match[1])
+    const dayNum = Number(match[2])
+    const year = Number(match[3])
+    const clean = String(row.halt_time || '00:00:00').trim().split('.')[0]
+    const [hh = '0', mm = '0', ss = '0'] = clean.split(':')
+    ms = Math.max(
+      ms,
+      new Date(year, month - 1, dayNum, Number(hh) || 0, Number(mm) || 0, Number(ss) || 0).getTime(),
+    )
+  }
+  return ms
 }
 
 export async function fetchTradeHaltNotifySettings(): Promise<{
