@@ -6,7 +6,11 @@ import logging
 import re
 from typing import Any
 
-from control_plane.instrument_resolve import pick_best_match, search_instruments
+from control_plane.instrument_resolve import (
+    pick_best_match,
+    resolve_etoro_instrument_by_id,
+    search_instruments,
+)
 from control_plane.screener_store import get_screener_store
 from control_plane.watchlist_store import get_watchlist_store
 
@@ -42,6 +46,7 @@ async def sync_screener_to_watchlist(
     *,
     tickers: list[str] | None = None,
     account_env: str = "demo",
+    instrument_overrides: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Add screener rows (selected or all) to `<name> Watchlist` on eToro.
 
@@ -53,6 +58,11 @@ async def sync_screener_to_watchlist(
         raise ValueError("Screener not found")
 
     env = "demo" if (account_env or "demo").lower() == "demo" else "live"
+    overrides = {
+        str(key).strip().upper(): int(value)
+        for key, value in (instrument_overrides or {}).items()
+        if str(key).strip() and value is not None
+    }
     results = screener.get("results") or []
     if tickers is not None:
         wanted = {t.strip().upper() for t in tickers if t and t.strip()}
@@ -114,15 +124,47 @@ async def sync_screener_to_watchlist(
             )
             continue
 
-        try:
-            match = await _resolve_etoro_row(symbol, account_env=env)
-        except Exception as exc:
-            log.debug("screener etoro resolve failed %s: %s", symbol, exc)
-            summary["failed"] += 1
-            summary["items"].append(
-                {"ticker": ticker, "symbol": symbol, "status": "failed", "error": str(exc)}
-            )
-            continue
+        override_id = (
+            overrides.get(ticker.upper())
+            or overrides.get(symbol.upper())
+        )
+        match: dict[str, Any] | None = None
+
+        if override_id is not None:
+            try:
+                match = await resolve_etoro_instrument_by_id(
+                    override_id,
+                    account_env=env,
+                    fallback_symbol=symbol,
+                )
+            except Exception as exc:
+                log.debug(
+                    "screener etoro instrument fetch failed %s id=%s: %s",
+                    symbol,
+                    override_id,
+                    exc,
+                )
+                summary["failed"] += 1
+                summary["items"].append(
+                    {
+                        "ticker": ticker,
+                        "symbol": symbol,
+                        "status": "failed",
+                        "error": str(exc),
+                        "instrument_id": override_id,
+                    }
+                )
+                continue
+        else:
+            try:
+                match = await _resolve_etoro_row(symbol, account_env=env)
+            except Exception as exc:
+                log.debug("screener etoro resolve failed %s: %s", symbol, exc)
+                summary["failed"] += 1
+                summary["items"].append(
+                    {"ticker": ticker, "symbol": symbol, "status": "failed", "error": str(exc)}
+                )
+                continue
 
         if not match:
             summary["unmatched"] += 1
@@ -152,24 +194,42 @@ async def sync_screener_to_watchlist(
             continue
 
         raw_metadata = match if isinstance(match, dict) else None
+        from brokers.etoro.adapters.portfolio import (
+            coalesce_etoro_display_name,
+            coalesce_etoro_tradingsymbol,
+        )
+
+        resolved_symbol = coalesce_etoro_tradingsymbol(match, fallback=symbol)
+        display_name = coalesce_etoro_display_name(match, resolved_symbol)
         wl_store.add_symbol(
             watchlist["id"],
             symboltoken=token,
-            tradingsymbol=str(match.get("tradingsymbol") or symbol),
+            tradingsymbol=resolved_symbol,
             exchange=str(match.get("exchange") or "ETORO"),
-            symbol=str(match.get("symbol") or symbol),
+            symbol=display_name,
             internal_asset_class_name=match.get("internal_asset_class_name")
             or match.get("internalAssetClassName"),
             instrument_display_name=(
                 match.get("instrument_display_name")
                 or match.get("instrumentDisplayName")
                 or match.get("displayName")
+                or display_name
             ),
             logo35x35=match.get("logo35x35"),
             logo50x50=match.get("logo50x50"),
             logo150x150=match.get("logo150x150"),
             raw_metadata=raw_metadata,
         )
+        try:
+            from control_plane.etoro_db import get_etoro_db
+
+            get_etoro_db().upsert_from_search_row(
+                match,
+                account_env=env,
+                source="screener" if override_id is not None else "api",
+            )
+        except Exception:
+            pass
         existing_tokens.add(token)
         existing_symbols.add(symbol)
         summary["added"] += 1

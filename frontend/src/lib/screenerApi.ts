@@ -46,9 +46,16 @@ export type ScreenerResultRow = {
   ticker: string
   name: string
   cells: Record<string, unknown>
+  rank?: number
+  rank_jump?: number | null
+  rank_jump_day?: number | null
 }
 
-export type ScreenerSourceType = 'tradingview' | 'stock_catalyst_nyse_pm' | string
+export type ScreenerSourceType =
+  | 'tradingview'
+  | 'stock_catalyst_nyse_pm'
+  | 'stock_catalyst_nyse_ah'
+  | string
 
 export type Screener = {
   id: string
@@ -223,7 +230,11 @@ export async function refreshScreener(id: string): Promise<Screener> {
 
 export async function syncScreenerWatchlist(
   id: string,
-  payload?: { tickers?: string[]; account_env?: string },
+  payload?: {
+    tickers?: string[]
+    account_env?: string
+    instrument_overrides?: Record<string, number>
+  },
 ): Promise<{ screener: Screener; summary: WatchlistSyncSummary }> {
   return parseJson(
     await fetch(`${API}/${id}/watchlist`, {

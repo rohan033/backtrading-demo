@@ -41,6 +41,43 @@
   margin-right: 4px;
 }
 
+.scr-toolbar-layout {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--scr-muted);
+  flex-shrink: 0;
+}
+
+.scr-toolbar-layout__label {
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.scr-toolbar-layout .scr-view-toggle {
+  flex-shrink: 0;
+}
+
+.scr-toolbar--compact {
+  min-height: 34px;
+}
+
+.scr-toolbar-active-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.scr-toolbar-active-select__input {
+  min-width: 0;
+  flex: 1;
+  max-width: 420px;
+}
+
 .scr-toolbar-spacer {
   flex: 1;
   min-width: 8px;
@@ -419,6 +456,35 @@
   color: var(--scr-muted);
 }
 
+.scr-refresh-cluster {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  min-width: 0;
+}
+
+.scr-refresh-cluster__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.scr-refresh-cluster__bar {
+  height: 3px;
+  border-radius: 999px;
+  background: #e8e8e8;
+  overflow: hidden;
+}
+
+.scr-refresh-cluster__bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #c9a227 0%, #e8c547 100%);
+  transition: width 0.2s linear;
+  border-radius: 999px;
+}
+
 .scr-meta strong {
   color: var(--scr-ink);
   font-weight: 700;
@@ -776,6 +842,73 @@
   background: var(--scr-down-bg);
 }
 
+.scr-watch-manual {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+.scr-watch-manual--row {
+  align-items: flex-start;
+}
+
+.scr-watch-manual__label {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--scr-down);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.scr-watch-manual__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.scr-watch-manual__input {
+  width: 88px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1.5px solid var(--scr-border);
+  border-radius: 4px;
+  background: #fff;
+  color: #111;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color-scheme: light;
+}
+
+.scr-watch-manual__input:focus {
+  outline: none;
+  border-color: #4a5568;
+}
+
+.scr-watch-manual__fetch {
+  height: 22px;
+  padding: 0 8px;
+  border: 1.5px solid var(--scr-border);
+  border-radius: 4px;
+  background: var(--scr-yellow);
+  color: var(--scr-ink);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.scr-watch-manual__fetch:hover:not(:disabled) {
+  background: var(--scr-yellow-deep);
+}
+
+.scr-watch-manual__fetch:disabled,
+.scr-watch-manual__input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .scr-pagination {
   display: flex;
   align-items: center;
@@ -1096,6 +1229,69 @@ body.scr-resizing * {
   background: #f6f8fa;
 }
 
+.scr-card__header:has(.scr-watch-manual) {
+  align-items: flex-start;
+  min-height: 0;
+}
+
+.scr-card__header-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.scr-card__header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.scr-rank {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.scr-rank__num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #eef2f7;
+  border: 1px solid #d0d7de;
+  color: #111;
+  font-size: 10px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.scr-rank__jump {
+  font-size: 10px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.scr-rank__jump--up {
+  color: var(--scr-up);
+}
+
+.scr-rank__jump--down {
+  color: var(--scr-down);
+}
+
+.scr-th--rank,
+.scr-td--rank {
+  width: 72px;
+  white-space: nowrap;
+}
+
 .scr-card__ticker-link {
   color: #135f99;
   font-size: 14px;
@@ -1180,12 +1376,111 @@ body.scr-resizing * {
   border-color: transparent;
 }
 
+.scr-card__hero-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scr-card__hero-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+}
+
+.scr-card__hero-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scr-card__hero-prev {
+  font-size: 11px;
+  font-weight: 600;
+  color: #4a5568;
+  font-variant-numeric: tabular-nums;
+}
+
+.scr-pct-arrow {
+  font-size: 1.35rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.scr-pct-arrow--up {
+  color: var(--scr-up);
+}
+
+.scr-pct-arrow--down {
+  color: var(--scr-down);
+}
+
+.scr-pct-arrow--flat {
+  color: var(--scr-muted);
+}
+
 .scr-card__hero-label {
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--scr-muted);
+}
+
+.scr-card__live-inline {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.scr-card__live-price {
+  font-size: clamp(1.35rem, 3.2vw, 1.85rem);
+  font-weight: 800;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  color: #111;
+  font-variant-numeric: tabular-nums;
+}
+
+.scr-card__live-changes {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.scr-card__live-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 18px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid #d0d7de;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.scr-card__live-chip.scr-chg--up {
+  color: var(--scr-up);
+  background: var(--scr-up-bg);
+  border-color: var(--scr-up-border);
+}
+
+.scr-card__live-chip.scr-chg--down {
+  color: var(--scr-down);
+  background: var(--scr-down-bg);
+  border-color: var(--scr-down-border);
+}
+
+.scr-card__live-chip.scr-chg--flat {
+  color: var(--scr-muted);
+  background: #f3f4f6;
+  border-color: #d0d7de;
 }
 
 .scr-card__foot {
@@ -1261,6 +1556,7 @@ body.scr-resizing * {
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .scr-source-card .scr-card__hero {

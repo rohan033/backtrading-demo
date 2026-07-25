@@ -19,7 +19,7 @@ from control_plane.screener_query import (
 from control_plane.screener_store import get_screener_store
 from control_plane.screener_watchlist_sync import sync_screener_to_watchlist
 from control_plane.stock_catalyst_screener import (
-    STOCK_CATALYST_SOURCE_TYPE,
+    STOCK_CATALYST_SOURCE_TYPES,
     run_stock_catalyst_screener,
 )
 
@@ -54,6 +54,7 @@ class GenerateScreenerRequest(BaseModel):
 class SyncWatchlistRequest(BaseModel):
     tickers: list[str] | None = None
     account_env: str = Field(default="demo")
+    instrument_overrides: dict[str, int] | None = None
 
 
 def _http_query_error(exc: ScreenerQueryError) -> HTTPException:
@@ -214,7 +215,7 @@ async def refresh_screener(screener_id: str):
     store.set_refresh_status(screener_id, "running", error=None)
     try:
         source_type = screener.get("source_type") or "tradingview"
-        if source_type == STOCK_CATALYST_SOURCE_TYPE:
+        if source_type in STOCK_CATALYST_SOURCE_TYPES:
             total, rows, _columns = await asyncio.to_thread(
                 run_stock_catalyst_screener,
                 screener.get("source_url") or None,
@@ -247,6 +248,7 @@ async def sync_watchlist(screener_id: str, req: SyncWatchlistRequest):
             screener_id,
             tickers=req.tickers,
             account_env=req.account_env,
+            instrument_overrides=req.instrument_overrides,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { YahooExtendedQuoteHero } from '../../components/market/YahooExtendedQuoteHero'
+import { WithPerCardYahoo } from '../../components/market/WithPerCardYahoo'
+import { useTradeHalts } from '../../context/TradeHaltsContext'
+import { useWatchlistStream } from '../../context/WatchlistStreamContext'
+import HaltedSymbolDot from '../../components/tradeHalts/HaltedSymbolDot'
 import {
   createScreener,
   deleteScreener,
@@ -35,8 +40,19 @@ import {
   tickerSymbol,
   yahooFinanceUrl,
 } from '../../lib/screenerDefinition'
+import { getUsMarketSession } from '../../lib/marketClock'
+import { YAHOO_QUOTE_STAGGER_MS } from '../../lib/yahooFinanceApi'
 import { showPlatformToast } from '../../lib/platform-toast'
 import { safeSetItem } from '../../lib/safeStorage'
+import { formatBrokerMoney, formatBrokerSignedMoney } from '../../lib/currency'
+import {
+  formatWindowChangePct,
+  priceAtOrBefore,
+  windowChangeTone,
+} from '../../lib/watchlistChangeColumns'
+import { defaultAccountEnv } from '../../lib/watchlistBrokers'
+import { resolveWatchlistTickKey } from '../../lib/watchlistFeedReuse'
+import type { Watchlist } from '../../lib/watchlists'
 import { useUrlState } from '../../layout/minimal/useUrlState'
 import './Screener.css'
 
@@ -44,6 +60,7 @@ type EditorMode = 'filters' | 'dsl' | 'ai'
 type SortState = { key: string; dir: 'asc' | 'desc' } | null
 type RowSyncStatus = Record<string, 'adding' | 'added' | 'already_present' | 'unmatched' | 'failed'>
 type ResultsViewMode = 'table' | 'cards'
+type HeaderLayout = 'full' | 'compact'
 
 const EDITOR_WIDTH_KEY = 'screener-editor-width-v1'
 const VIEW_MODE_KEY = 'screener-view-mode-v1'
@@ -68,7 +85,14 @@ const PAGE_SIZES = [10, 20, 50] as const
 const PRESET_REFRESH_SECONDS = [10, 15, 30, 60, 120, 300] as const
 const MIN_REFRESH_SECONDS = 10
 const MAX_REFRESH_SECONDS = 3600
-const STOCK_CATALYST_SOURCE = 'stock_catalyst_nyse_pm'
+const STOCK_CATALYST_SOURCES = new Set([
+  'stock_catalyst_nyse_pm',
+  'stock_catalyst_nyse_ah',
+])
+
+function isStockCatalystSource(sourceType?: string | null): boolean {
+  return Boolean(sourceType && STOCK_CATALYST_SOURCES.has(sourceType))
+}
 const STOCK_CATALYST_FIELDS: ScreenerField[] = [
   { key: 'mover_direction', label: 'Mover', type: 'text', ops: [] },
   { key: 'change_pct', label: 'Change %', type: 'percent', ops: [] },
@@ -221,6 +245,231 @@ function watchlistButtonLabel(status: RowSyncStatus[string] | undefined): string
   return 'Add'
 }
 
+type ScreenerWatchlistControlProps = {
+  ticker: string
+  status: RowSyncStatus[string] | undefined
+  layout: 'row' | 'card'
+  instrumentDraft: string
+  onInstrumentDraftChange: (value: string) => void
+  onAdd: () => void
+  onFetchInstrument: () => void
+}
+
+function parsePercentValue(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw
+  const text = String(raw ?? '').trim().replace(/%/g, '')
+  if (!text) return null
+  const n = Number(text)
+  return Number.isFinite(n) ? n : null
+}
+
+type ScreenerLiveFeed = {
+  ltp: number
+  c5mPct: number | null
+  c5mAbs: number | null
+}
+
+function formatEtoroLivePrice(value: number): string {
+  if (!Number.isFinite(value)) return '—'
+  const digits = value < 1 ? 4 : value < 10 ? 3 : 2
+  return formatBrokerMoney('etoro', value, digits)
+}
+
+function formatEtoroLiveAbs(value: number | null): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  const digits = Math.abs(value) < 1 ? 4 : Math.abs(value) < 10 ? 3 : 2
+  return formatBrokerSignedMoney('etoro', value, digits)
+}
+
+function resolveEtoroLiveTickKey(
+  watchlists: Watchlist[],
+  symbol: string,
+  preferredEnv: 'live' | 'demo',
+): string | null {
+  const primary = resolveWatchlistTickKey(watchlists, {
+    broker: 'etoro',
+    account_env: preferredEnv,
+    symbol,
+  })
+  if (primary) return primary
+  const altEnv = preferredEnv === 'live' ? 'demo' : 'live'
+  return resolveWatchlistTickKey(watchlists, {
+    broker: 'etoro',
+    account_env: altEnv,
+    symbol,
+  })
+}
+
+function ScreenerCardLiveInline({ feed }: { feed: ScreenerLiveFeed }) {
+  const pctTone = windowChangeTone(feed.c5mPct)
+  const absClass = feed.c5mAbs == null
+    ? 'flat'
+    : feed.c5mAbs > 0
+      ? 'up'
+      : feed.c5mAbs < 0
+        ? 'down'
+        : 'flat'
+
+  return (
+    <div className="scr-card__live-inline" title="eToro live · shared watchlist feed">
+      <span className="scr-card__live-price">{formatEtoroLivePrice(feed.ltp)}</span>
+      <span className="scr-card__live-changes">
+        <span
+          className={`scr-card__live-chip scr-chg scr-chg--${pctTone === 'none' ? 'flat' : pctTone}`}
+          title="5-minute % change"
+        >
+          {formatWindowChangePct(feed.c5mPct)}
+        </span>
+        <span
+          className={`scr-card__live-chip scr-chg scr-chg--${absClass}`}
+          title="5-minute absolute change"
+        >
+          {formatEtoroLiveAbs(feed.c5mAbs)}
+        </span>
+      </span>
+    </div>
+  )
+}
+
+function ScreenerCardHero({
+  raw,
+  label,
+  previousPct,
+  liveFeed,
+}: {
+  raw: unknown
+  label: string
+  previousPct?: number | null
+  liveFeed?: ScreenerLiveFeed | null
+}) {
+  const current = parsePercentValue(raw)
+  const formatted = formatScreenerNumber(raw, 'percent')
+  const prevFormatted = previousPct != null ? formatScreenerNumber(previousPct, 'percent') : null
+  let arrow: 'up' | 'down' | 'flat' | null = null
+  if (current != null && previousPct != null) {
+    if (current > previousPct) arrow = 'up'
+    else if (current < previousPct) arrow = 'down'
+    else arrow = 'flat'
+  }
+
+  return (
+    <div className="scr-card__hero-block">
+      <div className="scr-card__hero-row">
+        <div className="scr-card__hero-main">
+          <div className={`scr-card__hero ${changeClass(raw)}`}>{formatted}</div>
+          {arrow === 'up' ? (
+            <span className="scr-pct-arrow scr-pct-arrow--up" title="Change % increased since last refresh">↑</span>
+          ) : null}
+          {arrow === 'down' ? (
+            <span className="scr-pct-arrow scr-pct-arrow--down" title="Change % decreased since last refresh">↓</span>
+          ) : null}
+          {arrow === 'flat' ? (
+            <span className="scr-pct-arrow scr-pct-arrow--flat" title="Change % unchanged since last refresh">→</span>
+          ) : null}
+        </div>
+        {liveFeed ? <ScreenerCardLiveInline feed={liveFeed} /> : null}
+      </div>
+      {prevFormatted ? (
+        <div className="scr-card__hero-prev">was {prevFormatted}</div>
+      ) : null}
+      <div className="scr-card__hero-label">{label}</div>
+    </div>
+  )
+}
+
+function ScreenerRankBadge({ row }: { row: ScreenerResultRow }) {
+  const rank = row.rank ?? row.position + 1
+  const jump = row.rank_jump
+  const jumpDay = row.rank_jump_day
+  const jumpTitle = [
+    jump != null && jump !== 0
+      ? `Moved ${jump > 0 ? 'up' : 'down'} ${Math.abs(jump)} since last refresh`
+      : null,
+    jumpDay != null && jumpDay !== 0
+      ? `Moved ${jumpDay > 0 ? 'up' : 'down'} ${Math.abs(jumpDay)} over 24h`
+      : null,
+  ].filter(Boolean).join(' · ')
+
+  return (
+    <span
+      className="scr-rank"
+      title={jumpTitle || `Rank #${rank}`}
+    >
+      <span className="scr-rank__num">#{rank}</span>
+      {jump != null && jump !== 0 ? (
+        <span className={`scr-rank__jump ${jump > 0 ? 'scr-rank__jump--up' : 'scr-rank__jump--down'}`}>
+          {jump > 0 ? `↑${jump}` : `↓${Math.abs(jump)}`}
+        </span>
+      ) : null}
+    </span>
+  )
+}
+
+function ScreenerWatchlistControl({
+  ticker,
+  status,
+  layout,
+  instrumentDraft,
+  onInstrumentDraftChange,
+  onAdd,
+  onFetchInstrument,
+}: ScreenerWatchlistControlProps) {
+  const btnClass = layout === 'card' ? 'scr-card__watch' : 'scr-row-btn'
+  const busy = status === 'adding'
+
+  if (status === 'unmatched') {
+    return (
+      <div className={`scr-watch-manual scr-watch-manual--${layout}`}>
+        <span className="scr-watch-manual__label">N/A on eToro</span>
+        <div className="scr-watch-manual__row">
+          <input
+            className="scr-watch-manual__input"
+            type="text"
+            inputMode="numeric"
+            pattern="[0-9]*"
+            placeholder="Instrument ID"
+            value={instrumentDraft}
+            disabled={busy}
+            aria-label={`eToro instrument ID for ${ticker}`}
+            onChange={e => onInstrumentDraftChange(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                onFetchInstrument()
+              }
+            }}
+          />
+          <button
+            type="button"
+            className="scr-watch-manual__fetch"
+            disabled={busy || !instrumentDraft.trim()}
+            onClick={() => onFetchInstrument()}
+          >
+            {busy ? '…' : 'Fetch'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      className={`${btnClass}${
+        status === 'added' || status === 'already_present'
+          ? layout === 'card' ? ' scr-card__watch--ok' : ' scr-row-btn--ok'
+          : status === 'failed'
+            ? layout === 'card' ? ' scr-card__watch--miss' : ' scr-row-btn--miss'
+            : ''
+      }`}
+      disabled={busy}
+      onClick={() => onAdd()}
+    >
+      {watchlistButtonLabel(status)}
+    </button>
+  )
+}
+
 function watchlistSummaryMessage(summary: WatchlistSyncSummary): string {
   return `Synced to ${summary.watchlist_name}: +${summary.added} added, `
     + `${summary.already_present} existing, ${summary.unmatched} unmatched`
@@ -261,6 +510,12 @@ function defaultFilter(): ScreenerFilterCond {
 
 export default function ScreenerPage() {
   const { state, navigate } = useUrlState()
+  const { watchlists, ticks, windowChanges, historyRef } = useWatchlistStream()
+  const { haltFor } = useTradeHalts()
+  const etoroAccountEnv = useMemo((): 'live' | 'demo' => {
+    const env = (state.home_env || '').trim().toLowerCase()
+    return env === 'live' || env === 'demo' ? env : defaultAccountEnv('etoro')
+  }, [state.home_env])
   const [screeners, setScreeners] = useState<Screener[]>([])
   const [presets, setPresets] = useState<ScreenerPreset[]>([])
   const [presetMenuOpen, setPresetMenuOpen] = useState(false)
@@ -288,28 +543,39 @@ export default function ScreenerPage() {
   const [autoInterval, setAutoInterval] = useState(60)
   const [autoIntervalCustom, setAutoIntervalCustom] = useState(false)
   const [customIntervalDraft, setCustomIntervalDraft] = useState('60')
+  const [refreshRemainingPct, setRefreshRemainingPct] = useState(100)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(20)
   const [sort, setSort] = useState<SortState>(null)
   const [viewMode, setViewMode] = useState<ResultsViewMode>(loadViewMode)
+  const [headerLayout, setHeaderLayout] = useState<HeaderLayout>('full')
   const [cardHeroField, setCardHeroField] = useState<string>(loadCardHeroField)
   const [rowStatus, setRowStatus] = useState<RowSyncStatus>({})
+  const [instrumentDrafts, setInstrumentDrafts] = useState<Record<string, string>>({})
   const [syncingBulk, setSyncingBulk] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [nameDraft, setNameDraft] = useState('')
   const nameInputRef = useRef<HTMLInputElement>(null)
   const refreshInFlight = useRef(false)
+  const refreshCycleStartRef = useRef(Date.now())
+  const autoRefreshRef = useRef(false)
   const visibleRef = useRef(typeof document !== 'undefined' ? document.visibilityState === 'visible' : true)
   const draftDefinitionRef = useRef(draftDefinition)
   const draftDslRef = useRef(draftDsl)
   const selectedRef = useRef<Screener | null>(null)
   const editorModeRef = useRef(editorMode)
   const persistQueueRef = useRef(Promise.resolve<Screener | null>(null))
+  const prevCardPctRef = useRef<Record<string, Record<string, number>>>({})
+  const lastCardPctRefreshRef = useRef<Record<string, string>>({})
+  const [cardPctPrevByTicker, setCardPctPrevByTicker] = useState<Record<string, number>>({})
+  const [marketSession, setMarketSession] = useState(() => getUsMarketSession())
+  const [yahooGeneration, setYahooGeneration] = useState(0)
 
   draftDefinitionRef.current = draftDefinition
   draftDslRef.current = draftDsl
   selectedRef.current = screener
   editorModeRef.current = editorMode
+  autoRefreshRef.current = autoRefresh
 
   const applyDraftLocally = useCallback((next: ScreenerDefinition) => {
     draftDefinitionRef.current = next
@@ -324,7 +590,7 @@ export default function ScreenerPage() {
   }, [])
 
   const selected = screener
-  const isStockCatalyst = selected?.source_type === STOCK_CATALYST_SOURCE
+  const isStockCatalyst = isStockCatalystSource(selected?.source_type)
   const urlScreenerName = state.screener?.trim() || ''
   const editorOpen = state.screener_columns !== 'hidden'
 
@@ -398,8 +664,8 @@ export default function ScreenerPage() {
         const defn = coalesceDefinition(full.definition)
         setScreener(full)
         setDraftDefinition(defn)
-        setDraftDsl(full.source_type === STOCK_CATALYST_SOURCE ? '' : full.dsl_text || definitionToDsl(defn))
-        if (full.source_type === STOCK_CATALYST_SOURCE) setEditorMode('filters')
+        setDraftDsl(isStockCatalystSource(full.source_type) ? '' : full.dsl_text || definitionToDsl(defn))
+        if (isStockCatalystSource(full.source_type)) setEditorMode('filters')
         setAutoRefresh(Boolean(full.auto_refresh_seconds && full.auto_refresh_seconds > 0))
         const refreshSeconds = full.auto_refresh_seconds > 0 ? full.auto_refresh_seconds : 60
         syncRefreshIntervalState(refreshSeconds)
@@ -532,8 +798,8 @@ export default function ScreenerPage() {
       const defn = coalesceDefinition(full.definition)
       setScreener(full)
       setDraftDefinition(defn)
-      setDraftDsl(full.source_type === STOCK_CATALYST_SOURCE ? '' : full.dsl_text || definitionToDsl(defn))
-      if (full.source_type === STOCK_CATALYST_SOURCE) setEditorMode('filters')
+      setDraftDsl(isStockCatalystSource(full.source_type) ? '' : full.dsl_text || definitionToDsl(defn))
+      if (isStockCatalystSource(full.source_type)) setEditorMode('filters')
       setAutoRefresh(Boolean(full.auto_refresh_seconds && full.auto_refresh_seconds > 0))
       const refreshSeconds = full.auto_refresh_seconds > 0 ? full.auto_refresh_seconds : 60
       syncRefreshIntervalState(refreshSeconds)
@@ -582,7 +848,7 @@ export default function ScreenerPage() {
     setScreener(updated)
     setDraftDefinition(defn)
     setDraftDsl(
-      updated.source_type === STOCK_CATALYST_SOURCE
+      isStockCatalystSource(updated.source_type)
         ? ''
         : updated.dsl_text || definitionToDsl(defn),
     )
@@ -674,6 +940,11 @@ export default function ScreenerPage() {
     } finally {
       refreshInFlight.current = false
       setRefreshing(false)
+      setYahooGeneration(prev => prev + 1)
+      if (autoRefreshRef.current) {
+        refreshCycleStartRef.current = Date.now()
+        setRefreshRemainingPct(100)
+      }
     }
   }, [selectedId, isDraftDirtyNow, persistDraftDefinition, syncSavedDefinition])
 
@@ -686,13 +957,39 @@ export default function ScreenerPage() {
   }, [])
 
   useEffect(() => {
-    if (!autoRefresh || !selectedId) return
-    const ms = clampRefreshSeconds(autoInterval) * 1000
-    const timer = window.setInterval(() => {
-      if (!visibleRef.current) return
-      void doRefresh()
-    }, ms)
-    return () => window.clearInterval(timer)
+    const tick = () => setMarketSession(getUsMarketSession())
+    tick()
+    const id = window.setInterval(tick, 60_000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    if (!autoRefresh || !selectedId) {
+      setRefreshRemainingPct(100)
+      return undefined
+    }
+
+    const totalMs = clampRefreshSeconds(autoInterval) * 1000
+    refreshCycleStartRef.current = Date.now()
+    setRefreshRemainingPct(100)
+
+    const tick = window.setInterval(() => {
+      if (!visibleRef.current) {
+        refreshCycleStartRef.current = Date.now()
+        setRefreshRemainingPct(100)
+        return
+      }
+      const elapsed = Date.now() - refreshCycleStartRef.current
+      if (elapsed >= totalMs) {
+        refreshCycleStartRef.current = Date.now()
+        setRefreshRemainingPct(100)
+        void doRefresh()
+        return
+      }
+      setRefreshRemainingPct(Math.max(0, 100 * (1 - elapsed / totalMs)))
+    }, 200)
+
+    return () => window.clearInterval(tick)
   }, [autoRefresh, autoInterval, selectedId, doRefresh])
 
   const persistAutoRefresh = async (enabled: boolean, seconds: number) => {
@@ -759,6 +1056,44 @@ export default function ScreenerPage() {
     return percentColumnOptions[0] || 'change'
   }, [cardHeroField, percentColumnOptions])
 
+  const cardPctField = isStockCatalyst ? 'change_pct' : effectiveCardHeroField
+
+  useEffect(() => {
+    if (!selectedId || !selected?.results?.length || cellKind(cardPctField) !== 'percent') {
+      setCardPctPrevByTicker({})
+      return
+    }
+    const refreshKey = selected.last_refreshed_at || selected.updated_at || ''
+    if (!refreshKey) return
+
+    const lastKey = lastCardPctRefreshRef.current[selectedId]
+    if (refreshKey !== lastKey) {
+      setCardPctPrevByTicker({ ...(prevCardPctRef.current[selectedId] || {}) })
+      const next: Record<string, number> = {}
+      for (const row of selected.results) {
+        const pct = parsePercentValue(row.cells?.[cardPctField])
+        if (pct != null) next[row.ticker.toUpperCase()] = pct
+      }
+      prevCardPctRef.current[selectedId] = next
+      lastCardPctRefreshRef.current[selectedId] = refreshKey
+    } else if (!lastKey) {
+      const next: Record<string, number> = {}
+      for (const row of selected.results) {
+        const pct = parsePercentValue(row.cells?.[cardPctField])
+        if (pct != null) next[row.ticker.toUpperCase()] = pct
+      }
+      prevCardPctRef.current[selectedId] = next
+      lastCardPctRefreshRef.current[selectedId] = refreshKey
+      setCardPctPrevByTicker({})
+    }
+  }, [
+    selectedId,
+    selected?.results,
+    selected?.last_refreshed_at,
+    selected?.updated_at,
+    cardPctField,
+  ])
+
   const handleViewModeChange = (mode: ResultsViewMode) => {
     setViewMode(mode)
     safeSetItem(VIEW_MODE_KEY, mode)
@@ -792,6 +1127,27 @@ export default function ScreenerPage() {
     const start = (currentPage - 1) * pageSize
     return sortedRows.slice(start, start + pageSize)
   }, [sortedRows, currentPage, pageSize])
+
+  const liveFeedByTicker = useMemo(() => {
+    const map: Record<string, ScreenerLiveFeed> = {}
+    const now = Date.now()
+    for (const row of pagedRows) {
+      const symbol = tickerSymbol(row.ticker).toUpperCase()
+      if (!symbol || map[symbol]) continue
+      const tickKey = resolveEtoroLiveTickKey(watchlists, symbol, etoroAccountEnv)
+      if (!tickKey) continue
+      const tick = ticks[tickKey]
+      if (!tick?.ltp || !Number.isFinite(tick.ltp) || tick.ltp <= 0) continue
+      const c5mPct = windowChanges[tickKey]?.['5m'] ?? null
+      const samples = historyRef.current[tickKey] ?? []
+      const past5m = priceAtOrBefore(samples, now - 5 * 60_000)
+      const c5mAbs = past5m != null && past5m > 0
+        ? Math.round((tick.ltp - past5m) * 10000) / 10000
+        : null
+      map[symbol] = { ltp: tick.ltp, c5mPct, c5mAbs }
+    }
+    return map
+  }, [pagedRows, watchlists, ticks, windowChanges, historyRef, etoroAccountEnv])
 
   useEffect(() => {
     if (page > pageCount) setPage(pageCount)
@@ -937,13 +1293,14 @@ export default function ScreenerPage() {
     }
   }
 
-  const addRowToWatchlist = async (ticker: string) => {
+  const addRowToWatchlist = async (ticker: string, instrumentId?: number) => {
     if (!selectedId) return
     setRowStatus(prev => ({ ...prev, [ticker]: 'adding' }))
     try {
       const { screener: updated, summary } = await syncScreenerWatchlist(selectedId, {
         tickers: [ticker],
-        account_env: 'demo',
+        account_env: etoroAccountEnv,
+        instrument_overrides: instrumentId != null ? { [ticker]: instrumentId } : undefined,
       })
       setScreener(updated)
       const item = summary.items[0]
@@ -952,9 +1309,19 @@ export default function ScreenerPage() {
         [ticker]: (item?.status as RowSyncStatus[string]) || 'unmatched',
       }))
       if (item?.status === 'added' || item?.status === 'already_present') {
+        setInstrumentDrafts(prev => {
+          const next = { ...prev }
+          delete next[ticker]
+          return next
+        })
         showPlatformToast({
           variant: 'success',
           message: watchlistSummaryMessage(summary),
+        })
+      } else if (instrumentId != null) {
+        showPlatformToast({
+          variant: 'error',
+          message: item?.error || `Could not fetch instrument ${instrumentId} on eToro`,
         })
       } else {
         showPlatformToast({
@@ -963,7 +1330,7 @@ export default function ScreenerPage() {
         })
       }
     } catch (err) {
-      setRowStatus(prev => ({ ...prev, [ticker]: 'failed' }))
+      setRowStatus(prev => ({ ...prev, [ticker]: instrumentId != null ? 'unmatched' : 'failed' }))
       showPlatformToast({
         variant: 'error',
         message: err instanceof Error ? err.message : 'Watchlist add failed',
@@ -971,12 +1338,37 @@ export default function ScreenerPage() {
     }
   }
 
+  const fetchRowInstrument = (ticker: string) => {
+    const raw = (instrumentDrafts[ticker] || '').trim()
+    const instrumentId = Number(raw)
+    if (!raw || !Number.isInteger(instrumentId) || instrumentId <= 0) {
+      showPlatformToast({
+        variant: 'error',
+        message: 'Enter a valid eToro instrument ID (positive integer)',
+      })
+      return
+    }
+    void addRowToWatchlist(ticker, instrumentId)
+  }
+
+  const watchlistControlProps = (ticker: string, status: RowSyncStatus[string] | undefined, layout: 'row' | 'card') => ({
+    ticker,
+    status,
+    layout,
+    instrumentDraft: instrumentDrafts[ticker] || '',
+    onInstrumentDraftChange: (value: string) => {
+      setInstrumentDrafts(prev => ({ ...prev, [ticker]: value }))
+    },
+    onAdd: () => { void addRowToWatchlist(ticker) },
+    onFetchInstrument: () => fetchRowInstrument(ticker),
+  })
+
   const syncAllToWatchlist = async () => {
     if (!selectedId) return
     setSyncingBulk(true)
     try {
       const { screener: updated, summary } = await syncScreenerWatchlist(selectedId, {
-        account_env: 'demo',
+        account_env: etoroAccountEnv,
       })
       setScreener(updated)
       const next: RowSyncStatus = {}
@@ -1026,7 +1418,44 @@ export default function ScreenerPage() {
 
   return (
     <div className="scr-root">
-      <div className="scr-toolbar">
+      <div className={`scr-toolbar${headerLayout === 'compact' ? ' scr-toolbar--compact' : ''}`}>
+        <div className="scr-toolbar-layout">
+          <span className="scr-toolbar-layout__label">Layout</span>
+          <div className="scr-view-toggle" role="group" aria-label="Screener layout">
+            <button
+              type="button"
+              className={`scr-view-btn${headerLayout === 'full' ? ' scr-view-btn--active' : ''}`}
+              aria-pressed={headerLayout === 'full'}
+              onClick={() => setHeaderLayout('full')}
+            >
+              Tabs
+            </button>
+            <button
+              type="button"
+              className={`scr-view-btn${headerLayout === 'compact' ? ' scr-view-btn--active' : ''}`}
+              aria-pressed={headerLayout === 'compact'}
+              onClick={() => setHeaderLayout('compact')}
+            >
+              Cards only
+            </button>
+          </div>
+        </div>
+        {headerLayout === 'compact' ? (
+          <label className="scr-toolbar-active-select">
+            <span className="scr-toolbar-layout__label">Screener</span>
+            <select
+              className="scr-select scr-toolbar-active-select__input"
+              value={selectedId || ''}
+              onChange={e => { void selectScreener(e.target.value) }}
+              aria-label="Active screener"
+            >
+              {screeners.map(item => (
+                <option key={item.id} value={item.id}>{item.name}</option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <>
         <span className="scr-toolbar-title">Screener</span>
         <div className="scr-pills" role="tablist" aria-label="Saved screeners">
           {screeners.map(item => {
@@ -1130,7 +1559,10 @@ export default function ScreenerPage() {
             </div>
           ) : null}
         </div>
+          </>
+        )}
         <div className="scr-toolbar-spacer" />
+        {headerLayout === 'full' ? (
         <button
           type="button"
           className="scr-btn"
@@ -1141,6 +1573,7 @@ export default function ScreenerPage() {
             ? (editorOpen ? 'Hide columns' : 'Choose columns')
             : (editorOpen ? 'Hide editor' : 'Edit query')}
         </button>
+        ) : null}
       </div>
 
       <div className="scr-meta">
@@ -1182,70 +1615,89 @@ export default function ScreenerPage() {
           </>
         ) : null}
         <div className="scr-toolbar-spacer" />
-        <label className="scr-toggle">
-          <input
-            type="checkbox"
-            checked={autoRefresh}
-            onChange={e => void persistAutoRefresh(e.target.checked, autoInterval)}
-            disabled={!selected}
-          />
-          Auto refresh
-        </label>
-        <select
-          className="scr-select"
-          value={autoIntervalCustom ? 'custom' : String(autoInterval)}
-          disabled={!selected}
-          onChange={e => {
-            const value = e.target.value
-            if (value === 'custom') {
-              setAutoIntervalCustom(true)
-              return
-            }
-            setAutoIntervalCustom(false)
-            void persistAutoRefresh(autoRefresh, Number(value))
-          }}
-          aria-label="Auto refresh interval"
-        >
-          {PRESET_REFRESH_SECONDS.map(seconds => (
-            <option key={seconds} value={seconds}>
-              {seconds < 60 ? `${seconds}s` : `${seconds / 60}m`}
-            </option>
-          ))}
-          <option value="custom">Custom</option>
-        </select>
-        {autoIntervalCustom ? (
-          <label className="scr-toggle scr-toggle--interval">
-            <input
-              ref={customIntervalRef}
-              className="scr-input scr-input--interval"
-              type="number"
-              min={MIN_REFRESH_SECONDS}
-              max={MAX_REFRESH_SECONDS}
-              step={1}
-              value={customIntervalDraft}
+        <div className="scr-refresh-cluster">
+          <div className="scr-refresh-cluster__controls">
+            <label className="scr-toggle">
+              <input
+                type="checkbox"
+                checked={autoRefresh}
+                onChange={e => void persistAutoRefresh(e.target.checked, autoInterval)}
+                disabled={!selected}
+              />
+              Auto refresh
+            </label>
+            <select
+              className="scr-select"
+              value={autoIntervalCustom ? 'custom' : String(autoInterval)}
               disabled={!selected}
-              aria-label="Custom auto refresh seconds"
-              title={`${MIN_REFRESH_SECONDS}–${MAX_REFRESH_SECONDS} seconds`}
-              onChange={e => setCustomIntervalDraft(e.target.value)}
-              onBlur={() => commitCustomInterval()}
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  commitCustomInterval()
+              onChange={e => {
+                const value = e.target.value
+                if (value === 'custom') {
+                  setAutoIntervalCustom(true)
+                  return
                 }
+                setAutoIntervalCustom(false)
+                void persistAutoRefresh(autoRefresh, Number(value))
               }}
-            />
-            <span>s</span>
-          </label>
-        ) : null}
-        <button
-          type="button"
-          className="scr-btn scr-btn--primary"
-          disabled={!selected || refreshing}
-          onClick={() => void doRefresh()}
-        >
-          {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
+              aria-label="Auto refresh interval"
+            >
+              {PRESET_REFRESH_SECONDS.map(seconds => (
+                <option key={seconds} value={seconds}>
+                  {seconds < 60 ? `${seconds}s` : `${seconds / 60}m`}
+                </option>
+              ))}
+              <option value="custom">Custom</option>
+            </select>
+            {autoIntervalCustom ? (
+              <label className="scr-toggle scr-toggle--interval">
+                <input
+                  ref={customIntervalRef}
+                  className="scr-input scr-input--interval"
+                  type="number"
+                  min={MIN_REFRESH_SECONDS}
+                  max={MAX_REFRESH_SECONDS}
+                  step={1}
+                  value={customIntervalDraft}
+                  disabled={!selected}
+                  aria-label="Custom auto refresh seconds"
+                  title={`${MIN_REFRESH_SECONDS}–${MAX_REFRESH_SECONDS} seconds`}
+                  onChange={e => setCustomIntervalDraft(e.target.value)}
+                  onBlur={() => commitCustomInterval()}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      commitCustomInterval()
+                    }
+                  }}
+                />
+                <span>s</span>
+              </label>
+            ) : null}
+            <button
+              type="button"
+              className="scr-btn scr-btn--primary"
+              disabled={!selected || refreshing}
+              onClick={() => void doRefresh()}
+            >
+              {refreshing ? 'Refreshing…' : 'Refresh'}
+            </button>
+          </div>
+          {autoRefresh && selected ? (
+            <div
+              className="scr-refresh-cluster__bar"
+              role="progressbar"
+              aria-label="Time until next auto refresh"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(refreshRemainingPct)}
+            >
+              <div
+                className="scr-refresh-cluster__bar-fill"
+                style={{ width: `${refreshRemainingPct}%` }}
+              />
+            </div>
+          ) : null}
+        </div>
         <button
           type="button"
           className="scr-btn scr-btn--success"
@@ -1289,7 +1741,7 @@ export default function ScreenerPage() {
             <div className="scr-empty">
               <p>
                 {error || (isStockCatalyst
-                  ? 'No results yet. Refresh to load the Stock Catalyst pre-market tables.'
+                  ? 'No results yet. Refresh to load the Stock Catalyst movers tables.'
                   : 'No results yet. Refresh to run this screener against TradingView.')}
               </p>
               <button type="button" className="scr-btn scr-btn--primary" onClick={() => void doRefresh()}>
@@ -1303,6 +1755,7 @@ export default function ScreenerPage() {
                   <table className="scr-table">
                     <thead>
                       <tr>
+                        <th className="scr-th--rank">Rank</th>
                         {columns.map(col => (
                           <th
                             key={col}
@@ -1329,6 +1782,9 @@ export default function ScreenerPage() {
                         const status = rowStatus[ticker]
                         return (
                           <tr key={row.id || ticker}>
+                            <td className="scr-td--rank">
+                              <ScreenerRankBadge row={row} />
+                            </td>
                             {columns.map(col => {
                               if (col === 'ticker') {
                                 return (
@@ -1343,6 +1799,7 @@ export default function ScreenerPage() {
                                       >
                                         {symbol}
                                       </a>
+                                      <HaltedSymbolDot halt={haltFor(symbol)} className="halt-dot--inline" />
                                       <span className="scr-symbol-name">{row.name || row.cells?.description || ''}</span>
                                     </span>
                                   </td>
@@ -1398,20 +1855,7 @@ export default function ScreenerPage() {
                             })}
                             <td>
                               <div className="scr-row-actions">
-                                <button
-                                  type="button"
-                                  className={`scr-row-btn${
-                                    status === 'added' || status === 'already_present'
-                                      ? ' scr-row-btn--ok'
-                                      : status === 'unmatched' || status === 'failed'
-                                        ? ' scr-row-btn--miss'
-                                        : ''
-                                  }`}
-                                  disabled={status === 'adding'}
-                                  onClick={() => void addRowToWatchlist(ticker)}
-                                >
-                                  {watchlistButtonLabel(status)}
-                                </button>
+                                <ScreenerWatchlistControl {...watchlistControlProps(ticker, status, 'row')} />
                               </div>
                             </td>
                           </tr>
@@ -1423,12 +1867,12 @@ export default function ScreenerPage() {
               ) : (
                 <div className="scr-cards-wrap">
                   <div className="scr-cards-grid">
-                    {pagedRows.map(row => {
+                    {pagedRows.map((row, cardIndex) => {
                       const ticker = row.ticker
                       const symbol = tickerSymbol(ticker)
                       const status = rowStatus[ticker]
                       const heroRaw = row.cells?.[effectiveCardHeroField]
-                      const heroFormatted = formatScreenerNumber(heroRaw, 'percent')
+                      const liveFeed = liveFeedByTicker[symbol.toUpperCase()]
                       if (isStockCatalyst) {
                         const direction = String(row.cells?.mover_direction || '')
                         const metricColumns = columns.filter(
@@ -1442,9 +1886,12 @@ export default function ScreenerPage() {
                           ? stockCatalystHeadlines(row.cells?.recent_headlines)
                           : []
                         return (
-                          <article key={row.id || ticker} className="scr-card scr-source-card">
+                          <WithPerCardYahoo key={row.id || ticker}>
+                            {({ yahooPriceEnabled, yahooToggle }) => (
+                          <article className="scr-card scr-source-card">
                             <header className="scr-card__header">
                               <div className="scr-source-card__identity">
+                                <ScreenerRankBadge row={row} />
                                 <a
                                   className="scr-card__ticker-link"
                                   href={yahooFinanceUrl(ticker)}
@@ -1454,36 +1901,40 @@ export default function ScreenerPage() {
                                 >
                                   {symbol}
                                 </a>
+                                <HaltedSymbolDot halt={haltFor(symbol)} className="halt-dot--inline" />
                                 {columns.includes('mover_direction') ? (
                                   <span className={`scr-mover scr-mover--${direction.toLowerCase()}`}>
                                     {direction || '—'}
                                   </span>
                                 ) : null}
                               </div>
-                              <button
-                                type="button"
-                                className={`scr-card__watch${
-                                  status === 'added' || status === 'already_present'
-                                    ? ' scr-card__watch--ok'
-                                    : status === 'unmatched' || status === 'failed'
-                                      ? ' scr-card__watch--miss'
-                                      : ''
-                                }`}
-                                disabled={status === 'adding'}
-                                onClick={() => void addRowToWatchlist(ticker)}
-                              >
-                                {watchlistButtonLabel(status)}
-                              </button>
+                              <div className="scr-card__header-actions">
+                                {yahooToggle}
+                                <ScreenerWatchlistControl {...watchlistControlProps(ticker, status, 'card')} />
+                              </div>
                             </header>
                             <div className="scr-card__face scr-source-card__face">
-                              {showChangePercent ? (
-                                <>
-                                  <div className={`scr-card__hero ${changeClass(row.cells?.change_pct)}`}>
-                                    {formatScreenerNumber(row.cells?.change_pct, 'percent')}
+                              <YahooExtendedQuoteHero
+                                ticker={ticker}
+                                enabled={yahooPriceEnabled}
+                                generation={yahooGeneration}
+                                active={viewMode === 'cards'}
+                                staggerMs={cardIndex * YAHOO_QUOTE_STAGGER_MS}
+                                className="scr-card__hero-block scr-card__hero-block--yahoo"
+                              >
+                                {showChangePercent ? (
+                                  <ScreenerCardHero
+                                    raw={row.cells?.change_pct}
+                                    label="Change %"
+                                    previousPct={cardPctPrevByTicker[ticker.toUpperCase()]}
+                                    liveFeed={liveFeed}
+                                  />
+                                ) : liveFeed ? (
+                                  <div className="scr-card__hero-block">
+                                    <ScreenerCardLiveInline feed={liveFeed} />
                                   </div>
-                                  <div className="scr-card__hero-label">Change %</div>
-                                </>
-                              ) : null}
+                                ) : null}
+                              </YahooExtendedQuoteHero>
                               {metricColumns.length || columns.includes('recent_headlines') ? (
                                 <div className="scr-card__foot">
                                   {metricColumns.length ? (
@@ -1524,11 +1975,17 @@ export default function ScreenerPage() {
                               ) : null}
                             </div>
                           </article>
+                            )}
+                          </WithPerCardYahoo>
                         )
                       }
                       return (
-                        <article key={row.id || ticker} className="scr-card">
+                        <WithPerCardYahoo key={row.id || ticker}>
+                          {({ yahooPriceEnabled, yahooToggle }) => (
+                        <article className="scr-card">
                           <header className="scr-card__header">
+                            <div className="scr-card__header-main">
+                              <ScreenerRankBadge row={row} />
                             <a
                               className="scr-card__ticker-link"
                               href={yahooFinanceUrl(ticker)}
@@ -1538,26 +1995,33 @@ export default function ScreenerPage() {
                             >
                               {symbol}
                             </a>
-                            <button
-                              type="button"
-                              className={`scr-card__watch${
-                                status === 'added' || status === 'already_present'
-                                  ? ' scr-card__watch--ok'
-                                  : status === 'unmatched' || status === 'failed'
-                                    ? ' scr-card__watch--miss'
-                                    : ''
-                              }`}
-                              disabled={status === 'adding'}
-                              onClick={() => void addRowToWatchlist(ticker)}
-                            >
-                              {watchlistButtonLabel(status)}
-                            </button>
+                            <HaltedSymbolDot halt={haltFor(symbol)} className="halt-dot--inline" />
+                            </div>
+                            <div className="scr-card__header-actions">
+                              {yahooToggle}
+                              <ScreenerWatchlistControl {...watchlistControlProps(ticker, status, 'card')} />
+                            </div>
                           </header>
                           <div className="scr-card__face">
-                            <div className={`scr-card__hero ${changeClass(heroRaw)}`}>
-                              {heroFormatted}
-                            </div>
-                            <div className="scr-card__hero-label">{columnLabel(effectiveCardHeroField)}</div>
+                            <YahooExtendedQuoteHero
+                              ticker={ticker}
+                              enabled={yahooPriceEnabled}
+                              generation={yahooGeneration}
+                              active={viewMode === 'cards'}
+                              staggerMs={cardIndex * YAHOO_QUOTE_STAGGER_MS}
+                              className="scr-card__hero-block scr-card__hero-block--yahoo"
+                            >
+                              <ScreenerCardHero
+                                raw={heroRaw}
+                                label={columnLabel(effectiveCardHeroField)}
+                                previousPct={
+                                  cellKind(effectiveCardHeroField) === 'percent'
+                                    ? cardPctPrevByTicker[ticker.toUpperCase()]
+                                    : null
+                                }
+                                liveFeed={liveFeed}
+                              />
+                            </YahooExtendedQuoteHero>
                             <div className="scr-card__foot">
                               {(() => {
                                 const priceKeys = cardFaceMetricKeys(row, CARD_FACE_PRICE_KEYS, columns)
@@ -1593,6 +2057,8 @@ export default function ScreenerPage() {
                             </div>
                           </div>
                         </article>
+                          )}
+                        </WithPerCardYahoo>
                       )
                     })}
                   </div>

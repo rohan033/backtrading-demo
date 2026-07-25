@@ -1,4 +1,4 @@
-"""Parse the public Stock Catalyst NYSE/Nasdaq pre-market movers tables."""
+"""Parse the public Stock Catalyst NYSE/Nasdaq pre-market and after-hours movers tables."""
 
 from __future__ import annotations
 
@@ -8,9 +8,6 @@ from typing import Any
 
 import requests
 
-STOCK_CATALYST_SOURCE_TYPE = "stock_catalyst_nyse_pm"
-STOCK_CATALYST_NAME = "Stock Catalyst PM Movers"
-STOCK_CATALYST_URL = "https://www.thestockcatalyst.com/NYSEPMMovers?ShowFloats=true"
 STOCK_CATALYST_COLUMNS = [
     "mover_direction",
     "change_pct",
@@ -21,6 +18,23 @@ STOCK_CATALYST_COLUMNS = [
     "short_float",
     "recent_headlines",
 ]
+
+STOCK_CATALYST_PM_SOURCE_TYPE = "stock_catalyst_nyse_pm"
+STOCK_CATALYST_PM_NAME = "Stock Catalyst PM Movers"
+STOCK_CATALYST_PM_URL = "https://www.thestockcatalyst.com/NYSEPMMovers?ShowFloats=true"
+
+STOCK_CATALYST_AH_SOURCE_TYPE = "stock_catalyst_nyse_ah"
+STOCK_CATALYST_AH_NAME = "Stock Catalyst AH Movers"
+STOCK_CATALYST_AH_URL = "https://www.thestockcatalyst.com/NYSEAHMovers?ShowFloats=true"
+
+# Back-compat aliases used by existing imports.
+STOCK_CATALYST_SOURCE_TYPE = STOCK_CATALYST_PM_SOURCE_TYPE
+STOCK_CATALYST_NAME = STOCK_CATALYST_PM_NAME
+STOCK_CATALYST_URL = STOCK_CATALYST_PM_URL
+
+STOCK_CATALYST_SOURCE_TYPES = frozenset(
+    {STOCK_CATALYST_PM_SOURCE_TYPE, STOCK_CATALYST_AH_SOURCE_TYPE}
+)
 
 _SPACE_RE = re.compile(r"\s+")
 _CHANGE_RE = re.compile(r"([-+]?\d+(?:\.\d+)?)\s*\(([-+]?\d+(?:\.\d+)?)%\)")
@@ -166,15 +180,16 @@ def parse_stock_catalyst_html(html: str) -> list[dict[str, Any]]:
     parser.feed(html)
     parser.close()
     if not parser.rows:
-        raise ValueError("Stock Catalyst returned no pre-market mover rows")
+        raise ValueError("Stock Catalyst returned no mover rows")
     return parser.rows
 
 
 def run_stock_catalyst_screener(
-    url: str | None = STOCK_CATALYST_URL,
+    url: str | None = STOCK_CATALYST_PM_URL,
 ) -> tuple[int, list[dict[str, Any]], list[str]]:
+    fetch_url = url or STOCK_CATALYST_PM_URL
     response = requests.get(
-        url or STOCK_CATALYST_URL,
+        fetch_url,
         timeout=25,
         headers={
             "Accept": "text/html,application/xhtml+xml",

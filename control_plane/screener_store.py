@@ -19,10 +19,13 @@ from control_plane.screener_query import (
     definition_to_dsl,
 )
 from control_plane.stock_catalyst_screener import (
+    STOCK_CATALYST_AH_NAME,
+    STOCK_CATALYST_AH_SOURCE_TYPE,
+    STOCK_CATALYST_AH_URL,
     STOCK_CATALYST_COLUMNS,
-    STOCK_CATALYST_NAME,
-    STOCK_CATALYST_SOURCE_TYPE,
-    STOCK_CATALYST_URL,
+    STOCK_CATALYST_PM_NAME,
+    STOCK_CATALYST_PM_SOURCE_TYPE,
+    STOCK_CATALYST_PM_URL,
 )
 
 DB_PATH = os.path.join(
@@ -111,7 +114,7 @@ class ScreenerStore:
         by_name = {str(row["name"]).strip().lower(): row for row in rows}
         seeds: list[tuple[str, ScreenerDefinition, str, str | None]] = [
             (
-                STOCK_CATALYST_NAME,
+                STOCK_CATALYST_PM_NAME,
                 ScreenerDefinition(
                     columns=list(STOCK_CATALYST_COLUMNS),
                     filters=[],
@@ -119,8 +122,20 @@ class ScreenerStore:
                     ascending=False,
                     limit=500,
                 ),
-                STOCK_CATALYST_SOURCE_TYPE,
-                STOCK_CATALYST_URL,
+                STOCK_CATALYST_PM_SOURCE_TYPE,
+                STOCK_CATALYST_PM_URL,
+            ),
+            (
+                STOCK_CATALYST_AH_NAME,
+                ScreenerDefinition(
+                    columns=list(STOCK_CATALYST_COLUMNS),
+                    filters=[],
+                    order_by="change_pct",
+                    ascending=False,
+                    limit=500,
+                ),
+                STOCK_CATALYST_AH_SOURCE_TYPE,
+                STOCK_CATALYST_AH_URL,
             ),
             (
                 PRE_MARKET_GAINERS_NAME,
@@ -216,6 +231,12 @@ class ScreenerStore:
                 (data["id"],),
             ).fetchall()
             results = [self._result_payload(r) for r in result_rows]
+            try:
+                from control_plane.screener_rank_store import get_screener_rank_store
+
+                results = get_screener_rank_store().enrich_results(data["id"], results)
+            except Exception:
+                pass
         return {
             "id": data["id"],
             "name": data["name"],
@@ -462,7 +483,25 @@ class ScreenerStore:
         )
         conn.commit()
         conn.close()
-        return self.get_screener(screener_id)
+        updated = self.get_screener(screener_id)
+        if updated and rows:
+            try:
+                from control_plane.screener_rank_store import get_screener_rank_store
+
+                rank_rows = [
+                    {"ticker": str(row.get("ticker") or row.get("name") or "").strip()}
+                    for row in rows
+                    if str(row.get("ticker") or row.get("name") or "").strip()
+                ]
+                get_screener_rank_store().record_snapshot(screener_id, rank_rows)
+                if updated.get("results"):
+                    updated["results"] = get_screener_rank_store().enrich_results(
+                        screener_id,
+                        updated["results"],
+                    )
+            except Exception:
+                pass
+        return updated
 
     def mark_refresh_failed(self, screener_id: str, error: str) -> dict[str, Any] | None:
         """Keep previous results; only update status/error."""
