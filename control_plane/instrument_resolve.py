@@ -59,7 +59,7 @@ def find_watchlist_instrument(
             ticker=query,
         )
     except Exception as exc:
-        log.warning("[INSTRUMENT] watchlist lookup failed for %r: %s", query, exc)
+        log.debug("[INSTRUMENT] watchlist lookup failed for %r: %s", query, exc)
         return None
     if not hit:
         return None
@@ -104,21 +104,7 @@ def merge_watchlist_into_search_rows(
     if existing:
         merged = {**existing, **{k: v for k, v in hit.items() if v not in (None, "")}}
         merged["from_watchlist"] = True
-        log.info(
-            "[INSTRUMENT] promoted watchlist hit query=%r token=%s symbol=%s list=%s",
-            query,
-            token,
-            hit.get("tradingsymbol"),
-            hit.get("watchlist_name"),
-        )
         return [merged, *rest]
-    log.info(
-        "[INSTRUMENT] prepended watchlist hit query=%r token=%s symbol=%s list=%s",
-        query,
-        token,
-        hit.get("tradingsymbol"),
-        hit.get("watchlist_name"),
-    )
     return [hit, *rest]
 
 
@@ -279,7 +265,7 @@ async def search_instruments(
                 instruments = await client.asearch_instruments(q)
                 rows = [etoro_instrument_to_search_row(item) for item in instruments]
             except Exception as exc:
-                log.warning("[INSTRUMENT] etoro search failed for %r: %s", q, exc)
+                log.debug("[INSTRUMENT] etoro search failed for %r: %s", q, exc)
                 rows = []
 
         for row in rows:

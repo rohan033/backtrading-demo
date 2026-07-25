@@ -178,6 +178,34 @@
   border: 1.5px solid var(--scr-border);
   border-radius: 6px;
   background: #fff;
+  cursor: grab;
+}
+
+.scr-pill-wrap--dragging {
+  opacity: 0.55;
+}
+
+.scr-pill-wrap--drag-over {
+  border-color: #1565c0;
+  box-shadow: 0 0 0 1px rgba(21, 101, 192, 0.25);
+}
+
+.scr-pill-drag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 10px;
+  margin-left: 2px;
+  color: #8a94a6;
+  font-size: 8px;
+  letter-spacing: -0.08em;
+  line-height: 1;
+  user-select: none;
+  cursor: grab;
+}
+
+.scr-pill-wrap:active {
+  cursor: grabbing;
 }
 
 .scr-pill-wrap--active {

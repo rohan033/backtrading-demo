@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 import re
@@ -7,28 +8,95 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONTROL_LOG_DIR = REPO_ROOT / "logs" / "control-plane"
 DEFAULT_LIVE_LOG_DIR = REPO_ROOT / "logs" / "executions"
+UVICORN_LOG_CONFIG_PATH = REPO_ROOT / "logs" / "uvicorn_log_config.json"
 
 # High-frequency control-plane traffic — noisy at INFO in uvicorn access logs.
 _QUIET_ACCESS_RE = re.compile(
-    r'"(?:GET /api/control/|POST /api/control/engines/[^"]+/heartbeat)',
+    r'"(?:GET /api/control/|POST /api/control/engines/[^"]+/heartbeat|'
+    r'GET /api/watchlist/|GET /api/control/search|'
+    r'(?:GET|POST) /api/screeners|GET /api/trade-halts/)',
     re.IGNORECASE,
 )
+
+# High-frequency app logs on the control plane (keep failures at WARNING+).
+_QUIET_APP_RE = re.compile(
+    r'\[(?:WATCHLIST_CANDLES|CONTROL_SEARCH|INSTRUMENT)\]',
+    re.IGNORECASE,
+)
+
+
+def _poll_logs_enabled() -> bool:
+    return os.getenv("CONTROL_PLANE_LOG_POLL_GETS", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class UvicornAccessPollFilter(logging.Filter):
     """Drop uvicorn access lines for poll GETs and engine heartbeat POSTs."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if os.getenv("CONTROL_PLANE_LOG_POLL_GETS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        if _poll_logs_enabled():
             return True
         return _QUIET_ACCESS_RE.search(record.getMessage()) is None
 
 
+class HighFrequencyAppLogFilter(logging.Filter):
+    """Drop repetitive INFO lines from poll-heavy control-plane handlers."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if _poll_logs_enabled():
+            return True
+        if record.levelno > logging.INFO:
+            return True
+        return _QUIET_APP_RE.search(record.getMessage()) is None
+
+
+def build_uvicorn_log_config() -> dict[str, object]:
+    """Uvicorn default logging config with poll-access filter on the access handler."""
+    from uvicorn.config import LOGGING_CONFIG
+
+    config = copy.deepcopy(LOGGING_CONFIG)
+    config.setdefault("filters", {})["quiet_poll_access"] = {
+        "()": "control_plane.ops_logging.UvicornAccessPollFilter",
+    }
+    access_handler = config.get("handlers", {}).get("access")
+    if isinstance(access_handler, dict):
+        access_handler["filters"] = ["quiet_poll_access"]
+    return config
+
+
+def write_uvicorn_log_config(path: Path | None = None) -> Path:
+    target = (path or UVICORN_LOG_CONFIG_PATH).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    import json
+
+    target.write_text(json.dumps(build_uvicorn_log_config(), indent=2), encoding="utf-8")
+    return target
+
+
 def quiet_uvicorn_poll_access_logs() -> None:
-    access_logger = logging.getLogger("uvicorn.access")
-    if any(isinstance(item, UvicornAccessPollFilter) for item in access_logger.filters):
+    if _poll_logs_enabled():
         return
-    access_logger.addFilter(UvicornAccessPollFilter())
+    filt = UvicornAccessPollFilter()
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, UvicornAccessPollFilter) for item in access_logger.filters):
+        access_logger.addFilter(filt)
+    for handler in access_logger.handlers:
+        if not any(isinstance(item, UvicornAccessPollFilter) for item in handler.filters):
+            handler.addFilter(filt)
+
+
+def quiet_high_frequency_app_logs() -> None:
+    if _poll_logs_enabled():
+        return
+    filt = HighFrequencyAppLogFilter()
+    root = logging.getLogger()
+    if not any(isinstance(item, HighFrequencyAppLogFilter) for item in root.filters):
+        root.addFilter(filt)
+    for handler in root.handlers:
+        if not any(isinstance(item, HighFrequencyAppLogFilter) for item in handler.filters):
+            handler.addFilter(filt)
+    backtrading = logging.getLogger("backtrading")
+    if not any(isinstance(item, HighFrequencyAppLogFilter) for item in backtrading.filters):
+        backtrading.addFilter(filt)
 
 
 def quiet_http_client_logs() -> None:
@@ -92,6 +160,7 @@ def configure_control_plane_logging(
         root.addHandler(file_handler)
 
     quiet_uvicorn_poll_access_logs()
+    quiet_high_frequency_app_logs()
     quiet_http_client_logs()
 
     logging.getLogger("backtrading").info("[CONTROL] File logging enabled path=%s", log_path)

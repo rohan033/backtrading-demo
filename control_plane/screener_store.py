@@ -411,6 +411,37 @@ class ScreenerStore:
         conn.close()
         return deleted
 
+    def reorder_screeners(self, ordered_ids: list[str]) -> list[dict[str, Any]]:
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT id FROM screeners ORDER BY position ASC, created_at ASC"
+        ).fetchall()
+        existing = [row["id"] for row in rows]
+        if not existing:
+            conn.close()
+            return []
+
+        seen: set[str] = set()
+        normalized: list[str] = []
+        for screener_id in ordered_ids:
+            if screener_id in seen or screener_id not in existing:
+                continue
+            seen.add(screener_id)
+            normalized.append(screener_id)
+        for screener_id in existing:
+            if screener_id not in seen:
+                normalized.append(screener_id)
+
+        now = _now_utc()
+        for index, screener_id in enumerate(normalized):
+            conn.execute(
+                "UPDATE screeners SET position = ?, updated_at = ? WHERE id = ?",
+                (index, now, screener_id),
+            )
+        conn.commit()
+        conn.close()
+        return self.list_screeners(include_results=False)
+
     def set_refresh_status(
         self,
         screener_id: str,

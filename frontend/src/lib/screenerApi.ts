@@ -173,6 +173,16 @@ export async function deleteScreener(id: string): Promise<void> {
   }
 }
 
+export async function reorderScreeners(ids: string[]): Promise<Screener[]> {
+  return parseJson(
+    await fetch(`${API}/reorder`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    }),
+  )
+}
+
 export async function validateScreenerDsl(dsl_text: string): Promise<{
   definition: ScreenerDefinition
   dsl_text: string

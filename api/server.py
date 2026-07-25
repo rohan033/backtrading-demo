@@ -52,7 +52,7 @@ from control_plane.client_mode import normalize_client_mode
 from control_plane.engine_registry import EngineRegistry, _parse_datetime
 from control_plane.engine_process_manager import EngineProcessManager, REPO_ROOT, engine_live_ws_path
 from control_plane.live_engine_proxy import forward_live_json
-from control_plane.ops_logging import configure_control_plane_logging, quiet_uvicorn_poll_access_logs
+from control_plane.ops_logging import configure_control_plane_logging, quiet_high_frequency_app_logs, quiet_uvicorn_poll_access_logs
 from managers.bgp_log import bgp_error, bgp_info
 from control_plane.log_stream import (
     resolve_engine_log_path,
@@ -394,6 +394,7 @@ NON_DELETABLE_EXECUTION_STATUSES = frozenset({"running", "starting", "scheduled"
 async def control_plane_lifespan(_app: FastAPI):
     global _engine_sweeper_task, _scheduled_executions_task, execution_scheduler
     quiet_uvicorn_poll_access_logs()
+    quiet_high_frequency_app_logs()
     _engine_sweeper_task = asyncio.create_task(_mark_stale_engines_loop())
     execution_scheduler = ExecutionScheduler(engine_registry.list_engines, _fire_scheduled_execution)
     execution_scheduler.poll_once()
@@ -634,16 +635,11 @@ async def control_plane_search(
     from control_plane.instrument_resolve import merge_watchlist_into_search_rows
 
     broker_name = "fake" if use_fake_client else (broker or "angel").lower()
-    log.info(
-        "[CONTROL_SEARCH] request broker=%s env=%s exchange=%s q=%r fake=%s",
-        broker_name, account_env, exchange, q, use_fake_client,
-    )
     try:
         if broker_name == "fake":
             rows = merge_watchlist_into_search_rows(
                 broker_name, account_env, q, _mock_search_rows(q),
             )
-            log.info("[CONTROL_SEARCH] fake returned %d rows for %r", len(rows), q)
             return {"status": True, "data": rows}
 
         if broker_name == "etoro":
@@ -659,18 +655,8 @@ async def control_plane_search(
             )
             search_mode = get_etoro_search_settings_store().get_search_mode()
             if rows:
-                log.info(
-                    "[CONTROL_SEARCH] etoro returned %d rows for %r using account_env=%s mode=%s",
-                    len(rows), q, account_env, search_mode,
-                )
                 return {"status": True, "data": rows, "etoro_search_mode": search_mode}
 
-            log.warning(
-                "[CONTROL_SEARCH] etoro returned 0 instruments for %r account_env=%s mode=%s",
-                q,
-                account_env,
-                search_mode,
-            )
             return {
                 "status": False,
                 "message": f"No eToro instruments found for '{q}' in {account_env} environment",
@@ -684,12 +670,6 @@ async def control_plane_search(
             rows = merge_watchlist_into_search_rows(
                 broker_name, account_env, q, result.get("data", []) or [],
             )
-            log.info("[CONTROL_SEARCH] angel returned %d rows for %r", len(rows), q)
-            for item in rows[:10]:
-                log.info(
-                    "[CONTROL_SEARCH] row symbol=%s token=%s exchange=%s",
-                    item.get("tradingsymbol"), item.get("symboltoken"), item.get("exchange"),
-                )
             return {"status": True, "data": rows}
 
         # Still surface watchlist-only matches when Angel text search misses.
@@ -697,7 +677,6 @@ async def control_plane_search(
         if rows:
             return {"status": True, "data": rows}
 
-        log.warning("[CONTROL_SEARCH] angel returned no results for %r: %s", q, result)
         return {"status": False, "message": "No results found", "data": []}
     except Exception as e:
         error_message = str(e)
@@ -707,10 +686,6 @@ async def control_plane_search(
         try:
             rows = merge_watchlist_into_search_rows(broker_name, account_env, q, [])
             if rows:
-                log.warning(
-                    "[CONTROL_SEARCH] broker search failed; returning watchlist hit for %r",
-                    q,
-                )
                 return {"status": True, "data": rows}
         except Exception:
             pass
@@ -1853,6 +1828,17 @@ async def get_watchlist_symbol_candles(
     )
 
     safe_count = max(10, min(int(count), 1000))
+    from control_plane.watchlist_candles_cache import (
+        get_cached_watchlist_candles,
+        put_cached_watchlist_candles,
+        watchlist_candles_cache_key,
+    )
+
+    cache_key = watchlist_candles_cache_key(account_env, symbol, str(token), safe_count)
+    cached = get_cached_watchlist_candles(cache_key)
+    if cached is not None:
+        return {"status": True, "data": cached}
+
     try:
         client = await _etoro_trading_client(account_env)
         instrument_id = await client._instrument_id(symbol, str(token))
@@ -1870,13 +1856,10 @@ async def get_watchlist_symbol_candles(
 
         store = CandleStore()
         candles = store.bootstrap(candles)
-        log.info(
-            "[WATCHLIST_CANDLES] symbol=%s token=%s env=%s candles=%d",
-            symbol, token, account_env, len(candles),
-        )
+        put_cached_watchlist_candles(cache_key, candles)
         return {"status": True, "data": candles}
     except Exception as exc:
-        log.warning("[WATCHLIST_CANDLES] failed symbol=%s: %s", symbol, exc)
+        log.debug("[WATCHLIST_CANDLES] failed symbol=%s: %s", symbol, exc)
         # Return empty gracefully — frontend falls back to live-only mode
         return {"status": True, "data": []}
 
@@ -1923,6 +1906,31 @@ async def get_watchlist_symbol_candles_history(
         if start is not None
         else end_time - safe_minutes * 60
     )
+    from control_plane.watchlist_candles_cache import (
+        get_cached_watchlist_candles,
+        put_cached_watchlist_candles,
+        watchlist_candles_cache_key,
+    )
+
+    cache_key = watchlist_candles_cache_key(
+        account_env,
+        symbol,
+        str(token),
+        safe_count,
+        history=True,
+        start=start_time,
+        end=end_time,
+    )
+    cached = get_cached_watchlist_candles(cache_key)
+    if cached is not None:
+        return {
+            "status": True,
+            "data": cached,
+            "loaded_count": len(cached),
+            "start": start_time,
+            "end": end_time,
+        }
+
     try:
         client = await _etoro_trading_client(account_env)
         instrument_id = await client._instrument_id(symbol, str(token))
@@ -1936,10 +1944,7 @@ async def get_watchlist_symbol_candles_history(
             minutes=max(1, (end_time - start_time) // 60),
             count=safe_count,
         )
-        log.info(
-            "[WATCHLIST_CANDLES] window symbol=%s token=%s env=%s start=%d end=%d count=%d interval=%s candles=%d",
-            symbol, token, account_env, start_time, end_time, safe_count, interval_used, len(candles),
-        )
+        put_cached_watchlist_candles(cache_key, candles)
         return {
             "status": True,
             "data": candles,
@@ -1949,7 +1954,7 @@ async def get_watchlist_symbol_candles_history(
             "end": end_time,
         }
     except Exception as exc:
-        log.warning("[WATCHLIST_CANDLES] older failed symbol=%s: %s", symbol, exc)
+        log.debug("[WATCHLIST_CANDLES] older failed symbol=%s: %s", symbol, exc)
         return {"status": True, "data": [], "loaded_count": 0}
 
 
@@ -3431,4 +3436,7 @@ app.router.lifespan_context = combine_lifespans(control_plane_lifespan, _mcp_app
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+
+    from control_plane.ops_logging import build_uvicorn_log_config
+
+    uvicorn.run(app, host="0.0.0.0", port=8000, log_config=build_uvicorn_log_config())

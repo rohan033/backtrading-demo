@@ -74,6 +74,13 @@ export type HomeMoverMetrics = {
   changeAbs: number | null
 }
 
+const HOME_MOVER_HERO_LABELS: Record<string, string> = {
+  change_pct: 'Chg %',
+  change: 'Chg %',
+  premarket_change: 'Pre chg',
+  postmarket_change: 'Post chg',
+}
+
 function parseNum(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null
   const n = typeof value === 'number' ? value : Number(value)
@@ -99,6 +106,24 @@ export function homeMoverMetrics(
     changeAbs = price - (price / (1 + pct / 100))
   }
   return { pct, price, changeAbs }
+}
+
+export function homeMoverHeroField(
+  row: ScreenerResultRow,
+  sourceType?: string | null,
+): string {
+  if (isStockCatalystScreenerSource(sourceType)) return 'change_pct'
+  if (row.cells?.change != null && row.cells?.change !== '') return 'change'
+  if (row.cells?.premarket_change != null && row.cells?.premarket_change !== '') return 'premarket_change'
+  if (row.cells?.postmarket_change != null && row.cells?.postmarket_change !== '') return 'postmarket_change'
+  return 'change'
+}
+
+export function homeMoverHeroLabel(
+  row: ScreenerResultRow,
+  sourceType?: string | null,
+): string {
+  return HOME_MOVER_HERO_LABELS[homeMoverHeroField(row, sourceType)] || 'Chg %'
 }
 
 export function homeMoverPctTone(pct: number | null): 'up' | 'down' | 'flat' | 'none' {

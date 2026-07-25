@@ -14,6 +14,7 @@ import {
   fetchScreeners,
   generateScreenerFromText,
   refreshScreener,
+  reorderScreeners,
   syncScreenerWatchlist,
   updateScreener,
   validateScreenerDsl,
@@ -555,6 +556,8 @@ export default function ScreenerPage() {
   const [syncingBulk, setSyncingBulk] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [nameDraft, setNameDraft] = useState('')
+  const [dragScreenerId, setDragScreenerId] = useState<string | null>(null)
+  const [dragOverScreenerId, setDragOverScreenerId] = useState<string | null>(null)
   const nameInputRef = useRef<HTMLInputElement>(null)
   const refreshInFlight = useRef(false)
   const refreshCycleStartRef = useRef(Date.now())
@@ -683,6 +686,60 @@ export default function ScreenerPage() {
       setLoading(false)
     }
   }, [selectedId, syncRefreshIntervalState, syncScreenerQuery])
+
+  const handleScreenerDragStart = (screenerId: string) => {
+    if (editingId) return
+    setDragScreenerId(screenerId)
+  }
+
+  const handleScreenerDragOver = (event: React.DragEvent, screenerId: string) => {
+    if (!dragScreenerId || dragScreenerId === screenerId || editingId) return
+    event.preventDefault()
+    setDragOverScreenerId(screenerId)
+  }
+
+  const handleScreenerDrop = async (event: React.DragEvent, targetId: string) => {
+    event.preventDefault()
+    if (!dragScreenerId || dragScreenerId === targetId || editingId) {
+      setDragScreenerId(null)
+      setDragOverScreenerId(null)
+      return
+    }
+    const ids = screeners.map(item => item.id)
+    const from = ids.indexOf(dragScreenerId)
+    const to = ids.indexOf(targetId)
+    setDragScreenerId(null)
+    setDragOverScreenerId(null)
+    if (from < 0 || to < 0) return
+
+    const nextIds = [...ids]
+    nextIds.splice(from, 1)
+    nextIds.splice(to, 0, dragScreenerId)
+    const byId = new Map(screeners.map(item => [item.id, item]))
+    const optimistic = nextIds
+      .map((id, position) => {
+        const item = byId.get(id)
+        return item ? { ...item, position } : null
+      })
+      .filter((item): item is Screener => item != null)
+    setScreeners(optimistic)
+
+    try {
+      const updated = await reorderScreeners(nextIds)
+      setScreeners(updated)
+    } catch (err) {
+      void loadList(selectedId)
+      showPlatformToast({
+        variant: 'error',
+        message: err instanceof Error ? err.message : 'Failed to reorder screeners',
+      })
+    }
+  }
+
+  const handleScreenerDragEnd = () => {
+    setDragScreenerId(null)
+    setDragOverScreenerId(null)
+  }
 
   const builtinNames = useMemo(
     () => new Set(presets.map(p => p.name.trim().toLowerCase())),
@@ -1465,7 +1522,12 @@ export default function ScreenerPage() {
             return (
               <div
                 key={item.id}
-                className={`scr-pill-wrap${active ? ' scr-pill-wrap--active' : ''}${isBuiltin ? ' scr-pill-wrap--builtin' : ''}`}
+                className={`scr-pill-wrap${active ? ' scr-pill-wrap--active' : ''}${isBuiltin ? ' scr-pill-wrap--builtin' : ''}${dragOverScreenerId === item.id ? ' scr-pill-wrap--drag-over' : ''}${dragScreenerId === item.id ? ' scr-pill-wrap--dragging' : ''}`}
+                draggable={!editing}
+                onDragStart={() => handleScreenerDragStart(item.id)}
+                onDragOver={event => handleScreenerDragOver(event, item.id)}
+                onDrop={event => { void handleScreenerDrop(event, item.id) }}
+                onDragEnd={handleScreenerDragEnd}
               >
                 {editing ? (
                   <input
@@ -1485,6 +1547,13 @@ export default function ScreenerPage() {
                   />
                 ) : (
                   <>
+                    <span
+                      className="scr-pill-drag"
+                      aria-hidden
+                      title="Drag to reorder"
+                    >
+                      ⋮⋮
+                    </span>
                     <button
                       type="button"
                       role="tab"

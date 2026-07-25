@@ -20,6 +20,7 @@ import Portfolio from './Portfolio'
 import Positions from './Positions'
 import ScreenerPage from '../../components/screener/ScreenerPage'
 import SettingsPage from '../../pages/SettingsPage'
+import Overview from './Overview'
 import MomentumSidebarPanel from './MomentumSidebarPanel'
 import EarningsMonitorBar from './EarningsMonitorBar'
 import MarketClockBar from './MarketClockBar'
@@ -32,10 +33,10 @@ import { useTradeHalts } from '../../context/TradeHaltsContext'
 import type { WatchlistEarningsRef } from '../../lib/marketResearch'
 
 /* ─── types ─────────────────────────────────────────────── */
-type MainTab = 'home' | 'watch-trade' | 'orders' | 'positions' | 'strategies' | 'earnings' | 'screener' | 'agent' | 'settings'
+type MainTab = 'home' | 'overview' | 'watch-trade' | 'orders' | 'positions' | 'strategies' | 'earnings' | 'screener' | 'agent' | 'settings'
 type NewsTab = 'watchlist' | 'momentum' | 'new' | 'news' | 'market'
 
-const MAIN_TABS: MainTab[] = ['home', 'watch-trade', 'orders', 'positions', 'strategies', 'earnings', 'screener', 'agent', 'settings']
+const MAIN_TABS: MainTab[] = ['home', 'overview', 'watch-trade', 'orders', 'positions', 'strategies', 'earnings', 'screener', 'agent', 'settings']
 const NEWS_TABS: NewsTab[] = ['watchlist', 'momentum', 'news', 'market', 'new']
 const LEFT_COLLAPSED_KEY = 'minimal-shell-left-collapsed'
 const RIGHT_WIDTH_KEY = 'minimal-shell-right-width'
@@ -171,6 +172,9 @@ function MainPanel({
           <Pill active={tab === 'home'} href={buildShellUrl({ tab: 'home' })} onClick={() => setTab('home')}>
             {'\u00a0Home\u00a0'}
           </Pill>
+          <Pill active={tab === 'overview'} href={buildShellUrl({ tab: 'overview' })} onClick={() => setTab('overview')}>
+            {'\u00a0Overview\u00a0'}
+          </Pill>
           <Pill active={tab === 'watch-trade'} href={buildShellUrl({ tab: 'watch-trade' })} onClick={() => setTab('watch-trade')}>
             {'\u00a0Watch\u00a0&\u00a0Trade\u00a0'}
           </Pill>
@@ -204,6 +208,8 @@ function MainPanel({
       <div className="ms-body" style={{ padding: 0, overflow: 'hidden' }}>
         {tab === 'home' ? (
           <Home />
+        ) : tab === 'overview' ? (
+          <Overview />
         ) : tab === 'watch-trade' ? (
           <WatchAndTrade />
         ) : tab === 'strategies' ? (

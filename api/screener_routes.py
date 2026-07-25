@@ -57,6 +57,10 @@ class SyncWatchlistRequest(BaseModel):
     instrument_overrides: dict[str, int] | None = None
 
 
+class ReorderScreenersRequest(BaseModel):
+    ids: list[str] = Field(..., min_length=1)
+
+
 def _http_query_error(exc: ScreenerQueryError) -> HTTPException:
     return HTTPException(status_code=400, detail=str(exc))
 
@@ -149,6 +153,13 @@ async def generate_screener(req: GenerateScreenerRequest):
 def list_screeners(include_results: bool = False):
     store = get_screener_store()
     return {"status": True, "data": store.list_screeners(include_results=include_results)}
+
+
+@router.post("/reorder", operation_id="reorder_screeners", summary="Reorder saved screeners")
+def reorder_screeners(req: ReorderScreenersRequest):
+    store = get_screener_store()
+    rows = store.reorder_screeners(req.ids)
+    return {"status": True, "data": rows}
 
 
 @router.get("/{screener_id}", operation_id="get_screener", summary="Get screener with results")
