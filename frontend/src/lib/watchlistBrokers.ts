@@ -98,6 +98,10 @@ export async function searchWatchlistSymbol(
 const SEARCH_CACHE_MS = 60_000
 const searchCache = new Map<string, { at: number; promise: Promise<WatchlistSymbolHit[]> }>()
 
+export function clearWatchlistSearchCache(): void {
+  searchCache.clear()
+}
+
 async function fetchSearchHits(
   broker: WatchlistBroker,
   q: string,

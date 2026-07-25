@@ -8,6 +8,7 @@ import {
   OctagonAlert,
   RefreshCw,
   Rss,
+  Search,
   Settings2,
   Trash2,
 } from 'lucide-react'
@@ -23,9 +24,15 @@ import {
 import { currentlyHaltedHalts } from '../lib/tradeHaltsUi'
 import HaltLudpTimer from '../components/tradeHalts/HaltLudpTimer'
 import { MAX_PINNED_HALTS, useTradeHalts } from '../context/TradeHaltsContext'
+import {
+  fetchEtoroSearchMode,
+  saveEtoroSearchMode,
+  type EtoroSearchMode,
+} from '../lib/etoroSearchConfig'
+import { clearWatchlistSearchCache } from '../lib/watchlistBrokers'
 import './SettingsPage.css'
 
-type SettingsSection = 'order-activity' | 'halts'
+type SettingsSection = 'order-activity' | 'halts' | 'etoro-search'
 
 type TradeStatus = 'open' | 'closed'
 
@@ -674,6 +681,86 @@ function HaltsPanel() {
   )
 }
 
+function EtoroSearchPanel() {
+  const [mode, setMode] = useState<EtoroSearchMode>('legacy')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    void fetchEtoroSearchMode()
+      .then(nextMode => {
+        if (!cancelled) setMode(nextMode)
+      })
+      .catch(() => {
+        if (!cancelled) setError('Could not load eToro search settings.')
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const onModeChange = (nextMode: EtoroSearchMode) => {
+    if (nextMode === mode || saving) return
+    setSaving(true)
+    setError(null)
+    void saveEtoroSearchMode(nextMode)
+      .then(savedMode => {
+        setMode(savedMode)
+        clearWatchlistSearchCache()
+      })
+      .catch(() => {
+        setError('Could not save eToro search settings.')
+      })
+      .finally(() => {
+        setSaving(false)
+      })
+  }
+
+  return (
+    <section className="set-content" aria-labelledby="etoro-search-title">
+      <div className="set-toolbar">
+        <div className="set-toolbar__title">
+          <span className="set-eyebrow">eToro</span>
+          <h2 id="etoro-search-title">Stock search</h2>
+        </div>
+      </div>
+      <div className="set-body">
+        <div className="set-config-card">
+          <div className="set-config-card__heading">
+            <Search aria-hidden="true" />
+            <div>
+              <strong>eToro instrument search</strong>
+              <p>Choose how stock searches resolve ticker symbols and icons.</p>
+            </div>
+          </div>
+          <label className="set-config-card__field">
+            <span>Search provider</span>
+            <select
+              value={mode}
+              disabled={loading || saving}
+              onChange={event => onModeChange(event.target.value as EtoroSearchMode)}
+            >
+              <option value="legacy">Legacy — eToro ticker API</option>
+              <option value="algolia">Search — exact Algolia ticker match</option>
+            </select>
+          </label>
+          {error ? <div className="set-error set-error--inline" role="alert">{error}</div> : null}
+          <p className="set-config-card__help">
+            Algolia mode accepts only an exact <code>symbolFull</code> match for visible,
+            non-view-only stock instruments and uses the returned image variants.
+            Applies to the UI and AI agent searches.
+          </p>
+        </div>
+      </div>
+    </section>
+  )
+}
+
 export default function SettingsPage() {
   const [section, setSection] = useState<SettingsSection>('order-activity')
   const [trades, setTrades] = useState<MomentumTrade[]>([])
@@ -900,6 +987,18 @@ export default function SettingsPage() {
         </button>
         <button
           type="button"
+          className={`set-nav__item${section === 'etoro-search' ? ' set-nav__item--active' : ''}`}
+          aria-current={section === 'etoro-search' ? 'page' : undefined}
+          onClick={() => setSection('etoro-search')}
+        >
+          <span className="set-nav__icon"><Search aria-hidden="true" /></span>
+          <span>
+            <strong>eToro search</strong>
+            <small>Stock lookup mode</small>
+          </span>
+        </button>
+        <button
+          type="button"
           className={`set-nav__item${section === 'halts' ? ' set-nav__item--active' : ''}`}
           aria-current={section === 'halts' ? 'page' : undefined}
           onClick={() => setSection('halts')}
@@ -915,6 +1014,8 @@ export default function SettingsPage() {
 
       {section === 'halts' ? (
         <HaltsPanel />
+      ) : section === 'etoro-search' ? (
+        <EtoroSearchPanel />
       ) : (
       <section className="set-content" aria-labelledby="order-activity-title">
         <div className="set-toolbar">

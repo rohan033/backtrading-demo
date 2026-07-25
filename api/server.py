@@ -39,6 +39,7 @@ from api.trades_pnl_routes import router as trades_pnl_router
 from api.market_news_routes import router as market_news_router
 from api.yahoo_finance_routes import router as yahoo_finance_router
 from api.trade_halts_routes import router as trade_halts_router
+from api.etoro_search_routes import router as etoro_search_router
 from api.trading_session_routes import get_trading_session_store, handle_trading_session_websocket, router as trading_session_router
 from api.one_percent_session_routes import (
     handle_one_percent_session_websocket,
@@ -149,6 +150,7 @@ app.include_router(trades_pnl_router)
 app.include_router(market_news_router)
 app.include_router(yahoo_finance_router)
 app.include_router(trade_halts_router)
+app.include_router(etoro_search_router)
 app.include_router(trading_session_router)
 app.include_router(one_percent_session_router)
 
@@ -646,6 +648,7 @@ async def control_plane_search(
 
         if broker_name == "etoro":
             from control_plane.instrument_resolve import search_instruments
+            from control_plane.etoro_search_settings import get_etoro_search_settings_store
 
             rows = await search_instruments(
                 broker_name,
@@ -654,22 +657,25 @@ async def control_plane_search(
                 exchange=exchange or "ETORO",
                 use_fake=use_fake_client,
             )
+            search_mode = get_etoro_search_settings_store().get_search_mode()
             if rows:
                 log.info(
-                    "[CONTROL_SEARCH] etoro returned %d rows for %r using account_env=%s",
-                    len(rows), q, account_env,
+                    "[CONTROL_SEARCH] etoro returned %d rows for %r using account_env=%s mode=%s",
+                    len(rows), q, account_env, search_mode,
                 )
-                return {"status": True, "data": rows}
+                return {"status": True, "data": rows, "etoro_search_mode": search_mode}
 
             log.warning(
-                "[CONTROL_SEARCH] etoro returned 0 instruments for %r account_env=%s",
+                "[CONTROL_SEARCH] etoro returned 0 instruments for %r account_env=%s mode=%s",
                 q,
                 account_env,
+                search_mode,
             )
             return {
                 "status": False,
                 "message": f"No eToro instruments found for '{q}' in {account_env} environment",
                 "data": [],
+                "etoro_search_mode": search_mode,
             }
 
         client = get_client()

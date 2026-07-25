@@ -831,6 +831,71 @@
   font-size: 11px;
 }
 
+.set-config-card {
+  max-width: 680px;
+  margin: 18px;
+  padding: 18px;
+  border: 1px solid #d0d7de;
+  border-radius: 10px;
+  background: #fff;
+  color: #111;
+}
+
+.set-config-card__heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.set-config-card__heading svg {
+  flex: 0 0 auto;
+  width: 19px;
+  height: 19px;
+  color: #1d4ed8;
+}
+
+.set-config-card__heading strong {
+  display: block;
+  font-size: 14px;
+}
+
+.set-config-card__heading p,
+.set-config-card__help {
+  margin: 5px 0 0;
+  color: #4a5568;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.set-config-card__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 420px;
+  margin-top: 20px;
+  color: #111;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.set-config-card__field select {
+  color-scheme: light;
+  border: 1px solid #b8c1cc;
+  border-radius: 6px;
+  background: #fff;
+  color: #111;
+  font-size: 12px;
+  padding: 8px 10px;
+}
+
+.set-config-card__help code {
+  border-radius: 3px;
+  background: #f1f5f9;
+  color: #111;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 1px 3px;
+}
+
 .set-summary--halts {
   align-items: center;
   flex-wrap: nowrap;

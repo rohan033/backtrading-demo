@@ -246,24 +246,45 @@ async def search_instruments(
         return merge_watchlist_into_search_rows(broker_name, account_env, q, rows)
 
     if broker_name == "etoro":
-        from brokers.etoro.adapters.portfolio import etoro_instrument_to_search_row
+        from control_plane.etoro_algolia_search import search_etoro_algolia
         from control_plane.etoro_db import get_etoro_db
+        from control_plane.etoro_search_cache import (
+            current_cache_epoch,
+            get_cached_search,
+            put_cached_search,
+        )
+        from control_plane.etoro_search_settings import get_etoro_search_settings_store
+
+        mode = get_etoro_search_settings_store().get_search_mode()
+        cache_key = f"{mode}:{account_env}:{q.upper()}"
+        epoch = current_cache_epoch()
+        cached_rows = get_cached_search(cache_key, epoch)
+        if cached_rows is not None:
+            return merge_watchlist_into_search_rows(broker_name, account_env, q, cached_rows)
 
         db = get_etoro_db()
-        cached = db.find_by_ticker(account_env, q)
-        if cached:
-            rows = [db.to_search_row(cached)]
+        db_hit = db.find_by_ticker(account_env, q)
+        if db_hit:
+            rows = [db.to_search_row(db_hit)]
+            put_cached_search(cache_key, epoch, rows)
             return merge_watchlist_into_search_rows(broker_name, account_env, q, rows)
 
-        try:
-            client = await _etoro_trading_client(account_env)
-            instruments = await client.asearch_instruments(q)
-            rows = [etoro_instrument_to_search_row(item) for item in instruments]
-        except Exception as exc:
-            log.warning("[INSTRUMENT] etoro search failed for %r: %s", q, exc)
-            rows = []
+        if mode == "algolia":
+            rows = await search_etoro_algolia(q)
+        else:
+            from brokers.etoro.adapters.portfolio import etoro_instrument_to_search_row
+
+            try:
+                client = await _etoro_trading_client(account_env)
+                instruments = await client.asearch_instruments(q)
+                rows = [etoro_instrument_to_search_row(item) for item in instruments]
+            except Exception as exc:
+                log.warning("[INSTRUMENT] etoro search failed for %r: %s", q, exc)
+                rows = []
+
         for row in rows:
-            db.upsert_from_search_row(row, account_env=account_env, source="api")
+            db.upsert_from_search_row(row, account_env=account_env, source="api" if mode == "legacy" else "algolia")
+        put_cached_search(cache_key, epoch, rows)
         return merge_watchlist_into_search_rows(broker_name, account_env, q, rows)
 
     from api.server import get_client
