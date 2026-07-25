@@ -20,24 +20,31 @@ import AgentModeCreateSession from './AgentModeCreateSession'
 import AgentModeSessionList from './AgentModeSessionList'
 import AgentModeSessionWorkspace from './AgentModeSessionWorkspace'
 import AgentModeThreadsDrawer from './AgentModeThreadsDrawer'
+import AgenticSessions from './AgenticSessions'
 import OnePercentTradesPanel from './OnePercentTradesPanel'
 import './AgentMode.css'
 import './OnePercentSessions.css'
 
-type AgentSubpanel = 'ai' | '1pc'
+type AgentSubpanel = 'ai' | '1pc' | 'agentic'
 
 export default function AgentMode() {
   const { state, navigate } = useUrlState()
   const activeSessionId = state.trading_session || ''
   const activeOnePercentSessionId = state.one_percent_session || ''
+  const activeAgenticSessionId = state.agentic_session || ''
 
   const subpanel: AgentSubpanel = useMemo(() => {
-    if (state.agent_panel === '1pc' || state.agent_panel === 'ai') {
+    if (
+      state.agent_panel === '1pc'
+      || state.agent_panel === 'ai'
+      || state.agent_panel === 'agentic'
+    ) {
       return state.agent_panel
     }
+    if (activeAgenticSessionId) return 'agentic'
     if (activeOnePercentSessionId) return '1pc'
     return 'ai'
-  }, [activeOnePercentSessionId, state.agent_panel])
+  }, [activeAgenticSessionId, activeOnePercentSessionId, state.agent_panel])
 
   const [sessions, setSessions] = useState<TradingSession[]>([])
   const [onePercentSessions, setOnePercentSessions] = useState<OnePercentSession[]>([])
@@ -54,6 +61,7 @@ export default function AgentMode() {
         tab: 'agent',
         agent_panel: 'ai',
         one_percent_session: '',
+        agentic_session: '',
         trading_session: activeSessionId || '',
       })
       return
@@ -61,9 +69,10 @@ export default function AgentMode() {
     // Land on the session list by default — don't reopen the last session.
     navigate({
       tab: 'agent',
-      agent_panel: '1pc',
+      agent_panel: next,
       trading_session: '',
       one_percent_session: '',
+      agentic_session: '',
     })
   }, [activeSessionId, navigate])
 
@@ -169,6 +178,7 @@ export default function AgentMode() {
       agent_panel: 'ai',
       trading_session: sessionId,
       one_percent_session: '',
+      agentic_session: '',
     })
   }, [navigate])
 
@@ -178,6 +188,7 @@ export default function AgentMode() {
       agent_panel: '1pc',
       one_percent_session: sessionId,
       trading_session: '',
+      agentic_session: '',
     })
   }, [navigate])
 
@@ -198,6 +209,7 @@ export default function AgentMode() {
       agent_panel: 'ai',
       trading_session: session.id,
       one_percent_session: '',
+      agentic_session: '',
     })
     void refreshSessions()
   }, [navigate, refreshSessions])
@@ -209,6 +221,7 @@ export default function AgentMode() {
       agent_panel: '1pc',
       one_percent_session: session.id,
       trading_session: '',
+      agentic_session: '',
     })
     void refreshSessions()
   }, [navigate, refreshSessions])
@@ -302,6 +315,15 @@ export default function AgentMode() {
         >
           1pc trades
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={subpanel === 'agentic'}
+          className={`am-subpanel-tab${subpanel === 'agentic' ? ' am-subpanel-tab--active' : ''}`}
+          onClick={() => setSubpanel('agentic')}
+        >
+          Agentic
+        </button>
       </div>
 
       <AgentModeCreateSession
@@ -310,7 +332,9 @@ export default function AgentMode() {
         onCreated={handleCreated}
       />
 
-      {subpanel === '1pc' ? (
+      {subpanel === 'agentic' ? (
+        <AgenticSessions />
+      ) : subpanel === '1pc' ? (
         <OnePercentTradesPanel
           sessions={onePercentSessions}
           activeSessionId={activeOnePercentSessionId}

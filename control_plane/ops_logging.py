@@ -14,7 +14,7 @@ UVICORN_LOG_CONFIG_PATH = REPO_ROOT / "logs" / "uvicorn_log_config.json"
 _QUIET_ACCESS_RE = re.compile(
     r'"(?:GET /api/control/|POST /api/control/engines/[^"]+/heartbeat|'
     r'GET /api/watchlist/|GET /api/control/search|'
-    r'(?:GET|POST) /api/screeners|GET /api/trade-halts/)',
+    r'(?:GET|POST) /api/screeners|GET /api/trade-halts/|GET /api/agentic/)',
     re.IGNORECASE,
 )
 

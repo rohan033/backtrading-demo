@@ -45,6 +45,7 @@ from api.one_percent_session_routes import (
     handle_one_percent_session_websocket,
     router as one_percent_session_router,
 )
+from api.agentic_routes import router as agentic_router
 from api.news_feed import get_news_feed_hub
 from api.trade_halts_feed import get_trade_halts_feed_hub
 from api.watchlist_feed import get_watchlist_feed_hub, market_preview_uses_shared_hub
@@ -153,6 +154,7 @@ app.include_router(trade_halts_router)
 app.include_router(etoro_search_router)
 app.include_router(trading_session_router)
 app.include_router(one_percent_session_router)
+app.include_router(agentic_router)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 TRADE_FEE = 25  # ₹25 per buy-sell round trip
@@ -408,12 +410,22 @@ async def control_plane_lifespan(_app: FastAPI):
     from control_plane.one_percent_session_engine import get_one_percent_session_engine
 
     await get_one_percent_session_engine().startup()
+    from control_plane.agentic.market_hunter import get_market_hunter
+    from control_plane.agentic.reconciliation import get_agentic_reconciler
+    from control_plane.agentic.session_engine import get_agentic_session_manager
+
+    await get_market_hunter().start()
+    await get_agentic_session_manager().startup()
+    await get_agentic_reconciler().start()
     from control_plane.etoro_db import get_etoro_db
 
     get_etoro_db().seed_from_watchlists()
     try:
         yield
     finally:
+        await get_agentic_reconciler().stop()
+        await get_agentic_session_manager().shutdown()
+        await get_market_hunter().stop()
         await get_one_percent_session_engine().shutdown()
         await get_agent_monitor_service().stop()
         await _trade_halts_poller.stop()
