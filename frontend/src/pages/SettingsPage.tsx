@@ -751,8 +751,8 @@ function EtoroSearchPanel() {
           </label>
           {error ? <div className="set-error set-error--inline" role="alert">{error}</div> : null}
           <p className="set-config-card__help">
-            Algolia mode accepts only an exact <code>symbolFull</code> match for visible,
-            non-view-only stock instruments and uses the returned image variants.
+            Algolia mode accepts an exact <code>symbolFull</code> match for visible,
+            non-view-only stock and crypto instruments and uses the returned image variants.
             Applies to the UI and AI agent searches.
           </p>
         </div>

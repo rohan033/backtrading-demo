@@ -20,7 +20,7 @@ DB_PATH = os.path.join(
     "agentic_sessions.db",
 )
 
-SESSION_STATUSES = ("running", "stopped")
+SESSION_STATUSES = ("running", "paused", "stopped")
 POSITION_STATES = ("pending_open", "open", "pending_close", "closed", "failed")
 EXIT_STATES = ("running", "weakening", "exit")
 EVENT_TYPES = (
@@ -76,6 +76,7 @@ class AgenticSessionStore:
                 account_env TEXT NOT NULL DEFAULT 'demo',
                 start_balance REAL NOT NULL DEFAULT 0,
                 config_json TEXT NOT NULL DEFAULT '{}',
+                snapshot_json TEXT NOT NULL DEFAULT '{}',
                 started_at TEXT,
                 stopped_at TEXT,
                 stop_reason TEXT,
@@ -122,6 +123,13 @@ class AgenticSessionStore:
                 ON agentic_session_positions(session_id, state);
             """
         )
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(agentic_sessions)").fetchall()
+        }
+        if "snapshot_json" not in columns:
+            conn.execute(
+                "ALTER TABLE agentic_sessions ADD COLUMN snapshot_json TEXT NOT NULL DEFAULT '{}'"
+            )
         conn.commit()
         conn.close()
 
@@ -138,6 +146,7 @@ class AgenticSessionStore:
             "account_env": data["account_env"],
             "start_balance": float(data.get("start_balance") or 0.0),
             "config": _loads(data.get("config_json"), {}),
+            "snapshot": _loads(data.get("snapshot_json"), {}),
             "started_at": data.get("started_at"),
             "stopped_at": data.get("stopped_at"),
             "stop_reason": data.get("stop_reason"),
@@ -214,6 +223,7 @@ class AgenticSessionStore:
             "status",
             "start_balance",
             "config_json",
+            "snapshot_json",
             "started_at",
             "stopped_at",
             "stop_reason",
@@ -232,6 +242,39 @@ class AgenticSessionStore:
             conn.commit()
             conn.close()
         return self.get_session(session_id)
+
+    def mutate_snapshot(
+        self,
+        session_id: str,
+        mutator: Any,
+    ) -> dict[str, Any]:
+        """Atomically read-modify-write a session snapshot under the DB write lock."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT snapshot_json FROM agentic_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                conn.close()
+                raise KeyError(session_id)
+            snapshot = _loads(row["snapshot_json"], {})
+            updated = mutator(dict(snapshot))
+            if updated is not None:
+                snapshot = updated
+            now = _now_utc()
+            conn.execute(
+                "UPDATE agentic_sessions SET snapshot_json = ?, updated_at = ? WHERE id = ?",
+                (
+                    json.dumps(snapshot, separators=(",", ":"), default=str),
+                    now,
+                    session_id,
+                ),
+            )
+            conn.commit()
+            conn.close()
+        return snapshot
 
     def stop_session(self, session_id: str, reason: str | None = None) -> dict[str, Any] | None:
         return self.update_session(

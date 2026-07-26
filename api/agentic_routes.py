@@ -16,10 +16,12 @@ from control_plane.agentic.config import (
     DEFAULT_START_BALANCE,
     config_overrides_from_prompt,
     merge_config,
+    patch_config,
 )
 from control_plane.agentic.market_hunter import get_market_hunter
 from control_plane.agentic.session_engine import get_agentic_session_manager
 from control_plane.agentic.session_store import get_agentic_session_store
+from control_plane.agentic.snapshot import SessionSnapshot
 
 router = APIRouter(prefix="/api/agentic", tags=["agentic"])
 
@@ -30,6 +32,19 @@ class CreateSessionRequest(BaseModel):
     account_env: Literal["demo", "live"]
     start_balance: float | None = Field(default=None, gt=0)
     config: dict[str, Any] | None = None
+    agent_model: str | None = Field(
+        default=None,
+        description="Cursor SDK model id for orchestrator and sub-agents",
+    )
+    agent_model_params: list[dict[str, str]] = Field(default_factory=list)
+
+
+class UpdateAgentModelRequest(BaseModel):
+    agent_model: str | None = Field(
+        default=None,
+        description="Cursor SDK model id; empty string clears to SDK default",
+    )
+    agent_model_params: list[dict[str, str]] | None = None
 
 
 def _session_json(session: dict[str, Any]) -> dict[str, Any]:
@@ -48,6 +63,7 @@ def _session_json(session: dict[str, Any]) -> dict[str, Any]:
         "created_at": session["created_at"],
         "updated_at": session["updated_at"],
         "stats": store.session_stats(session["id"]),
+        "snapshot_version": int((session.get("snapshot") or {}).get("version") or 1),
     }
 
 
@@ -88,6 +104,10 @@ async def create_session(req: CreateSessionRequest):
     store = get_agentic_session_store()
     prompt = (req.prompt or "").strip() or None
     config = merge_config(req.config, prompt=prompt)
+    if req.agent_model is not None:
+        config["agent_model"] = req.agent_model.strip() or None
+    if req.agent_model_params:
+        config["agent_model_params"] = req.agent_model_params
     start_balance = float(req.start_balance or DEFAULT_START_BALANCE)
     name = (req.name or "").strip() or f"Agentic session ({req.account_env})"
 
@@ -110,9 +130,24 @@ async def create_session(req: CreateSessionRequest):
         session["id"],
         "info",
         f"Session started ({req.account_env}, ${start_balance:.2f}"
-        f"{', dry-run' if config.get('dry_run') else ', LIVE ORDERS'})",
+        f"{', simulated fills' if config.get('dry_run') else ', broker orders'}"
+        f"{f', model={config.get('agent_model')}' if config.get('agent_model') else ''})",
         meta={"config": config},
     )
+    screener_ids = config.get("screener_ids") or []
+    tickers = config.get("tickers") or []
+    if screener_ids or tickers:
+        scope_parts: list[str] = []
+        if screener_ids:
+            scope_parts.append(f"{len(screener_ids)} screener(s)")
+        if tickers:
+            scope_parts.append(f"watchlist: {', '.join(str(t) for t in tickers)}")
+        store.add_event(
+            session["id"],
+            "info",
+            f"Session scope — {'; '.join(scope_parts)}",
+            meta={"screener_ids": screener_ids, "tickers": tickers},
+        )
     get_agentic_session_manager().start_session(session["id"])
     return {"status": True, "data": _session_json(session)}
 
@@ -123,6 +158,17 @@ async def get_session(session_id: str):
     return {"status": True, "data": _session_json(session)}
 
 
+@router.get(
+    "/sessions/{session_id}/snapshot",
+    operation_id="get_agentic_session_snapshot",
+    summary="Get the atomic dashboard snapshot",
+)
+async def get_session_snapshot(session_id: str):
+    _get_session_or_404(session_id)
+    snapshot = SessionSnapshot(get_agentic_session_store(), session_id).hydrate()
+    return {"status": True, "data": snapshot}
+
+
 @router.post("/sessions/{session_id}/stop", operation_id="stop_agentic_session", summary="Stop an agentic session (keeps managing open positions)")
 async def stop_session(session_id: str):
     _get_session_or_404(session_id)
@@ -130,6 +176,62 @@ async def stop_session(session_id: str):
     if session is None:
         raise HTTPException(status_code=404, detail="Agentic session not found")
     return {"status": True, "data": _session_json(session)}
+
+
+@router.post(
+    "/sessions/{session_id}/pause",
+    operation_id="pause_agentic_session",
+    summary="Pause entries and strategic reasoning while risk monitoring continues",
+)
+async def pause_session(session_id: str):
+    _get_session_or_404(session_id)
+    session = get_agentic_session_manager().pause_session(session_id)
+    return {"status": True, "data": _session_json(session)}
+
+
+@router.post(
+    "/sessions/{session_id}/resume",
+    operation_id="resume_agentic_session",
+    summary="Resume an agentic session",
+)
+async def resume_session(session_id: str):
+    _get_session_or_404(session_id)
+    session = get_agentic_session_manager().resume_session(session_id)
+    return {"status": True, "data": _session_json(session)}
+
+
+@router.patch(
+    "/sessions/{session_id}/agent-model",
+    operation_id="update_agentic_session_model",
+    summary="Update the Cursor model used by the main orchestrator and sub-agents",
+)
+async def update_session_agent_model(session_id: str, req: UpdateAgentModelRequest):
+    import json
+
+    store = get_agentic_session_store()
+    session = _get_session_or_404(session_id)
+    patch: dict[str, Any] = {}
+    if req.agent_model is not None:
+        patch["agent_model"] = req.agent_model.strip() or None
+    if req.agent_model_params is not None:
+        patch["agent_model_params"] = req.agent_model_params
+    if not patch:
+        raise HTTPException(status_code=400, detail="No model fields to update")
+    config = patch_config(session.get("config") or {}, patch)
+    updated = store.update_session(
+        session_id,
+        {"config_json": json.dumps(config, separators=(",", ":"), default=str)},
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Agentic session not found")
+    label = config.get("agent_model") or "SDK default"
+    store.add_event(
+        session_id,
+        "info",
+        f"Orchestrator model set to {label}",
+        meta={"agent_model": config.get("agent_model"), "agent_model_params": config.get("agent_model_params")},
+    )
+    return {"status": True, "data": _session_json(updated)}
 
 
 @router.delete("/sessions/{session_id}", operation_id="delete_agentic_session", summary="Delete a stopped agentic session")
@@ -185,3 +287,17 @@ async def close_session_position(session_id: str, position_id: str):
 @router.get("/suggestions", operation_id="list_agentic_suggestions", summary="Latest market hunter suggestions (newest first)")
 async def list_suggestions(limit: int = Query(30, ge=1, le=100)):
     return {"status": True, "data": get_market_hunter().recent_suggestions(limit=limit)}
+
+
+@router.get("/status", operation_id="get_agentic_status", summary="Market hunter heartbeat and scan stats")
+async def get_agentic_status():
+    hunter = get_market_hunter()
+    return {
+        "status": True,
+        "data": {
+            "hunter": hunter.status(),
+            "running_sessions": len(
+                get_agentic_session_store().list_sessions_by_status("running")
+            ),
+        },
+    }

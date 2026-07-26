@@ -21,6 +21,7 @@ export type OverviewTradeSignal = {
 export type OverviewScreenerPick = {
   symbol: string
   screenerName: string
+  sourceType?: Screener['source_type']
   row: ScreenerResultRow
   changePct: number | null
 }
@@ -50,6 +51,7 @@ export function collectTopScreenerPicks(screeners: Screener[]): OverviewScreener
       picks.push({
         symbol,
         screenerName: screener.name,
+        sourceType: screener.source_type,
         row,
         changePct: metrics.pct,
       })

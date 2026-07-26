@@ -64,6 +64,26 @@ export function resolveWatchlistTickKey(
   return watchlistTickKey(resolved.broker, resolved.accountEnv, resolved.symboltoken)
 }
 
+/** Prefer session env tick key, then fall back to the other eToro env watchlist row. */
+export function resolveEtoroLiveTickKey(
+  watchlists: Watchlist[],
+  symbol: string,
+  preferredEnv: 'live' | 'demo',
+): string | null {
+  const primary = resolveWatchlistTickKey(watchlists, {
+    broker: 'etoro',
+    account_env: preferredEnv,
+    symbol,
+  })
+  if (primary) return primary
+  const altEnv = preferredEnv === 'live' ? 'demo' : 'live'
+  return resolveWatchlistTickKey(watchlists, {
+    broker: 'etoro',
+    account_env: altEnv,
+    symbol,
+  })
+}
+
 /** True when the symbol is on a watchlist with matching broker/env (feed may be active). */
 export function isSymbolOnWatchlistFeed(
   watchlists: Watchlist[],

@@ -2,8 +2,8 @@
 
 One asyncio task per running session. Consumes market hunter suggestions,
 sizes positions with confidence weighting under hard caps, places orders
-(real eToro orders, or simulated fills when config.dry_run is true — the
-default), and runs the Running -> Weakening -> Exit state machine on 5-minute
+(real eToro demo/live orders by default; set config.dry_run=true only for
+local simulated fills with no broker call), and runs the Running -> Weakening -> Exit state machine on 5-minute
 candle closes with a halt fast-path.
 
 The exit machine only tightens or exits earlier: the hard stop set at
@@ -29,7 +29,9 @@ from control_plane.agentic.broker import (
     place_market_buy_with_stop,
 )
 from control_plane.agentic.config import DEFAULT_CONFIG
-from control_plane.agentic.market_hunter import get_market_hunter
+from control_plane.agentic.market_hunter import MarketHunter, get_market_hunter
+from control_plane.agentic.playbooks import create_playbook, rotation_edge
+from control_plane.agentic.snapshot import SessionSnapshot
 from control_plane.agentic.session_store import (
     ACTIVE_POSITION_STATES,
     get_agentic_session_store,
@@ -38,6 +40,16 @@ from control_plane.agentic.session_store import (
 log = logging.getLogger("backtrading")
 
 CANDLE_FETCH_COUNT = 60  # ~5 hours of 5m bars; plenty for ATR(14) + structure
+
+# Session engine executes orchestrator-approved trades; attribute logs accordingly.
+_ORCH_META = {"provenance": "main_orchestrator", "agent": "main_orchestrator"}
+
+
+def _orch_meta(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    merged = dict(_ORCH_META)
+    if extra:
+        merged.update(extra)
+    return merged
 
 
 def _now_iso() -> str:
@@ -51,6 +63,38 @@ def _cfg(session: dict[str, Any], key: str) -> Any:
 
 def _entries_allowed(session: dict[str, Any]) -> bool:
     return session.get("status") == "running" and not session.get("stop_reason")
+
+
+def _watchlist_tickers(session: dict[str, Any]) -> set[str]:
+    return {
+        str(t).upper()
+        for t in ((session.get("config") or {}).get("tickers") or [])
+        if t
+    }
+
+
+def _meets_entry_threshold(session: dict[str, Any], suggestion: dict[str, Any]) -> bool:
+    """Watchlist / manual picks only need the hunter floor; screeners use confidence_threshold."""
+    score = float(suggestion.get("score") or 0)
+    threshold = float(_cfg(session, "confidence_threshold"))
+    min_hunter = float(DEFAULT_CONFIG["min_suggestion_score"])
+    ticker = str(suggestion.get("ticker") or "").upper()
+    if ticker in _watchlist_tickers(session) or suggestion.get("source") == "manual":
+        return score >= min_hunter
+    return score >= threshold
+
+
+def _allocation_weight(session: dict[str, Any], suggestion: dict[str, Any]) -> float:
+    """Confidence-weighted sizing; watchlist picks weight from hunter floor upward."""
+    threshold = float(_cfg(session, "confidence_threshold"))
+    min_hunter = float(DEFAULT_CONFIG["min_suggestion_score"])
+    score = float(suggestion.get("score") or 0)
+    ticker = str(suggestion.get("ticker") or "").upper()
+    base = min_hunter if (
+        ticker in _watchlist_tickers(session) or suggestion.get("source") == "manual"
+    ) else threshold
+    span = max(1.0, 100.0 - base)
+    return 0.5 + 0.5 * min(1.0, max(0.0, (score - base) / span))
 
 
 # ── Close plumbing (shared by engine loop and the manual-close API) ──
@@ -105,15 +149,19 @@ async def close_position_now(
             f"{units_to_close:.4f}u @ {price:.4f} ({reason}) [dry-run] "
             f"pnl={realized_delta:+.2f}",
             ticker=position["ticker"],
-            meta={
+            meta=_orch_meta({
                 "position_id": position_id,
                 "reason": reason,
                 "fraction": fraction,
                 "exit_price": price,
                 "realized_delta": realized_delta,
                 "dry_run": True,
-            },
+            }),
         )
+        if full_close:
+            from control_plane.agentic.reconciliation import _release_hunter_ticker
+
+            _release_hunter_ticker(str(position.get("ticker") or ""))
         return updated
 
     # REAL close path.
@@ -156,15 +204,19 @@ async def close_position_now(
         f"{'Closed' if full_close else 'Trimmed'} {position['ticker']} "
         f"{units_to_close:.4f}u @ ~{price:.4f} ({reason}) pnl~{realized_delta:+.2f}",
         ticker=position["ticker"],
-        meta={
+        meta=_orch_meta({
             "position_id": position_id,
             "reason": reason,
             "fraction": fraction,
             "exit_price": price,
             "realized_delta": realized_delta,
             "dry_run": False,
-        },
+        }),
     )
+    if full_close:
+        from control_plane.agentic.reconciliation import _release_hunter_ticker
+
+        _release_hunter_ticker(str(position.get("ticker") or ""))
     return updated
 
 
@@ -186,6 +238,7 @@ class SessionEngine:
         hunter = get_market_hunter()
         self._queue = hunter.subscribe()
         log.info("[AGENTIC_ENGINE] Session %s loop started", self.session_id)
+        session = self.store.get_session(self.session_id)
         try:
             while True:
                 session = self.store.get_session(self.session_id)
@@ -240,14 +293,46 @@ class SessionEngine:
                 break
         if not _entries_allowed(session):
             return
+        scoped = [
+            s
+            for s in suggestions
+            if MarketHunter._suggestion_allowed_for_session(session, s)
+        ]
         threshold = float(_cfg(session, "confidence_threshold"))
-        actionable = [s for s in suggestions if float(s["score"]) >= threshold]
+        for suggestion in scoped:
+            ticker = str(suggestion.get("ticker") or "").upper()
+            score = float(suggestion.get("score") or 0)
+            if not _meets_entry_threshold(session, suggestion):
+                from control_plane.agentic.agent_reasoning import _emit_synthetic
+
+                _emit_synthetic(
+                    self.session_id,
+                    agent="session",
+                    ticker=ticker,
+                    lines=[
+                        f"Received {ticker} suggestion (score {score}) — below threshold {threshold}.",
+                        "Screener picks need score ≥ confidence threshold; watchlist picks need ≥ 40.",
+                        f"Reason: {suggestion.get('reason') or suggestion.get('source_screener')}.",
+                    ],
+                )
+        actionable = [s for s in scoped if _meets_entry_threshold(session, s)]
         # Best candidates first so caps go to the highest-confidence names.
         actionable.sort(key=lambda s: float(s["score"]), reverse=True)
         for suggestion in actionable:
             session = self.store.get_session(self.session_id) or session
             if not _entries_allowed(session):
                 return
+            self.store.add_event(
+                self.session_id,
+                "info",
+                f"Evaluating {suggestion['ticker']} (score {suggestion['score']})",
+                ticker=str(suggestion["ticker"]),
+                meta={
+                    "evaluating": True,
+                    "score": suggestion["score"],
+                    "source": suggestion.get("source"),
+                },
+            )
             await self._try_enter(session, suggestion)
 
     def _invested_amount(self) -> float:
@@ -287,6 +372,13 @@ class SessionEngine:
             (quote or {}).get("price") or suggestion.get("price") or 0.0
         )
         if price <= 0:
+            self.store.add_event(
+                self.session_id,
+                "error",
+                f"Cannot enter {ticker}: no live quote from broker",
+                ticker=ticker,
+                meta={"score": suggestion.get("score"), "quote": quote},
+            )
             return
 
         atr = compute_atr(candles, period=int(_cfg(session, "atr_period")))
@@ -297,15 +389,44 @@ class SessionEngine:
         stop_loss = max(0.0001, min(stop_loss, price * 0.999))
 
         # Confidence-weighted allocation inside the hard caps.
-        threshold = float(_cfg(session, "confidence_threshold"))
-        span = max(1.0, 100.0 - threshold)
-        weight = 0.5 + 0.5 * min(1.0, max(0.0, (float(suggestion["score"]) - threshold) / span))
+        weight = _allocation_weight(session, suggestion)
         allocation = min(per_cap * weight, headroom)
         if allocation < min_alloc:
+            self.store.add_event(
+                self.session_id,
+                "info",
+                f"Skipped {ticker}: allocation ${allocation:.2f} below minimum ${min_alloc:.2f}",
+                ticker=ticker,
+                meta={"allocation": allocation, "headroom": headroom},
+            )
             return
         units = allocation / price
         intent_id = uuid.uuid4().hex
         dry_run = bool(_cfg(session, "dry_run"))
+
+        # Session agent reasoning: {data, oneline, confidence} + streaming thinking.
+        from control_plane.agentic.agent_reasoning import schedule_session_thinking
+
+        await schedule_session_thinking(
+            session,
+            suggestion,
+            price=price,
+            atr=atr,
+            allocation=allocation,
+            headroom=headroom,
+        )
+
+        if not await get_agentic_session_manager().evaluate_candidate(
+            self.session_id, suggestion
+        ):
+            self.store.add_event(
+                self.session_id,
+                "info",
+                f"Orchestrator declined or deferred {ticker}",
+                ticker=ticker,
+                meta=_orch_meta({"score": suggestion.get("score"), "provenance": "main_orchestrator"}),
+            )
+            return
 
         position = self.store.create_position(
             self.session_id,
@@ -330,7 +451,7 @@ class SessionEngine:
                 f"Opened {ticker} {units:.4f}u @ {price:.4f} stop={stop_loss:.4f} "
                 f"(${allocation:.2f}, score {suggestion['score']}) [dry-run]",
                 ticker=ticker,
-                meta={
+                meta=_orch_meta({
                     "position_id": position["id"],
                     "intent_id": intent_id,
                     "allocation": allocation,
@@ -339,8 +460,10 @@ class SessionEngine:
                     "stop_loss": stop_loss,
                     "suggestion_id": suggestion.get("id"),
                     "dry_run": True,
-                },
+                }),
             )
+            opened = self.store.get_position(position["id"]) or position
+            self._persist_playbook(opened, suggestion, atr)
             return
 
         # REAL order path — stop loss attached at placement, never optional.
@@ -366,20 +489,24 @@ class SessionEngine:
         self.store.update_position(
             position["id"],
             {
-                "state": "open",
-                "opened_at": _now_iso(),
                 "trail_peak": price,
-                "broker_position_id": result.get("broker_position_id"),
                 "stop_loss": float(result.get("stop_loss_rate") or stop_loss),
+                "broker_position_id": result.get("broker_position_id"),
             },
         )
+        if result.get("broker_position_id"):
+            self.store.update_position(
+                position["id"],
+                {"state": "open", "opened_at": _now_iso()},
+            )
         self.store.add_event(
             self.session_id,
             "entry",
-            f"Opened {ticker} ~{units:.4f}u @ ~{price:.4f} stop={stop_loss:.4f} "
+            f"{'Opened' if result.get('broker_position_id') else 'Submitted'} {ticker} "
+            f"~{units:.4f}u @ ~{price:.4f} stop={stop_loss:.4f} "
             f"(${allocation:.2f}, score {suggestion['score']}) order={result.get('order_id')}",
             ticker=ticker,
-            meta={
+            meta=_orch_meta({
                 "position_id": position["id"],
                 "intent_id": intent_id,
                 "order_id": result.get("order_id"),
@@ -387,7 +514,32 @@ class SessionEngine:
                 "allocation": allocation,
                 "score": suggestion["score"],
                 "dry_run": False,
-            },
+                "pending_fill": not bool(result.get("broker_position_id")),
+            }),
+        )
+        if not result.get("broker_position_id"):
+            return
+        opened = self.store.get_position(position["id"]) or position
+        self._persist_playbook(opened, suggestion, atr)
+
+    def _persist_playbook(
+        self,
+        position: dict[str, Any],
+        suggestion: dict[str, Any],
+        atr: float | None,
+    ) -> None:
+        playbook = create_playbook(position, suggestion, atr=atr)
+        SessionSnapshot(self.store, self.session_id).mutate(
+            lambda snapshot: snapshot.setdefault("playbooks", {}).__setitem__(
+                position["id"], playbook
+            )
+        )
+        self.store.add_event(
+            self.session_id,
+            "playbook",
+            f"Trade playbook created for {position['ticker']}",
+            ticker=position["ticker"],
+            meta=_orch_meta({"position_id": position["id"], "playbook": playbook}),
         )
 
     # ── Rotation ──
@@ -414,7 +566,16 @@ class SessionEngine:
             return False
         scored = [(self._position_momentum_score(p), p) for p in open_positions]
         weakest_score, weakest = min(scored, key=lambda item: item[0])
-        if float(suggestion["score"]) <= weakest_score + margin:
+        edge = rotation_edge(
+            candidate_score=float(suggestion["score"]),
+            holding_score=weakest_score,
+            slippage_bps=float(_cfg(session, "rotation_slippage_bps")),
+            edge_margin_pct=float(_cfg(session, "rotation_edge_margin_pct")),
+        )
+        if (
+            float(suggestion["score"]) <= weakest_score + margin
+            or not edge["rotate"]
+        ):
             return False
 
         self.store.add_event(
@@ -423,13 +584,14 @@ class SessionEngine:
             f"Rotation: closing {weakest['ticker']} (momentum {weakest_score:.0f}) "
             f"for {suggestion['ticker']} (score {suggestion['score']})",
             ticker=weakest["ticker"],
-            meta={
+            meta=_orch_meta({
                 "position_id": weakest["id"],
                 "candidate": suggestion["ticker"],
                 "candidate_score": suggestion["score"],
                 "momentum_score": weakest_score,
                 "margin": margin,
-            },
+                "edge": edge,
+            }),
         )
         self._mark_action(weakest["ticker"])
         await close_position_now(
@@ -504,8 +666,16 @@ class SessionEngine:
             or position.get("buy_price")
             or 0.0
         )
+        from control_plane.agentic.live_feed import get_ws_price
+
+        ws_price = get_ws_price(self.session_id, ticker, session.get("account_env") or "demo")
+        if ws_price is not None and ws_price > 0:
+            price = ws_price
         if price <= 0:
             return
+        from control_plane.agentic.profit_price_tracker import get_profit_price_tracker
+
+        get_profit_price_tracker().record(self.session_id, ticker, price, source="websocket")
         buy_price = float(position["buy_price"] or 0.0)
         units = float(position["units"] or 0.0)
         store.update_position(
@@ -524,7 +694,7 @@ class SessionEngine:
                 "state_change",
                 f"{ticker} down-halt while held — fast-path exit",
                 ticker=ticker,
-                meta={"position_id": position_id, "from": position["exit_state"], "to": "exit"},
+                meta=_orch_meta({"position_id": position_id, "from": position["exit_state"], "to": "exit"}),
             )
             store.update_position(position_id, {"exit_state": "exit"})
             await close_position_now(session, position, reason="down-halt", exit_price=price)
@@ -558,13 +728,13 @@ class SessionEngine:
                 f"{ticker} hit stop {effective_stop:.4f} "
                 f"({'trail' if trail_stop >= hard_stop else 'hard stop'}) — exit",
                 ticker=ticker,
-                meta={
+                meta=_orch_meta({
                     "position_id": position_id,
                     "from": exit_state,
                     "to": "exit",
                     "effective_stop": effective_stop,
                     "price": price,
-                },
+                }),
             )
             store.update_position(position_id, {"exit_state": "exit"})
             await close_position_now(session, position, reason="stop hit", exit_price=price)
@@ -598,12 +768,12 @@ class SessionEngine:
                 f"{ticker} Running → Weakening (low {closed['low']:.4f} undercut "
                 f"{prior['low']:.4f}); trimming {trim_fraction * 100:.0f}%, trail 1x ATR",
                 ticker=ticker,
-                meta={
+                meta=_orch_meta({
                     "position_id": position_id,
                     "from": "running",
                     "to": "weakening",
                     "candle_time": closed_ts,
-                },
+                }),
             )
             self._mark_action(ticker)
             refreshed = store.get_position(position_id)
@@ -622,12 +792,12 @@ class SessionEngine:
                 "state_change",
                 f"{ticker} Weakening → Running (higher low reconfirmed); trail back to 3x ATR",
                 ticker=ticker,
-                meta={
+                meta=_orch_meta({
                     "position_id": position_id,
                     "from": "weakening",
                     "to": "running",
                     "candle_time": closed_ts,
-                },
+                }),
             )
             self._mark_action(ticker)
 
@@ -698,8 +868,13 @@ class AgenticSessionManager:
     def __init__(self) -> None:
         self._tasks: dict[str, asyncio.Task] = {}
         self._engines: dict[str, SessionEngine] = {}
+        self._orchestrators: dict[str, Any] = {}
+        self._service_managers: dict[str, Any] = {}
 
     async def startup(self) -> None:
+        from control_plane.agentic.live_feed import startup as start_agentic_feed
+
+        await start_agentic_feed()
         store = get_agentic_session_store()
         running = store.list_sessions_by_status("running")
         for session in running:
@@ -715,6 +890,10 @@ class AgenticSessionManager:
                 await task
         self._tasks.clear()
         self._engines.clear()
+        for manager in list(self._service_managers.values()):
+            await manager.stop()
+        self._service_managers.clear()
+        self._orchestrators.clear()
 
     def start_session(self, session_id: str) -> None:
         existing = self._tasks.get(session_id)
@@ -722,13 +901,70 @@ class AgenticSessionManager:
             return
         engine = SessionEngine(session_id)
         self._engines[session_id] = engine
+        session = get_agentic_session_store().get_session(session_id) or {}
+        config = session.get("config") or {}
+        from control_plane.agentic.events import get_event_bus
+        from control_plane.agentic.orchestrator import TradingOrchestrator
+        from control_plane.agentic.services import ServiceLifecycleManager
+
+        bus = get_event_bus(
+            session_id,
+            get_agentic_session_store(),
+            int(config.get("event_queue_size", DEFAULT_CONFIG["event_queue_size"])),
+        )
+        orchestrator = TradingOrchestrator(session_id, get_agentic_session_store(), bus)
+        self._orchestrators[session_id] = orchestrator
+        orchestrator_task = asyncio.create_task(
+            orchestrator.run(), name=f"agentic-orchestrator-{session_id}"
+        )
+        self._tasks[f"{session_id}:orchestrator"] = orchestrator_task
+        services = ServiceLifecycleManager(session_id, get_agentic_session_store(), bus)
+        services.start()
+        self._service_managers[session_id] = services
         task = asyncio.create_task(engine.run(), name=f"agentic-session-{session_id}")
         task.add_done_callback(lambda _t, sid=session_id: self._on_done(sid))
         self._tasks[session_id] = task
+        asyncio.create_task(
+            get_market_hunter().scan_once(),
+            name=f"agentic-hunter-kick-{session_id[:8]}",
+        )
+        from control_plane.agentic.live_feed import refresh_agentic_feed_subscriptions
+
+        asyncio.create_task(
+            refresh_agentic_feed_subscriptions(),
+            name=f"agentic-feed-sync-{session_id[:8]}",
+        )
 
     def _on_done(self, session_id: str) -> None:
         self._tasks.pop(session_id, None)
         self._engines.pop(session_id, None)
+        orchestrator_task = self._tasks.pop(f"{session_id}:orchestrator", None)
+        if orchestrator_task and not orchestrator_task.done():
+            orchestrator_task.cancel()
+        services = self._service_managers.pop(session_id, None)
+        if services:
+            asyncio.create_task(
+                services.stop(), name=f"agentic-services-stop-{session_id[:8]}"
+            )
+        self._orchestrators.pop(session_id, None)
+        from control_plane.agentic.events import remove_event_bus
+        from control_plane.agentic.live_feed import refresh_agentic_feed_subscriptions
+        from control_plane.agentic.profit_price_tracker import get_profit_price_tracker
+
+        get_profit_price_tracker().clear_session(session_id)
+        remove_event_bus(session_id)
+        asyncio.create_task(
+            refresh_agentic_feed_subscriptions(),
+            name=f"agentic-feed-sync-stop-{session_id[:8]}",
+        )
+
+    async def evaluate_candidate(
+        self, session_id: str, suggestion: dict[str, Any]
+    ) -> bool:
+        orchestrator = self._orchestrators.get(session_id)
+        if orchestrator is None:
+            return False
+        return await orchestrator.evaluate_candidate(suggestion)
 
     async def stop_session(self, session_id: str, reason: str = "Stopped by user") -> dict[str, Any] | None:
         """STOP: block entries, keep exit management running until positions close."""
@@ -746,10 +982,40 @@ class AgenticSessionManager:
         # Engine task keeps running while open positions exist; it exits on its own.
         return session
 
+    def pause_session(self, session_id: str) -> dict[str, Any] | None:
+        store = get_agentic_session_store()
+        session = store.get_session(session_id)
+        if session is None or session["status"] == "stopped":
+            return session
+        updated = store.update_session(session_id, {"status": "paused"})
+        store.add_event(
+            session_id,
+            "info",
+            "Session paused: new entries and LLM wakeups are suspended; risk exits remain active.",
+            meta={"provenance": "user", "risk_monitoring_continues": True},
+        )
+        return updated
+
+    def resume_session(self, session_id: str) -> dict[str, Any] | None:
+        store = get_agentic_session_store()
+        session = store.get_session(session_id)
+        if session is None or session["status"] == "stopped":
+            return session
+        updated = store.update_session(session_id, {"status": "running"})
+        store.add_event(
+            session_id,
+            "info",
+            "Session resumed: event-driven orchestration enabled.",
+            meta={"provenance": "user"},
+        )
+        return updated
+
     def stop_engine_task(self, session_id: str) -> None:
         task = self._tasks.get(session_id)
         if task and not task.done():
             task.cancel()
+        else:
+            self._on_done(session_id)
 
     async def force_close_position(
         self, session_id: str, position_id: str

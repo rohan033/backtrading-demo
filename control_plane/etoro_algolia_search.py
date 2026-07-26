@@ -1,4 +1,4 @@
-"""eToro public Algolia instrument search (exact visible stock tickers)."""
+"""eToro public Algolia instrument search (exact visible stock & crypto tickers)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ ETORO_ALGOLIA_ENDPOINT = "https://x9rg52m4oj-dsn.algolia.net/1/indexes/*/queries
 ETORO_ALGOLIA_APPLICATION_ID = "X9RG52M4OJ"
 ETORO_ALGOLIA_SEARCH_KEY = "7a66b9f7dc582e2803b8d188025e95ba"
 ETORO_ALGOLIA_INDEX = "prod_Instruments"
+
+_ALGOLIA_INSTRUMENT_TYPES = frozenset({"stocks", "crypto"})
 
 
 def _image_uri(images: dict[str, Any] | None, variant: str) -> str | None:
@@ -46,14 +48,14 @@ def algolia_hit_to_search_row(hit: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def pick_algolia_stock_hit(hits: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
+def pick_algolia_hit(hits: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
     target = query.strip().upper()
     if not target:
         return None
     for hit in hits:
         if str(hit.get("symbolFull") or "").strip().upper() != target:
             continue
-        if str(hit.get("instrumentType") or "").lower() != "stocks":
+        if str(hit.get("instrumentType") or "").lower() not in _ALGOLIA_INSTRUMENT_TYPES:
             continue
         if hit.get("isVisible") is not True:
             continue
@@ -64,6 +66,11 @@ def pick_algolia_stock_hit(hits: list[dict[str, Any]], query: str) -> dict[str, 
             continue
         return hit
     return None
+
+
+def pick_algolia_stock_hit(hits: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
+    """Backward-compatible alias."""
+    return pick_algolia_hit(hits, query)
 
 
 async def search_etoro_algolia(query: str) -> list[dict[str, Any]]:
@@ -102,7 +109,7 @@ async def search_etoro_algolia(query: str) -> list[dict[str, Any]]:
         return []
     first = results[0] if isinstance(results[0], dict) else {}
     hits = first.get("hits") if isinstance(first.get("hits"), list) else []
-    hit = pick_algolia_stock_hit(hits, q)
+    hit = pick_algolia_hit(hits, q)
     if not hit:
         return []
     return [algolia_hit_to_search_row(hit)]

@@ -15,6 +15,8 @@ log = logging.getLogger("backtrading")
 
 FIVE_MINUTE_INTERVAL = "FiveMinutes"
 FIVE_MINUTE_SECONDS = 300
+ONE_MINUTE_INTERVAL = "OneMinute"
+ONE_MINUTE_SECONDS = 60
 
 _clients: dict[str, Any] = {}
 _clients_lock = asyncio.Lock()
@@ -71,7 +73,37 @@ async def fetch_five_minute_candles(
     *,
     count: int = 60,
 ) -> list[dict[str, Any]]:
-    """Ascending 5-minute OHLCV candles ({time, open, high, low, close, volume})."""
+    """5-minute OHLCV candles ({time, open, high, low, close, volume})."""
+    return await _fetch_candles(
+        account_env,
+        ticker,
+        interval=FIVE_MINUTE_INTERVAL,
+        count=count,
+    )
+
+
+async def fetch_one_minute_candles(
+    account_env: str,
+    ticker: str,
+    *,
+    count: int = 20,
+) -> list[dict[str, Any]]:
+    """One-minute OHLCV candles for short-window profit planning."""
+    return await _fetch_candles(
+        account_env,
+        ticker,
+        interval=ONE_MINUTE_INTERVAL,
+        count=count,
+    )
+
+
+async def _fetch_candles(
+    account_env: str,
+    ticker: str,
+    *,
+    interval: str,
+    count: int,
+) -> list[dict[str, Any]]:
     from brokers.etoro.candles import aget_historical_candles
 
     instrument_id = await resolve_instrument_id(account_env, ticker)
@@ -82,7 +114,7 @@ async def fetch_five_minute_candles(
         return await aget_historical_candles(
             client,
             instrument_id,
-            interval=FIVE_MINUTE_INTERVAL,
+            interval=interval,
             count=max(1, min(int(count), 1000)),
             direction="desc",
         )
@@ -214,6 +246,28 @@ async def close_broker_position(
 async def fetch_broker_positions(account_env: str) -> list[dict[str, Any]]:
     client = await get_agentic_etoro_client(account_env)
     return await client.aget_positions()
+
+
+async def fetch_broker_open_index(account_env: str) -> dict[str, Any]:
+    """Open broker positions indexed by position id and normalized ticker."""
+    from brokers.etoro.adapters.portfolio import (
+        etoro_display_symbol,
+        etoro_symbol_map_for_records,
+    )
+
+    rows = await fetch_broker_positions(account_env)
+    client = await get_agentic_etoro_client(account_env)
+    symbol_map = await etoro_symbol_map_for_records(client, rows)
+    by_id: dict[str, dict[str, Any]] = {}
+    by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        pid = row.get("positionID") or row.get("positionId")
+        ticker = str(etoro_display_symbol(row, symbol_map) or "").strip().upper()
+        if pid is not None:
+            by_id[str(pid)] = row
+        if ticker:
+            by_ticker.setdefault(ticker, []).append(row)
+    return {"by_id": by_id, "by_ticker": by_ticker, "rows": rows}
 
 
 async def find_broker_closed_trade(

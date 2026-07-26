@@ -18,8 +18,11 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
+from control_plane.agentic.broker import fetch_five_minute_candles, fetch_quote
 from control_plane.agentic.config import DEFAULT_CONFIG
+from control_plane.agentic.events import AgentEvent, EventTier, EventType, get_event_bus
 from control_plane.agentic.session_store import get_agentic_session_store
+from control_plane.agentic.snapshot import SessionSnapshot
 
 log = logging.getLogger("backtrading")
 
@@ -81,6 +84,9 @@ class MarketHunter:
         self._subscribers: list[asyncio.Queue] = []
         # ticker -> monotonic time of last emit (cooldown)
         self._last_emitted: dict[str, float] = {}
+        self._scanning = False
+        self._last_scan_at: str | None = None
+        self._last_scan_stats: dict[str, int] = {}
 
     # ── Lifecycle ──
 
@@ -101,6 +107,18 @@ class MarketHunter:
                 await self._task
             self._task = None
         log.info("[AGENTIC_HUNTER] Stopped")
+
+    def clear_suggestion_cooldown(self, ticker: str) -> None:
+        """Allow the hunter to re-emit a ticker after a position closes."""
+        self._last_emitted.pop(str(ticker or "").upper(), None)
+
+    async def nudge_watchlist_tickers(self, tickers: list[str]) -> None:
+        """Clear cooldowns and run an immediate scan for freed watchlist slots."""
+        cleaned = [str(ticker or "").upper() for ticker in tickers if ticker]
+        for ticker in cleaned:
+            self.clear_suggestion_cooldown(ticker)
+        if cleaned:
+            await self.scan_once()
 
     async def _run(self) -> None:
         while True:
@@ -129,6 +147,44 @@ class MarketHunter:
         with contextlib.suppress(ValueError):
             self._subscribers.remove(queue)
 
+    def status(self) -> dict[str, Any]:
+        """Lightweight hunter heartbeat for API / UI polling."""
+        running = self._task is not None and not self._task.done()
+        return {
+            "running": running,
+            "scanning": self._scanning,
+            "last_scan_at": self._last_scan_at,
+            "last_candidates_count": int(self._last_scan_stats.get("candidates", 0)),
+            "last_emitted_count": int(self._last_scan_stats.get("emitted", 0)),
+        }
+
+    # ── Scan scope from running sessions ──
+
+    @staticmethod
+    def _scan_scope(
+        sessions: list[dict[str, Any]],
+    ) -> tuple[set[str] | None, dict[str, str], set[str]]:
+        """Return (screener_id filter or None=all), ticker->account_env, all manual tickers."""
+        if not sessions:
+            return None, {}, set()
+        screener_filter: set[str] | None = set()
+        manual_tickers: set[str] = set()
+        ticker_env: dict[str, str] = {}
+        for session in sessions:
+            config = session.get("config") or {}
+            ids = config.get("screener_ids") or []
+            if not ids:
+                screener_filter = None
+            elif screener_filter is not None:
+                screener_filter.update(str(item) for item in ids if str(item).strip())
+            for raw in config.get("tickers") or []:
+                ticker = _ticker_symbol(raw)
+                if not ticker:
+                    continue
+                manual_tickers.add(ticker)
+                ticker_env[ticker] = str(session.get("account_env") or "demo")
+        return screener_filter, ticker_env, manual_tickers
+
     # ── Scan ──
 
     def _halted_symbols(self) -> set[str]:
@@ -145,12 +201,17 @@ class MarketHunter:
             if str(row.get("status") or "").lower() == "halted"
         }
 
-    def _screener_candidates(self) -> dict[str, dict[str, Any]]:
+    def _screener_candidates(
+        self, screener_ids: set[str] | None = None
+    ) -> dict[str, dict[str, Any]]:
         """ticker -> best row info + list of screeners it appears in."""
         from control_plane.screener_store import get_screener_store
 
         candidates: dict[str, dict[str, Any]] = {}
         for screener in get_screener_store().list_screeners(include_results=True):
+            screener_id = str(screener.get("id") or "")
+            if screener_ids is not None and screener_id not in screener_ids:
+                continue
             name = str(screener.get("name") or "Screener")
             results = (screener.get("results") or [])[:TOP_ROWS_PER_SCREENER]
             for row in results:
@@ -166,20 +227,26 @@ class MarketHunter:
                     {
                         "ticker": ticker,
                         "screeners": [],
+                        "screener_ids": [],
                         "change_pct": None,
                         "price": None,
                         "volume": None,
                         "best_rank": rank,
                         "source_screener": name,
+                        "source_screener_id": screener_id,
+                        "source": "screener",
                     },
                 )
                 entry["screeners"].append(name)
+                if screener_id:
+                    entry["screener_ids"].append(screener_id)
                 change = _row_change_pct(cells)
                 if change is not None and (
                     entry["change_pct"] is None or change > entry["change_pct"]
                 ):
                     entry["change_pct"] = change
                     entry["source_screener"] = name
+                    entry["source_screener_id"] = screener_id
                 price = _row_price(cells)
                 if price is not None and entry["price"] is None:
                     entry["price"] = price
@@ -191,6 +258,50 @@ class MarketHunter:
                 if rank < entry["best_rank"]:
                     entry["best_rank"] = rank
         return candidates
+
+    async def _manual_ticker_candidates(
+        self,
+        tickers: set[str],
+        ticker_env: dict[str, str],
+        existing: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Fetch quote/candles for manual watchlist tickers not already in screener rows."""
+        manual: dict[str, dict[str, Any]] = {}
+        pending = [t for t in tickers if t not in existing]
+        if not pending:
+            return manual
+
+        async def _one(ticker: str) -> tuple[str, dict[str, Any] | None]:
+            env = ticker_env.get(ticker, "demo")
+            quote, candles = await asyncio.gather(
+                fetch_quote(env, ticker),
+                fetch_five_minute_candles(env, ticker, count=12),
+            )
+            price = float((quote or {}).get("price") or 0.0)
+            if price <= 0:
+                return ticker, None
+            change_pct: float | None = None
+            closes = [float(c["close"]) for c in candles if c.get("close")]
+            if len(closes) >= 2 and closes[0] > 0:
+                change_pct = (closes[-1] - closes[0]) / closes[0] * 100.0
+            return ticker, {
+                "ticker": ticker,
+                "screeners": [],
+                "screener_ids": [],
+                "change_pct": change_pct,
+                "price": price,
+                "volume": None,
+                "best_rank": 999.0,
+                "source_screener": "Manual watchlist",
+                "source_screener_id": None,
+                "source": "manual",
+            }
+
+        results = await asyncio.gather(*(_one(ticker) for ticker in pending))
+        for ticker, candidate in results:
+            if candidate is not None:
+                manual[ticker] = candidate
+        return manual
 
     @staticmethod
     def _score(candidate: dict[str, Any]) -> tuple[float, list[str]]:
@@ -216,25 +327,60 @@ class MarketHunter:
 
         return max(0.0, min(100.0, score)), reasons
 
+    @staticmethod
+    def _score_manual(candidate: dict[str, Any]) -> tuple[float, list[str]]:
+        """Score a user-selected ticker (no screener row required)."""
+        change = candidate.get("change_pct")
+        reasons = ["Manual watchlist selection"]
+        min_score = float(DEFAULT_CONFIG["min_suggestion_score"])
+        if change is not None and change > 0:
+            score = min_score + min(25.0, float(change) * 2.0)
+            reasons.append(f"Recent momentum +{float(change):.2f}%")
+        else:
+            score = min_score
+        return max(0.0, min(100.0, score)), reasons
+
     async def scan_once(self) -> list[dict[str, Any]]:
+        self._scanning = True
+        try:
+            return await self._scan_once_inner()
+        finally:
+            self._scanning = False
+            self._last_scan_at = _now_iso()
+
+    async def _scan_once_inner(self) -> list[dict[str, Any]]:
         store = get_agentic_session_store()
         min_score = float(DEFAULT_CONFIG["min_suggestion_score"])
         cooldown = float(DEFAULT_CONFIG["suggestion_cooldown_seconds"])
         now_mono = time.monotonic()
 
-        candidates = await asyncio.to_thread(self._screener_candidates)
+        running_sessions = await asyncio.to_thread(store.list_sessions_by_status, "running")
+        screener_filter, ticker_env, manual_tickers = self._scan_scope(running_sessions)
+
+        screener_candidates = await asyncio.to_thread(
+            self._screener_candidates, screener_filter
+        )
+        manual_candidates = await self._manual_ticker_candidates(
+            manual_tickers, ticker_env, screener_candidates
+        )
+        candidates = {**screener_candidates, **manual_candidates}
+        self._last_scan_stats = {
+            "candidates": len(candidates),
+            "emitted": 0,
+        }
+
         halted = await asyncio.to_thread(self._halted_symbols)
         open_tickers = await asyncio.to_thread(store.open_tickers_for_running_sessions)
-        running_sessions = await asyncio.to_thread(store.list_sessions_by_status, "running")
 
         emitted: list[dict[str, Any]] = []
         for ticker, candidate in candidates.items():
             price = candidate.get("price")
             change = candidate.get("change_pct")
-            # Suspicious rows: no price, non-positive price, or no positive momentum.
+            is_manual = candidate.get("source") == "manual"
+            # Suspicious rows: no price or non-positive price.
             if price is None or price <= 0:
                 continue
-            if change is None or change <= 0:
+            if not is_manual and (change is None or change <= 0):
                 continue
             if ticker in halted:
                 continue
@@ -244,7 +390,10 @@ class MarketHunter:
             if last is not None and (now_mono - last) < cooldown:
                 continue
 
-            score, reasons = self._score(candidate)
+            if is_manual:
+                score, reasons = self._score_manual(candidate)
+            else:
+                score, reasons = self._score(candidate)
             if score < min_score:
                 continue
 
@@ -252,7 +401,9 @@ class MarketHunter:
                 "id": uuid.uuid4().hex,
                 "ticker": ticker,
                 "score": round(score, 1),
+                "source": candidate.get("source") or "screener",
                 "source_screener": candidate["source_screener"],
+                "screener_id": candidate.get("source_screener_id"),
                 "reason": "; ".join(reasons),
                 "price": float(price),
                 "spread_pct": None,
@@ -266,10 +417,89 @@ class MarketHunter:
                 with contextlib.suppress(asyncio.QueueFull):
                     queue.put_nowait(dict(suggestion))
 
+        self._last_scan_stats["emitted"] = len(emitted)
+
+        if running_sessions and emitted:
+            await asyncio.to_thread(
+                self._heartbeat_sessions,
+                running_sessions,
+                len(candidates),
+                len(emitted),
+            )
+        for session in running_sessions:
+            config = session.get("config") or {}
+            SessionSnapshot(store, session["id"]).mutate(
+                lambda state, count=len(candidates): state.setdefault(
+                    "services", {}
+                ).setdefault("market_hunter", {}).update(
+                    {
+                        "name": "market_hunter",
+                        "kind": "deterministic",
+                        "status": "active",
+                        "last_run_at": self._last_scan_at or _now_iso(),
+                        "current_work": f"Watching {count} candidates",
+                    }
+                )
+            )
+            bus = get_event_bus(
+                session["id"],
+                store,
+                int(config.get("event_queue_size", DEFAULT_CONFIG["event_queue_size"])),
+            )
+            threshold = float(
+                config.get("confidence_threshold", DEFAULT_CONFIG["confidence_threshold"])
+            )
+            watchlist = {
+                _ticker_symbol(t) for t in (config.get("tickers") or []) if t
+            }
+            for suggestion in emitted:
+                event_threshold = (
+                    float(DEFAULT_CONFIG["min_suggestion_score"])
+                    if suggestion["ticker"] in watchlist or suggestion.get("source") == "manual"
+                    else threshold
+                )
+                if (
+                    self._suggestion_allowed_for_session(session, suggestion)
+                    and float(suggestion["score"]) >= event_threshold
+                ):
+                    await bus.publish(
+                        AgentEvent(
+                            session_id=session["id"],
+                            type=EventType.CANDIDATE_FOUND,
+                            tier=EventTier.FAST,
+                            source="market_hunter",
+                            ticker=suggestion["ticker"],
+                            payload=dict(suggestion),
+                            dedupe_key=f"candidate:{suggestion['ticker']}",
+                        ),
+                        dedupe_seconds=float(
+                            config.get(
+                                "event_dedupe_seconds",
+                                DEFAULT_CONFIG["event_dedupe_seconds"],
+                            )
+                        ),
+                    )
         if emitted and running_sessions:
             await asyncio.to_thread(
                 self._log_suggestions_to_sessions, emitted, running_sessions
             )
+        # Hunter reasoning: {data, oneline, confidence} + thinking per running session.
+        if running_sessions:
+            from control_plane.agentic.agent_reasoning import schedule_hunter_thinking
+
+            manual_list = sorted(manual_tickers)
+            for session in running_sessions:
+                session_emitted = [
+                    s
+                    for s in emitted
+                    if self._suggestion_allowed_for_session(session, s)
+                ]
+                await schedule_hunter_thinking(
+                    session,
+                    candidates_count=len(candidates),
+                    emitted=session_emitted,
+                    manual_tickers=manual_list,
+                )
         if emitted:
             log.info(
                 "[AGENTIC_HUNTER] Emitted %d suggestion(s): %s",
@@ -277,6 +507,42 @@ class MarketHunter:
                 ", ".join(f"{s['ticker']}={s['score']}" for s in emitted[:10]),
             )
         return emitted
+
+    @staticmethod
+    def _heartbeat_sessions(
+        sessions: list[dict[str, Any]],
+        candidates_count: int,
+        emitted_count: int,
+    ) -> None:
+        store = get_agentic_session_store()
+        text = (
+            f"Hunter scanned {candidates_count} candidate(s), "
+            f"{emitted_count} suggestion(s) emitted"
+        )
+        meta = {
+            "candidates_count": candidates_count,
+            "emitted_count": emitted_count,
+            "heartbeat": True,
+        }
+        for session in sessions:
+            store.add_event(session["id"], "info", text, meta=meta)
+
+    @staticmethod
+    def _suggestion_allowed_for_session(
+        session: dict[str, Any], suggestion: dict[str, Any]
+    ) -> bool:
+        config = session.get("config") or {}
+        screener_ids = config.get("screener_ids") or []
+        tickers = {_ticker_symbol(t) for t in (config.get("tickers") or []) if t}
+        ticker = _ticker_symbol(suggestion.get("ticker"))
+        if ticker in tickers:
+            return True
+        if suggestion.get("source") == "manual":
+            return False
+        if not screener_ids:
+            return True
+        sid = suggestion.get("screener_id")
+        return sid in screener_ids
 
     @staticmethod
     def _log_suggestions_to_sessions(
@@ -290,7 +556,20 @@ class MarketHunter:
                 config.get("confidence_threshold", DEFAULT_CONFIG["confidence_threshold"])
             )
             for suggestion in suggestions:
-                if float(suggestion["score"]) < threshold:
+                if not MarketHunter._suggestion_allowed_for_session(session, suggestion):
+                    continue
+                min_hunter = float(DEFAULT_CONFIG["min_suggestion_score"])
+                ticker = str(suggestion.get("ticker") or "").upper()
+                watchlist = {
+                    str(t).upper()
+                    for t in (config.get("tickers") or [])
+                    if t
+                }
+                score = float(suggestion["score"])
+                passes = score >= threshold
+                if ticker in watchlist or suggestion.get("source") == "manual":
+                    passes = score >= min_hunter
+                if not passes:
                     continue
                 store.add_event(
                     session["id"],

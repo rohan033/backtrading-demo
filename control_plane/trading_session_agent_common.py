@@ -22,6 +22,17 @@ from api.tool_call_names import resolve_cursor_tool_name, tool_args_from_event
 
 log = logging.getLogger("backtrading")
 
+# Cursor SDK run lifecycle statuses — not trader-facing thinking content.
+_LIFECYCLE_STATUS_NOISE = frozenset({
+    "running",
+    "finished",
+    "started",
+    "complete",
+    "completed",
+    "done",
+    "idle",
+})
+
 _phase_tasks: dict[str, asyncio.Task] = {}
 _phase_locks: dict[str, asyncio.Lock] = {}
 
@@ -134,7 +145,7 @@ def session_event_from_cursor(
     message_type = event.get("message_type")
     if message_type == "status":
         msg = str(event.get("message") or event.get("status") or "").strip()
-        if msg:
+        if msg and msg.lower() not in _LIFECYCLE_STATUS_NOISE:
             out.append(("agent_thinking", {"message": msg, "run_id": run_id}))
     return out
 

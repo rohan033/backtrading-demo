@@ -113,6 +113,13 @@ TRADING_SESSION_EXTERNAL_HINT = """Autonomous trading session agent (market rese
 - Explore phase MUST end with a ```json fence containing TopStockPicks (3 ranked symbols with token + exchange from search_instruments).
 - Tool progress is logged elsewhere — do not narrate tools in chat."""
 
+AGENTIC_SESSION_HINT = """Agentic trading dashboard agent (trader-facing log only).
+
+- You are NOT a coding assistant. Never read, search, grep, or inspect the repository or codebase.
+- Do NOT use tools. Event data and analyst verdicts are already in the user message — use them directly.
+- Never mention repo logic, files, functions, orchestrator code, or implementation details.
+- Respond in plain trader language, or JSON only when the prompt explicitly requires JSON."""
+
 WEB_SEARCH_TOOL_NAMES = frozenset({
     "websearch",
     "webfetch",
@@ -317,6 +324,7 @@ class CursorAgentService:
         research_session_id: Optional[str] = None,
         trading_session: bool = False,
         trading_session_id: Optional[str] = None,
+        agentic_session: bool = False,
         ws: WebSocket | None = None,
         cancel_event: asyncio.Event | None = None,
         active_run: dict[str, Any] | None = None,
@@ -370,6 +378,7 @@ class CursorAgentService:
             research_session_id=research_session_id,
             trading_session=trading_session,
             trading_session_id=trading_session_id,
+            agentic_session=agentic_session,
         )
         media_paths: list[str] = []
 
@@ -432,6 +441,7 @@ class CursorAgentService:
                     interaction_mode=mode,
                     web_search_enabled=web_search_enabled,
                     trading_session=trading_session,
+                    agentic_session=agentic_session,
                 )
                 if blocked:
                     yield {
@@ -736,9 +746,13 @@ def _wrap_prompt(
     research_session_id: Optional[str] = None,
     trading_session: bool = False,
     trading_session_id: Optional[str] = None,
+    agentic_session: bool = False,
 ) -> str:
     parts: list[str] = []
-    if trading_session:
+    if agentic_session:
+        parts.append(AGENTIC_SESSION_HINT)
+        parts.append(WEB_SEARCH_DISABLED_HINT)
+    elif trading_session:
         parts.append(TRADING_SESSION_EXTERNAL_HINT)
         parts.append(
             "Trading session A2UI output (required): end each phase with fenced ```json blocks. "
@@ -746,7 +760,8 @@ def _wrap_prompt(
         )
     elif new_agent:
         parts.append(STRATEGY_AGENT_HINT)
-    parts.append(WEB_SEARCH_ENABLED_HINT if web_search_enabled else WEB_SEARCH_DISABLED_HINT)
+    if not agentic_session:
+        parts.append(WEB_SEARCH_ENABLED_HINT if web_search_enabled else WEB_SEARCH_DISABLED_HINT)
     if interaction_mode == "execute":
         parts.append(EXECUTE_MODE_HINT)
         if trading_session:
@@ -771,7 +786,7 @@ def _wrap_prompt(
                 'Floating Strategy AI chat (no research session): '
                 'use source_id "ai_chatbot_panel" and leave source_meta_id blank.'
             )
-    else:
+    elif not agentic_session:
         parts.append(ASK_MODE_HINT)
     if research_session_id:
         session = get_ai_research_store().get_session(research_session_id)
@@ -787,7 +802,8 @@ def _wrap_prompt(
                 "Search instruments, suggest strategies, and fill ai_action payloads for this broker "
                 "unless the user explicitly asks to switch."
             )
-    parts.append(USER_FACING_RESPONSE_HINT)
+    if not agentic_session:
+        parts.append(USER_FACING_RESPONSE_HINT)
     if new_agent:
         parts.append(f"User question:\n{user_prompt}")
     else:
@@ -872,7 +888,13 @@ def _tool_call_blocked(
     interaction_mode: str,
     web_search_enabled: bool,
     trading_session: bool = False,
+    agentic_session: bool = False,
 ) -> tuple[bool, str]:
+    if agentic_session:
+        return (
+            True,
+            "Agentic session agents must not use tools; answer from the prompt context only.",
+        )
     if trading_session:
         return False, ""
 

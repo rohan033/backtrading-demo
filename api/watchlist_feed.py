@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import contextlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -131,6 +132,8 @@ class WatchlistFeedHub:
         self._lock = asyncio.Lock()
         self._watchlist_clients: dict[int, tuple[WebSocket, list[dict[str, Any]]]] = {}
         self._preview_clients: dict[int, tuple[WebSocket, PreviewSubscription | None]] = {}
+        self._agentic_subscriptions: dict[str, dict[str, Subscription]] = {}
+        self._tick_listeners: list[Any] = []
         self._feeds: dict[str, _BrokerFeed] = {}
         self._previous_ltp: dict[str, float] = {}
         self._last_tick_payload: dict[str, dict[str, Any]] = {}
@@ -152,11 +155,41 @@ class WatchlistFeedHub:
         await self._rebuild_feeds()
         await self._send_watchlist_snapshot(ws, watchlists)
 
+    def add_tick_listener(self, listener: Any) -> None:
+        """listener(broker, account_env, tick) — may be sync or async."""
+        if listener not in self._tick_listeners:
+            self._tick_listeners.append(listener)
+
+    def remove_tick_listener(self, listener: Any) -> None:
+        with contextlib.suppress(ValueError):
+            self._tick_listeners.remove(listener)
+
+    async def set_agentic_subscriptions(
+        self,
+        grouped: dict[str, dict[str, Subscription]],
+    ) -> None:
+        """Server-side eToro websocket subs for agentic sessions (no browser client)."""
+        async with self._lock:
+            self._agentic_subscriptions = {
+                key: dict(bucket) for key, bucket in grouped.items()
+            }
+        await self._rebuild_feeds()
+
+    def get_last_ltp(self, broker: str, account_env: str, token: str) -> float | None:
+        cache_key = _tick_cache_key(broker, account_env, token)
+        payload = self._last_tick_payload.get(cache_key)
+        if not payload:
+            return None
+        ltp = float(payload.get("ltp") or 0.0)
+        return ltp if ltp > 0 else None
+
     def _collect_grouped_subscriptions(self) -> dict[str, dict[str, Subscription]]:
         grouped: dict[str, dict[str, Subscription]] = {}
         for _, watchlists in self._watchlist_clients.values():
             for key, bucket in _subscriptions_from_watchlists(watchlists).items():
                 grouped.setdefault(key, {}).update(bucket)
+        for key, bucket in self._agentic_subscriptions.items():
+            grouped.setdefault(key, {}).update(bucket)
         for _, preview in self._preview_clients.values():
             if preview is None:
                 continue
@@ -308,6 +341,14 @@ class WatchlistFeedHub:
         )
         preview_payload = self._build_preview_payload(tick, ltp)
         self._last_tick_payload[cache_key] = watchlist_payload
+
+        for listener in list(self._tick_listeners):
+            try:
+                result = listener(broker, account_env, tick)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as exc:
+                log.warning("[WATCHLIST] tick listener error: %s", exc)
 
         dead_watchlist: list[WebSocket] = []
         for ws, _ in list(self._watchlist_clients.values()):
