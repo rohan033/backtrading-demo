@@ -1,4 +1,4 @@
-"""Execute portfolio-monitor profit plans (uptrend-break secure, rebuy signals)."""
+"""Execute portfolio-monitor profit plans (secure exit, pullback ladder, stall trim)."""
 
 from __future__ import annotations
 
@@ -9,10 +9,50 @@ from control_plane.agentic.events import EventTier, EventType
 from control_plane.agentic.live_feed import get_ws_price, refresh_agentic_feed_subscriptions
 from control_plane.agentic.profit_planner import (
     compute_exit_plan,
+    evaluate_ladder,
+    evaluate_stall,
     profit_window_seconds,
     scan_rebuy_watchlist,
 )
 from control_plane.agentic.profit_price_tracker import get_profit_price_tracker
+
+_MIN_TRIM_FRACTION = 0.01
+
+
+async def _apply_partial_close(
+    session: dict[str, Any],
+    store: Any,
+    position: dict[str, Any],
+    plan: dict[str, Any],
+    *,
+    fraction_of_original: float,
+    price: float,
+    reason: str,
+) -> dict[str, Any] | None:
+    """Shared trim ledger: all ladder/stall trims are sized as fractions of the
+    ORIGINAL entry, budgeted against plan['remaining_fraction'] so combined
+    trims can never oversell. close_position_now() takes a fraction of the
+    units *currently* held, so we convert before calling it."""
+    from control_plane.agentic.session_engine import close_position_now
+
+    remaining = float(plan.get("remaining_fraction", 1.0))
+    requested = min(float(fraction_of_original), remaining)
+    if requested < _MIN_TRIM_FRACTION or remaining < _MIN_TRIM_FRACTION:
+        return None
+
+    fraction_of_current = min(1.0, requested / remaining)
+    refreshed = store.get_position(position["id"]) or position
+    if refreshed.get("state") != "open":
+        return None
+    updated = await close_position_now(
+        session,
+        refreshed,
+        fraction=fraction_of_current,
+        reason=reason,
+        exit_price=price,
+    )
+    plan["remaining_fraction"] = round(max(0.0, remaining - requested), 6)
+    return updated
 
 
 def _resolve_live_price(
@@ -97,46 +137,153 @@ async def manage_portfolio_exits(
                 prior=prior_plans.get(position_id),
             )
             plan["price_source"] = price_source
+
+            # Sync the trim ledger with actual held units so trims made
+            # elsewhere (weakening trim, manual closes) shrink the budget too.
+            units_now = float(position.get("units") or 0.0)
+            entry_units = float(plan.get("entry_units") or 0.0)
+            if entry_units <= 0 and units_now > 0:
+                entry_units = units_now
+                plan["entry_units"] = units_now
+            if entry_units > 0:
+                plan["remaining_fraction"] = round(
+                    min(1.0, max(0.0, units_now / entry_units)), 6
+                )
             next_plans[position_id] = plan
 
             if not plan.get("active"):
                 continue
 
-            if not plan.get("should_secure"):
+            # Layer 1 — full secure exit on uptrend break. If it fires, the
+            # ladder and stall checks are moot for this position.
+            if plan.get("should_secure"):
+                profit_lock = float(plan.get("profit_lock") or 0.0)
+                refreshed = store.get_position(position_id) or position
+                if refreshed.get("state") != "open":
+                    continue
+
+                await close_position_now(
+                    session,
+                    refreshed,
+                    reason="uptrend break — profit secure",
+                    exit_price=price,
+                )
+                profit_actions += 1
+                plan["active"] = False
+                plan["should_secure"] = False
+                plan["remaining_fraction"] = 0.0
+                next_plans[position_id] = plan
+                await publish(
+                    EventType.PROFIT_SECURED,
+                    EventTier.FAST,
+                    {
+                        "position_id": position_id,
+                        "price": price,
+                        "profit_lock": profit_lock,
+                        "peak_price": plan.get("peak_price"),
+                        "uptrend_intact": plan.get("uptrend_intact"),
+                        "reason": (
+                            f"{ticker} uptrend broke — secured @ {price:.4f} "
+                            f"(peak {float(plan.get('peak_price') or price):.4f}, lock {profit_lock:.4f})"
+                        ),
+                    },
+                    ticker=ticker,
+                    dedupe_key=f"profit-secure:{position_id}",
+                )
                 continue
 
-            profit_lock = float(plan.get("profit_lock") or 0.0)
-            refreshed = store.get_position(position_id) or position
-            if refreshed.get("state") != "open":
-                continue
+            buy_price = float(position.get("buy_price") or 0.0)
 
-            await close_position_now(
-                session,
-                refreshed,
-                reason="uptrend break — profit secure",
-                exit_price=price,
-            )
-            profit_actions += 1
-            plan["active"] = False
-            plan["should_secure"] = False
+            # Layer 2 — pullback ladder. Rungs fire when price falls TO a
+            # target (fractions of peak gain), highest rung first. Each hit
+            # trims a slice of original size and ratchets the hard stop:
+            # first hit -> breakeven+buffer, later hits -> prior rung's
+            # hit price (protection tightens as the give-back deepens).
+            for level in evaluate_ladder(plan, buy_price=buy_price, price=price):
+                updated = await _apply_partial_close(
+                    session,
+                    store,
+                    position,
+                    plan,
+                    fraction_of_original=float(level.get("fraction") or 0.0),
+                    price=price,
+                    reason=f"profit ladder {level.get('id')} pullback",
+                )
+                if updated is None:
+                    continue
+                position = updated
+                profit_actions += 1
+
+                prior_hit = plan.get("last_hit_price")
+                if prior_hit is None:
+                    new_floor = buy_price * 1.001
+                else:
+                    new_floor = float(prior_hit)
+                current_stop = float(position.get("stop_loss") or 0.0)
+                if new_floor > current_stop:
+                    store.update_position(position_id, {"stop_loss": round(new_floor, 6)})
+                    position = store.get_position(position_id) or position
+                plan["last_hit_price"] = float(level.get("hit_price") or price)
+
+                await publish(
+                    EventType.PROFIT_LEVEL_HIT,
+                    EventTier.FAST,
+                    {
+                        "position_id": position_id,
+                        "level": level.get("id"),
+                        "price": price,
+                        "target": level.get("price"),
+                        "peak_price": plan.get("peak_price"),
+                        "remaining_fraction": plan.get("remaining_fraction"),
+                        "reason": (
+                            f"{ticker} pulled back to ladder {level.get('id')} "
+                            f"({level.get('label')}) — trimmed @ {price:.4f}"
+                        ),
+                    },
+                    ticker=ticker,
+                    dedupe_key=f"profit-ladder:{position_id}:{level.get('id')}",
+                )
+                if position.get("state") != "open":
+                    break
             next_plans[position_id] = plan
-            await publish(
-                EventType.PROFIT_SECURED,
-                EventTier.FAST,
-                {
-                    "position_id": position_id,
-                    "price": price,
-                    "profit_lock": profit_lock,
-                    "peak_price": plan.get("peak_price"),
-                    "uptrend_intact": plan.get("uptrend_intact"),
-                    "reason": (
-                        f"{ticker} uptrend broke — secured @ {price:.4f} "
-                        f"(peak {float(plan.get('peak_price') or price):.4f}, lock {profit_lock:.4f})"
-                    ),
-                },
-                ticker=ticker,
-                dedupe_key=f"profit-secure:{position_id}",
-            )
+            if position.get("state") != "open":
+                continue
+
+            # Layer 3 — stall detector: price camped near peak (no new high
+            # for profit_peak_stale_seconds) but never pulled back to a rung.
+            # One-shot trim per stall episode; a new high re-arms it.
+            if evaluate_stall(plan, config=config):
+                stall_fraction = float(config.get("profit_stall_trim_fraction", 0.15))
+                updated = await _apply_partial_close(
+                    session,
+                    store,
+                    position,
+                    plan,
+                    fraction_of_original=stall_fraction,
+                    price=price,
+                    reason="peak stalled — partial secure",
+                )
+                if updated is not None:
+                    position = updated
+                    profit_actions += 1
+                    await publish(
+                        EventType.PROFIT_STALL_TRIM,
+                        EventTier.FAST,
+                        {
+                            "position_id": position_id,
+                            "price": price,
+                            "peak_price": plan.get("peak_price"),
+                            "remaining_fraction": plan.get("remaining_fraction"),
+                            "reason": (
+                                f"{ticker} stalled near peak "
+                                f"{float(plan.get('peak_price') or price):.4f} — "
+                                f"trimmed {int(stall_fraction * 100)}% @ {price:.4f}"
+                            ),
+                        },
+                        ticker=ticker,
+                        dedupe_key=f"profit-stall:{position_id}:{int(time.time() // 60)}",
+                    )
+                next_plans[position_id] = plan
 
     if open_slots and session.get("status") == "running" and not session.get("stop_reason"):
         for ticker in open_slots[:4]:

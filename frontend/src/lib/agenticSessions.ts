@@ -118,8 +118,11 @@ export type AgenticExitPlanLevel = {
   id: string
   price: number
   fraction: number
+  gain_fraction?: number
   label: string
   hit?: boolean
+  hit_price?: number | null
+  hit_at?: string | null
 }
 
 export type AgenticExitPlan = {
@@ -143,6 +146,12 @@ export type AgenticExitPlan = {
   rebuy_candidate?: boolean
   active: boolean
   gain_pct?: number
+  remaining_fraction?: number
+  entry_units?: number | null
+  last_hit_price?: number | null
+  last_new_high_at?: number | null
+  stall_handled?: boolean
+  stalled?: boolean
   updated_at?: string
 }
 
@@ -241,6 +250,7 @@ export type AgenticSessionSnapshot = {
     orchestrator: string
     last_wakeup_at: string | null
     wakeups_last_hour: number
+    subagents_halted?: boolean
   }
 }
 
@@ -313,6 +323,23 @@ export async function pauseAgenticSession(id: string): Promise<AgenticSession> {
 export async function resumeAgenticSession(id: string): Promise<AgenticSession> {
   return parseJson(
     await fetch(`${API}/sessions/${encodeURIComponent(id)}/resume`, { method: 'POST' }),
+  )
+}
+
+export type AgenticSubagentsToggleResult = {
+  session: AgenticSession
+  subagents_halted: boolean
+}
+
+export async function haltAgenticSubagents(id: string): Promise<AgenticSubagentsToggleResult> {
+  return parseJson(
+    await fetch(`${API}/sessions/${encodeURIComponent(id)}/subagents/halt`, { method: 'POST' }),
+  )
+}
+
+export async function resumeAgenticSubagents(id: string): Promise<AgenticSubagentsToggleResult> {
+  return parseJson(
+    await fetch(`${API}/sessions/${encodeURIComponent(id)}/subagents/resume`, { method: 'POST' }),
   )
 }
 

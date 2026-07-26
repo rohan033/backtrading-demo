@@ -557,7 +557,14 @@ function AgenticCreateForm({ onCreated }: { onCreated: (session: AgenticSession)
                 <div><dt>Capital</dt><dd>{startBalance.trim() || 'Default'}</dd></div>
                 <div><dt>Confidence</dt><dd>{confidenceThreshold || '40'}</dd></div>
                 <div><dt>Model</dt><dd>{modelPicker.agentModelId || 'SDK default'}</dd></div>
-                <div><dt>Screeners</dt><dd>All (Overview suggestions)</dd></div>
+                <div>
+                  <dt>Universe</dt>
+                  <dd>
+                    {selectedTickers.length
+                      ? `Watchlist only (${selectedTickers.length})`
+                      : 'All screeners'}
+                  </dd>
+                </div>
               </dl>
             </section>
           </Panel>

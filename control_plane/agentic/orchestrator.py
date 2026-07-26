@@ -113,6 +113,9 @@ class TradingOrchestrator:
             session = self.store.get_session(self.session_id)
             if not session or session.get("status") != "running":
                 continue
+            if self.snapshot.subagents_halted():
+                self._service_state("idle", "Subagents halted — skipping LLM wakeup")
+                continue
             config = session.get("config") or {}
             if not self._within_budget(config, event):
                 self.store.add_event(
@@ -153,6 +156,8 @@ class TradingOrchestrator:
         """Synchronous entry gate used by the execution engine."""
         session = self.store.get_session(self.session_id)
         if not session or session.get("status") != "running":
+            return False
+        if self.snapshot.subagents_halted():
             return False
         event = AgentEvent(
             session_id=self.session_id,
@@ -221,6 +226,8 @@ class TradingOrchestrator:
         Each sub-agent is surfaced in the Agents Status panel (active -> done) and
         returns the {data, oneline, confidence} agent contract as a session event.
         """
+        if self.snapshot.subagents_halted():
+            return []
         names = self.dispatcher._analysts_for(event.type.value)
         spawn_id = uuid.uuid4().hex[:8]
         sub_ids: dict[str, str] = {}
@@ -363,7 +370,11 @@ class TradingOrchestrator:
             return "REVIEW_EXIT"
         if event.type == EventType.REBUY_CANDIDATE:
             return "CONSIDER_ENTRY"
-        if event.type in {EventType.PROFIT_LEVEL_HIT, EventType.PROFIT_SECURED}:
+        if event.type in {
+            EventType.PROFIT_LEVEL_HIT,
+            EventType.PROFIT_SECURED,
+            EventType.PROFIT_STALL_TRIM,
+        }:
             return "PROTECT_POSITION"
         if event.type == EventType.POSITION_WEAKENING:
             return "PROTECT_POSITION"

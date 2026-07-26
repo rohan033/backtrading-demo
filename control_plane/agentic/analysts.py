@@ -45,7 +45,13 @@ class AnalystDispatcher:
             return ("momentum_analyst", "portfolio_impact_analyst")
         if event_type == "critical_news":
             return ("news_analyst", "exit_planner")
-        if event_type in ("position_weakening", "playbook_review", "profit_level_hit", "profit_secured"):
+        if event_type in (
+            "position_weakening",
+            "playbook_review",
+            "profit_level_hit",
+            "profit_secured",
+            "profit_stall_trim",
+        ):
             return ("momentum_analyst", "exit_planner")
         if event_type == "rebuy_candidate":
             return ("momentum_analyst", "portfolio_impact_analyst")

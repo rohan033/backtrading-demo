@@ -87,19 +87,34 @@ def _hunter_prompt(
         for s in emitted[:12]
     ] or ["- (none above threshold this scan)"]
 
+    if watchlist and not screener_ids:
+        screener_scope = "watchlist only — ignore all other screener names"
+    elif not screener_ids:
+        screener_scope = "all screeners"
+    else:
+        screener_scope = f"{len(screener_ids)} selected screeners"
+
+    focus_rule = (
+        f"ONLY discuss these watchlist tickers: {', '.join(watchlist)}. "
+        "Do not mention or recommend any other symbols."
+        if watchlist and not screener_ids
+        else "Prefer watchlist names when present; otherwise summarize the strongest screener suggestions."
+    )
+
     return f"""You are the background market hunter for an agentic trading session.
 
 Session prompt: {prompt or "(none)"}
 Account: {session.get("account_env", "demo")} · simulated: {bool(config.get("dry_run", False))}
 Watchlist tickers: {", ".join(watchlist) or "none"}
 Manual scope tickers this scan: {", ".join(manual_tickers) or "none"}
-Screener filter: {"all screeners" if not screener_ids else f"{len(screener_ids)} selected"}
+Screener filter: {screener_scope}
+Focus rule: {focus_rule}
 
-Scan results: {candidates_count} candidates reviewed, {len(emitted)} suggestion(s) emitted.
+Scan results: {candidates_count} candidates in scope, {len(emitted)} suggestion(s) emitted.
 Top suggestions:
 {chr(10).join(emitted_lines)}
 
-In 1–2 plain sentences, explain what you are watching and which names look strongest. Plain text only — no JSON, no markdown fences, no UI components. Do NOT place orders."""
+In 1–2 plain sentences, explain what you are watching and which names look strongest. Plain text only — no JSON, no markdown fences, no UI components. Do NOT place orders. Obey the focus rule above."""
 
 
 def _session_prompt(
@@ -115,6 +130,15 @@ def _session_prompt(
     config = session.get("config") or {}
     threshold = float(config.get("confidence_threshold", 60))
 
+    watchlist = [str(t).upper() for t in (config.get("tickers") or []) if t]
+    screener_ids = config.get("screener_ids") or []
+    focus_rule = (
+        f"This session is watchlist-only ({', '.join(watchlist)}). "
+        "If the candidate is not on that list, say it is out of scope."
+        if watchlist and not screener_ids
+        else "Follow the session prompt and risk caps."
+    )
+
     return f"""You are the session trading agent evaluating one candidate.
 
 Session prompt: {prompt or "(none)"}
@@ -123,6 +147,7 @@ Reason: {suggestion.get("reason") or suggestion.get("source_screener")}
 Price: {price:.4f} · ATR: {atr or "n/a"} · threshold {threshold}
 Sizing preview: ${allocation:.2f} allocation · ${headroom:.2f} headroom
 simulated: {bool(config.get("dry_run", False))}
+Focus rule: {focus_rule}
 
 In 1–2 plain sentences, explain whether this entry fits session rules and risk caps. Plain text only — no JSON, no markdown, no UI. Do NOT place orders."""
 
@@ -371,6 +396,32 @@ async def run_session_thinking(
         )
 
 
+def _subagents_halted(session: dict[str, Any]) -> bool:
+    try:
+        return SessionSnapshot(get_agentic_session_store(), session["id"]).subagents_halted()
+    except Exception:
+        return False
+
+
+async def cancel_session_agent_tasks(session_id: str) -> int:
+    """Cancel in-flight hunter/session thinking tasks for a session."""
+    cancelled = 0
+    async with _task_lock:
+        hunter = _hunter_tasks.pop(session_id, None)
+        if hunter and not hunter.done():
+            hunter.cancel()
+            cancelled += 1
+        prefix = f"{session_id}:"
+        for key, task in list(_session_tasks.items()):
+            if not key.startswith(prefix):
+                continue
+            _session_tasks.pop(key, None)
+            if task and not task.done():
+                task.cancel()
+                cancelled += 1
+    return cancelled
+
+
 async def schedule_hunter_thinking(
     session: dict[str, Any],
     *,
@@ -379,6 +430,8 @@ async def schedule_hunter_thinking(
     manual_tickers: list[str],
 ) -> None:
     """One hunter reasoning task per session; skip if recent or still running."""
+    if _subagents_halted(session):
+        return
     if not should_schedule_hunter_thinking(
         session,
         candidates_count=candidates_count,
@@ -413,6 +466,8 @@ async def schedule_session_thinking(
     headroom: float,
 ) -> None:
     """Background session reasoning; does not block order placement."""
+    if _subagents_halted(session):
+        return
     session_id = session["id"]
     key = f"{session_id}:{suggestion.get('ticker')}"
     async with _task_lock:

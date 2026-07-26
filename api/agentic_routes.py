@@ -169,7 +169,11 @@ async def get_session_snapshot(session_id: str):
     return {"status": True, "data": snapshot}
 
 
-@router.post("/sessions/{session_id}/stop", operation_id="stop_agentic_session", summary="Stop an agentic session (keeps managing open positions)")
+@router.post(
+    "/sessions/{session_id}/stop",
+    operation_id="stop_agentic_session",
+    summary="Stop an agentic session and halt all background agents",
+)
 async def stop_session(session_id: str):
     _get_session_or_404(session_id)
     session = await get_agentic_session_manager().stop_session(session_id)
@@ -198,6 +202,50 @@ async def resume_session(session_id: str):
     _get_session_or_404(session_id)
     session = get_agentic_session_manager().resume_session(session_id)
     return {"status": True, "data": _session_json(session)}
+
+
+@router.post(
+    "/sessions/{session_id}/subagents/halt",
+    operation_id="halt_agentic_subagents",
+    summary="Halt sub-agent / LLM thinking while risk monitors keep running",
+)
+async def halt_subagents(session_id: str):
+    _get_session_or_404(session_id)
+    session = await get_agentic_session_manager().halt_subagents(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Agentic session not found")
+    snapshot = SessionSnapshot(get_agentic_session_store(), session_id).hydrate()
+    return {
+        "status": True,
+        "data": {
+            "session": _session_json(session),
+            "subagents_halted": bool(
+                (snapshot.get("agent_state") or {}).get("subagents_halted")
+            ),
+        },
+    }
+
+
+@router.post(
+    "/sessions/{session_id}/subagents/resume",
+    operation_id="resume_agentic_subagents",
+    summary="Resume sub-agent / LLM thinking for an agentic session",
+)
+async def resume_subagents(session_id: str):
+    _get_session_or_404(session_id)
+    session = await get_agentic_session_manager().resume_subagents(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Agentic session not found")
+    snapshot = SessionSnapshot(get_agentic_session_store(), session_id).hydrate()
+    return {
+        "status": True,
+        "data": {
+            "session": _session_json(session),
+            "subagents_halted": bool(
+                (snapshot.get("agent_state") or {}).get("subagents_halted")
+            ),
+        },
+    }
 
 
 @router.patch(

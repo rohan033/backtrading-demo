@@ -45,8 +45,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "profit_trail_pct": 0.25,              # pullback from peak that triggers secure on break
     "profit_uptrend_tolerance_pct": 0.15,  # still "at peak" within this % of session high
     "profit_lock_fraction": 0.35,          # ratcheting floor: lock this share of peak gain
-    "profit_level_fractions": [0.35, 0.60, 0.85],  # display targets along peak gain
-    "profit_trim_fraction": 0.25,
+    "profit_level_fractions": [0.35, 0.60, 0.85],  # ladder rungs (fractions of peak gain)
+    "profit_trim_fraction": 0.25,          # slice of ORIGINAL size trimmed per rung hit
+    "profit_peak_stale_seconds": 90.0,     # no new high for this long => stalled
+    "profit_stall_trim_fraction": 0.15,    # one-shot trim when stalled near peak
     "profit_rebuy_momentum_closes": 3,
     "profit_rebuy_min_move_pct": 0.5,
     "position_monitor_seconds": 30.0,

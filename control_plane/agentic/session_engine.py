@@ -244,12 +244,9 @@ class SessionEngine:
                 session = self.store.get_session(self.session_id)
                 if session is None:
                     return  # deleted
-                open_positions = self.store.list_positions(
-                    self.session_id, states=ACTIVE_POSITION_STATES
-                )
-                if session["status"] == "stopped" and not open_positions:
+                if session["status"] == "stopped":
                     log.info(
-                        "[AGENTIC_ENGINE] Session %s stopped with no open positions; exiting loop",
+                        "[AGENTIC_ENGINE] Session %s stopped; exiting loop",
                         self.session_id,
                     )
                     return
@@ -967,7 +964,11 @@ class AgenticSessionManager:
         return await orchestrator.evaluate_candidate(suggestion)
 
     async def stop_session(self, session_id: str, reason: str = "Stopped by user") -> dict[str, Any] | None:
-        """STOP: block entries, keep exit management running until positions close."""
+        """STOP: mark stopped and immediately halt engine, orchestrator, and monitors.
+
+        Open broker positions are left as-is (close them manually from the UI);
+        no background agent keeps managing them after Stop.
+        """
         store = get_agentic_session_store()
         session = store.get_session(session_id)
         if session is None:
@@ -977,10 +978,57 @@ class AgenticSessionManager:
             store.add_event(
                 session_id,
                 "stop",
-                f"Session stopped: {reason}. Open positions remain managed until closed.",
+                f"Session stopped: {reason}. All background agents halted.",
             )
-        # Engine task keeps running while open positions exist; it exits on its own.
-        return session
+        self.halt_background(session_id, reason=reason)
+        return store.get_session(session_id) or session
+
+    def halt_background(self, session_id: str, *, reason: str = "Stopped by user") -> None:
+        """Cancel engine/orchestrator/service tasks and clear Agents Status."""
+        from control_plane.agentic.snapshot import SessionSnapshot
+
+        SessionSnapshot(get_agentic_session_store(), session_id).mark_halted(reason)
+        self.stop_engine_task(session_id)
+
+    async def halt_subagents(self, session_id: str) -> dict[str, Any] | None:
+        """Stop spawning/thinking sub-agents; risk monitors and exits keep running."""
+        store = get_agentic_session_store()
+        session = store.get_session(session_id)
+        if session is None or session["status"] == "stopped":
+            return session
+        from control_plane.agentic.agent_reasoning import cancel_session_agent_tasks
+        from control_plane.agentic.snapshot import SessionSnapshot
+
+        SessionSnapshot(store, session_id).set_subagents_halted(
+            True, reason="Subagents halted by user"
+        )
+        await cancel_session_agent_tasks(session_id)
+        store.add_event(
+            session_id,
+            "info",
+            "Subagents halted: no new LLM/sub-agent work until resumed. Risk exits stay active.",
+            meta={"provenance": "user", "subagents_halted": True},
+        )
+        return store.get_session(session_id)
+
+    async def resume_subagents(self, session_id: str) -> dict[str, Any] | None:
+        """Allow orchestrator sub-agents and hunter/session thinking again."""
+        store = get_agentic_session_store()
+        session = store.get_session(session_id)
+        if session is None or session["status"] == "stopped":
+            return session
+        from control_plane.agentic.snapshot import SessionSnapshot
+
+        SessionSnapshot(store, session_id).set_subagents_halted(
+            False, reason="Subagents resumed by user"
+        )
+        store.add_event(
+            session_id,
+            "info",
+            "Subagents resumed: orchestrator and hunter reasoning enabled.",
+            meta={"provenance": "user", "subagents_halted": False},
+        )
+        return store.get_session(session_id)
 
     def pause_session(self, session_id: str) -> dict[str, Any] | None:
         store = get_agentic_session_store()
@@ -1011,11 +1059,13 @@ class AgenticSessionManager:
         return updated
 
     def stop_engine_task(self, session_id: str) -> None:
+        """Cancel the session engine; `_on_done` also kills orchestrator + services."""
         task = self._tasks.get(session_id)
         if task and not task.done():
             task.cancel()
-        else:
-            self._on_done(session_id)
+            return
+        # Engine already gone (or never started) — still tear down siblings.
+        self._on_done(session_id)
 
     async def force_close_position(
         self, session_id: str, position_id: str

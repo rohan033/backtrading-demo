@@ -161,28 +161,62 @@ class MarketHunter:
     # ── Scan scope from running sessions ──
 
     @staticmethod
+    def _session_watchlist(session: dict[str, Any]) -> set[str]:
+        config = session.get("config") or {}
+        return {
+            ticker
+            for ticker in (_ticker_symbol(raw) for raw in (config.get("tickers") or []))
+            if ticker
+        }
+
+    @staticmethod
+    def _session_screener_ids(session: dict[str, Any]) -> list[str]:
+        config = session.get("config") or {}
+        return [str(item) for item in (config.get("screener_ids") or []) if str(item).strip()]
+
+    @classmethod
+    def _is_watchlist_only(cls, session: dict[str, Any]) -> bool:
+        """Tickers set + no screener_ids => focused session; ignore screener universe."""
+        return bool(cls._session_watchlist(session)) and not cls._session_screener_ids(session)
+
+    @classmethod
     def _scan_scope(
+        cls,
         sessions: list[dict[str, Any]],
     ) -> tuple[set[str] | None, dict[str, str], set[str]]:
-        """Return (screener_id filter or None=all), ticker->account_env, all manual tickers."""
+        """Return (screener_id filter or None=all), ticker->account_env, all manual tickers.
+
+        Watchlist-only sessions (tickers set, empty screener_ids) do not open the
+        screener universe. Discovery mode (no tickers, no screener_ids) still means
+        all screeners. Explicit screener_ids are unioned across sessions.
+        """
         if not sessions:
             return None, {}, set()
-        screener_filter: set[str] | None = set()
+        wants_all_screeners = False
+        has_explicit_screeners = False
+        screener_union: set[str] = set()
         manual_tickers: set[str] = set()
         ticker_env: dict[str, str] = {}
         for session in sessions:
             config = session.get("config") or {}
-            ids = config.get("screener_ids") or []
-            if not ids:
-                screener_filter = None
-            elif screener_filter is not None:
-                screener_filter.update(str(item) for item in ids if str(item).strip())
-            for raw in config.get("tickers") or []:
-                ticker = _ticker_symbol(raw)
-                if not ticker:
-                    continue
+            ids = cls._session_screener_ids(session)
+            watchlist = cls._session_watchlist(session)
+            for ticker in watchlist:
                 manual_tickers.add(ticker)
                 ticker_env[ticker] = str(session.get("account_env") or "demo")
+            if ids:
+                has_explicit_screeners = True
+                screener_union.update(ids)
+            elif not watchlist:
+                # No watchlist and no screener filter => open discovery.
+                wants_all_screeners = True
+            # else: watchlist-only — contributes tickers, no screeners
+        if wants_all_screeners:
+            screener_filter: set[str] | None = None
+        elif has_explicit_screeners:
+            screener_filter = screener_union
+        else:
+            screener_filter = set()
         return screener_filter, ticker_env, manual_tickers
 
     # ── Scan ──
@@ -419,17 +453,24 @@ class MarketHunter:
 
         self._last_scan_stats["emitted"] = len(emitted)
 
-        if running_sessions and emitted:
-            await asyncio.to_thread(
-                self._heartbeat_sessions,
-                running_sessions,
-                len(candidates),
-                len(emitted),
-            )
         for session in running_sessions:
             config = session.get("config") or {}
+            watchlist = self._session_watchlist(session)
+            session_emitted = [
+                s for s in emitted if self._suggestion_allowed_for_session(session, s)
+            ]
+            if self._is_watchlist_only(session):
+                scope_count = len(watchlist)
+                work = (
+                    f"Watchlist only: {', '.join(sorted(watchlist)[:6])}"
+                    if watchlist
+                    else "Watchlist only"
+                )
+            else:
+                scope_count = len(candidates)
+                work = f"Watching {scope_count} candidates"
             SessionSnapshot(store, session["id"]).mutate(
-                lambda state, count=len(candidates): state.setdefault(
+                lambda state, work=work: state.setdefault(
                     "services", {}
                 ).setdefault("market_hunter", {}).update(
                     {
@@ -437,7 +478,7 @@ class MarketHunter:
                         "kind": "deterministic",
                         "status": "active",
                         "last_run_at": self._last_scan_at or _now_iso(),
-                        "current_work": f"Watching {count} candidates",
+                        "current_work": work,
                     }
                 )
             )
@@ -449,19 +490,13 @@ class MarketHunter:
             threshold = float(
                 config.get("confidence_threshold", DEFAULT_CONFIG["confidence_threshold"])
             )
-            watchlist = {
-                _ticker_symbol(t) for t in (config.get("tickers") or []) if t
-            }
-            for suggestion in emitted:
+            for suggestion in session_emitted:
                 event_threshold = (
                     float(DEFAULT_CONFIG["min_suggestion_score"])
                     if suggestion["ticker"] in watchlist or suggestion.get("source") == "manual"
                     else threshold
                 )
-                if (
-                    self._suggestion_allowed_for_session(session, suggestion)
-                    and float(suggestion["score"]) >= event_threshold
-                ):
+                if float(suggestion["score"]) >= event_threshold:
                     await bus.publish(
                         AgentEvent(
                             session_id=session["id"],
@@ -479,26 +514,36 @@ class MarketHunter:
                             )
                         ),
                     )
-        if emitted and running_sessions:
-            await asyncio.to_thread(
-                self._log_suggestions_to_sessions, emitted, running_sessions
-            )
+            if session_emitted:
+                await asyncio.to_thread(
+                    self._log_suggestions_to_sessions,
+                    session_emitted,
+                    [session],
+                )
+                await asyncio.to_thread(
+                    self._heartbeat_sessions,
+                    [session],
+                    scope_count,
+                    len(session_emitted),
+                )
+
         # Hunter reasoning: {data, oneline, confidence} + thinking per running session.
         if running_sessions:
             from control_plane.agentic.agent_reasoning import schedule_hunter_thinking
 
-            manual_list = sorted(manual_tickers)
             for session in running_sessions:
+                watchlist = self._session_watchlist(session)
                 session_emitted = [
-                    s
-                    for s in emitted
-                    if self._suggestion_allowed_for_session(session, s)
+                    s for s in emitted if self._suggestion_allowed_for_session(session, s)
                 ]
+                scoped_candidate_count = (
+                    len(watchlist) if self._is_watchlist_only(session) else len(candidates)
+                )
                 await schedule_hunter_thinking(
                     session,
-                    candidates_count=len(candidates),
+                    candidates_count=scoped_candidate_count,
                     emitted=session_emitted,
-                    manual_tickers=manual_list,
+                    manual_tickers=sorted(watchlist),
                 )
         if emitted:
             log.info(
@@ -527,16 +572,20 @@ class MarketHunter:
         for session in sessions:
             store.add_event(session["id"], "info", text, meta=meta)
 
-    @staticmethod
+    @classmethod
     def _suggestion_allowed_for_session(
-        session: dict[str, Any], suggestion: dict[str, Any]
+        cls,
+        session: dict[str, Any],
+        suggestion: dict[str, Any],
     ) -> bool:
-        config = session.get("config") or {}
-        screener_ids = config.get("screener_ids") or []
-        tickers = {_ticker_symbol(t) for t in (config.get("tickers") or []) if t}
+        tickers = cls._session_watchlist(session)
+        screener_ids = cls._session_screener_ids(session)
         ticker = _ticker_symbol(suggestion.get("ticker"))
         if ticker in tickers:
             return True
+        # Watchlist-only: never accept screener movers outside the explicit list.
+        if tickers and not screener_ids:
+            return False
         if suggestion.get("source") == "manual":
             return False
         if not screener_ids:

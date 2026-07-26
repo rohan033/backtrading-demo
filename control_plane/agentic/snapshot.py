@@ -101,6 +101,7 @@ def default_snapshot(session: dict[str, Any]) -> dict[str, Any]:
             "orchestrator": "idle",
             "last_wakeup_at": None,
             "wakeups_last_hour": 0,
+            "subagents_halted": False,
         },
         "extensions": {
             "regime_strategy": None,
@@ -220,6 +221,73 @@ class SessionSnapshot:
                     break
 
         self.mutate(update)
+
+    def mark_halted(self, reason: str = "Stopped by user") -> None:
+        """Mark every monitor/service/sub-agent idle after a full session halt."""
+
+        def update(state: dict[str, Any]) -> None:
+            for card, monitor in (state.get("monitors") or {}).items():
+                if not isinstance(monitor, dict):
+                    continue
+                monitor["status"] = "idle"
+                monitor["oneline"] = reason
+                monitor["should_spawn_sub_agent"] = False
+                monitor["updated_at"] = _now()
+            for service in (state.get("services") or {}).values():
+                if not isinstance(service, dict):
+                    continue
+                service["status"] = "stopped"
+                service["current_work"] = reason
+                service["last_run_at"] = _now()
+            for sub in state.setdefault("subagents", []):
+                if sub.get("status") == "active":
+                    sub["status"] = "done"
+                    sub["oneline"] = reason
+                    sub["finished_at"] = _now()
+            agent_state = state.setdefault("agent_state", {})
+            agent_state["orchestrator"] = "idle"
+            agent_state["last_wakeup_at"] = _now()
+            agent_state["subagents_halted"] = True
+
+        try:
+            self.mutate(update)
+        except KeyError:
+            pass
+
+    def subagents_halted(self) -> bool:
+        session = self.store.get_session(self.session_id)
+        if session is None:
+            return False
+        snap = session.get("snapshot") or {}
+        return bool((snap.get("agent_state") or {}).get("subagents_halted"))
+
+    def set_subagents_halted(self, halted: bool, *, reason: str | None = None) -> dict[str, Any]:
+        """Toggle LLM/sub-agent spawning; risk monitors keep running."""
+        note = reason or ("Subagents halted by user" if halted else "Subagents resumed by user")
+
+        def update(state: dict[str, Any]) -> None:
+            agent_state = state.setdefault("agent_state", {})
+            agent_state["subagents_halted"] = bool(halted)
+            agent_state["last_wakeup_at"] = _now()
+            if halted:
+                agent_state["orchestrator"] = "idle"
+                for sub in state.setdefault("subagents", []):
+                    if sub.get("status") == "active":
+                        sub["status"] = "done"
+                        sub["oneline"] = note
+                        sub["finished_at"] = _now()
+                orch = state.setdefault("services", {}).setdefault("main_orchestrator", {})
+                orch.update(
+                    {
+                        "name": "main_orchestrator",
+                        "kind": "llm",
+                        "status": "idle",
+                        "current_work": note,
+                        "last_run_at": _now(),
+                    }
+                )
+
+        return self.mutate(update)
 
     # ── Streaming thinking buffers ──
 
@@ -409,6 +477,9 @@ class SessionSnapshot:
                 snapshot.setdefault(key, value)
             for name, value in baseline["services"].items():
                 snapshot.setdefault("services", {}).setdefault(name, value)
+            agent_state = snapshot.setdefault("agent_state", {})
+            for key, value in baseline["agent_state"].items():
+                agent_state.setdefault(key, value)
             snapshot["version"] = 2
             snapshot["portfolio"] = {
                 "start_balance": start,

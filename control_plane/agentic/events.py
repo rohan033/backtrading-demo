@@ -33,6 +33,7 @@ class EventType(str, Enum):
     PLAYBOOK_REVIEW = "playbook_review"
     PROFIT_LEVEL_HIT = "profit_level_hit"
     PROFIT_SECURED = "profit_secured"
+    PROFIT_STALL_TRIM = "profit_stall_trim"
     REBUY_CANDIDATE = "rebuy_candidate"
     SERVICE_STATUS = "service_status"
 

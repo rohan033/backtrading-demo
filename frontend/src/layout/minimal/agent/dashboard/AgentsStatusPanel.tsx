@@ -8,16 +8,50 @@ function subagentStatusTone(status: string): 'active' | 'degraded' | 'idle' {
   return 'idle'
 }
 
-export default function AgentsStatusPanel({ subagents }: { subagents: AgenticSubagent[] }) {
+export default function AgentsStatusPanel({
+  subagents,
+  halted = false,
+  interactive = false,
+  toggling = false,
+  onToggle,
+}: {
+  subagents: AgenticSubagent[]
+  halted?: boolean
+  interactive?: boolean
+  toggling?: boolean
+  onToggle?: () => void
+}) {
   return (
     <Panel
       title="Agents Status"
       count={subagents.length || undefined}
-      className="ags-agents-panel"
+      className={`ags-agents-panel${halted ? ' ags-agents-panel--halted' : ''}`}
       bodyClassName="ags-agents__body"
+      actions={
+        interactive && onToggle ? (
+          <button
+            type="button"
+            className={`ags-agents__toggle${halted ? ' ags-agents__toggle--resume' : ''}`}
+            disabled={toggling}
+            onClick={onToggle}
+            title={
+              halted
+                ? 'Resume sub-agents and hunter/orchestrator LLM work'
+                : 'Halt new sub-agents and LLM thinking (risk exits keep running)'
+            }
+          >
+            {toggling ? '…' : halted ? 'Resume' : 'Halt'}
+          </button>
+        ) : undefined
+      }
     >
+      {halted ? (
+        <p className="ags-agents__banner" role="status">
+          Subagents halted — no new LLM / analyst work until resumed. Risk monitors stay active.
+        </p>
+      ) : null}
       {subagents.length === 0 ? (
-        <Empty>No subagents spawned yet.</Empty>
+        <Empty>{halted ? 'Subagents idle while halted.' : 'No subagents spawned yet.'}</Empty>
       ) : (
         <ul className="ags-agents" aria-label="Subagent status">
           {subagents.map(sub => {

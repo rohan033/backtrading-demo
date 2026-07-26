@@ -7,8 +7,10 @@ import {
   closeAgenticPosition,
   getAgenticSession,
   getAgenticSessionSnapshot,
+  haltAgenticSubagents,
   pauseAgenticSession,
   resumeAgenticSession,
+  resumeAgenticSubagents,
   stopAgenticSession,
   updateAgenticSessionModel,
   type AgenticSession,
@@ -57,6 +59,7 @@ export default function AgenticSessionWorkspace({
   const [actionError, setActionError] = useState('')
   const [stopping, setStopping] = useState(false)
   const [pausing, setPausing] = useState(false)
+  const [subagentsToggling, setSubagentsToggling] = useState(false)
   const [closingId, setClosingId] = useState('')
   const [modelSaving, setModelSaving] = useState(false)
   const [modelValue, setModelValue] = useState(() => agentModelFromSessionConfig(undefined))
@@ -100,7 +103,14 @@ export default function AgenticSessionWorkspace({
   }, [load, session?.id, session?.status])
 
   const stop = useCallback(async () => {
-    if (!session || !window.confirm(`Stop ${agenticSessionLabel(session)}? New entries will be blocked.`)) return
+    if (
+      !session
+      || !window.confirm(
+        `Stop ${agenticSessionLabel(session)}? All background agents will halt. Open positions stay at the broker until you close them.`,
+      )
+    ) {
+      return
+    }
     setStopping(true)
     setActionError('')
     try {
@@ -142,6 +152,24 @@ export default function AgenticSessionWorkspace({
       setPausing(false)
     }
   }, [load, session])
+
+  const toggleSubagents = useCallback(async () => {
+    if (!session || session.status === 'stopped') return
+    const halted = Boolean(snapshot?.agent_state?.subagents_halted)
+    setSubagentsToggling(true)
+    setActionError('')
+    try {
+      const result = halted
+        ? await resumeAgenticSubagents(session.id)
+        : await haltAgenticSubagents(session.id)
+      setSession(result.session)
+      await load()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update subagents')
+    } finally {
+      setSubagentsToggling(false)
+    }
+  }, [load, session, snapshot?.agent_state?.subagents_halted])
 
   const saveModel = useCallback(async (next: typeof modelValue) => {
     setModelSaving(true)
@@ -222,6 +250,7 @@ export default function AgenticSessionWorkspace({
           <div className="ags-wire-bar__model">
             <AgentModelPicker
               compact
+              dense
               disabled={modelSaving}
               value={modelValue}
               onChange={next => {
@@ -296,7 +325,13 @@ export default function AgenticSessionWorkspace({
             loading={scanner.loading}
             error={scanner.error}
           />
-          <AgentsStatusPanel subagents={snapshot.subagents || []} />
+          <AgentsStatusPanel
+            subagents={snapshot.subagents || []}
+            halted={Boolean(snapshot.agent_state?.subagents_halted)}
+            interactive={interactive}
+            toggling={subagentsToggling}
+            onToggle={() => void toggleSubagents()}
+          />
           <MarketMonitorPanel monitors={snapshot.monitors || {}} />
         </div>
       </main>
