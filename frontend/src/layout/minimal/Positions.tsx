@@ -3,7 +3,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import SymbolLogo from '../../components/SymbolLogo'
 import { PositionsPriceProvider, usePositionsPrice } from '../../context/PositionsPriceContext'
 import { usePositionBracketMonitor } from '../../hooks/usePositionBracketMonitor'
-import { useMarketPreviewFeed } from '../../hooks/useMarketPreviewFeed'
+import { usePositionLiveQuote } from '../../hooks/usePositionLiveQuote'
 import { formatBrokerMoney } from '../../lib/currency'
 import {
   CloseEtoroPositionError,
@@ -38,12 +38,22 @@ import {
   type PositionBracketSettings,
 } from '../../lib/positionBrackets'
 import {
+  fetchPositionLadderStates,
+  ladderLevelEstProfit,
+  ladderOverallProfit,
+  ladderStateByPositionId,
+  resetPositionLadder,
+  setPositionAutoLadder,
+  type PositionLadderState,
+} from '../../lib/positionLadder'
+import {
   buildPortfolioSymbolIndex,
   resolvePortfolioSymbolDisplay,
   type InstrumentDisplayRecord,
 } from '../../lib/portfolioSymbolDisplay'
 import { buildSymbolVisualMap, type SymbolVisual } from '../../lib/symbolVisuals'
 import { recordTradedInstrument } from '../../lib/tradedInstruments'
+import { useEnsurePositionWatchlistFeed } from '../../hooks/useEnsurePositionWatchlistFeed'
 import { fetchWatchlists, type Watchlist } from '../../lib/watchlists'
 import './Positions.css'
 
@@ -151,10 +161,12 @@ function EnableToggle({
   enabled,
   onChange,
   label,
+  disabled = false,
 }: {
   enabled: boolean
   onChange: (enabled: boolean) => void
   label: string
+  disabled?: boolean
 }) {
   return (
     <button
@@ -164,9 +176,119 @@ function EnableToggle({
       aria-pressed={enabled}
       aria-label={label}
       title={label}
+      disabled={disabled}
     >
       <span className="pos-toggle-knob" />
     </button>
+  )
+}
+
+function AutoLadderCell({
+  enabled,
+  disabled,
+  saving,
+  resetting,
+  ladder,
+  liveMark,
+  onChange,
+  onReset,
+}: {
+  enabled: boolean
+  disabled?: boolean
+  saving?: boolean
+  resetting?: boolean
+  ladder?: PositionLadderState
+  liveMark?: number | null
+  onChange: (next: boolean) => void
+  onReset?: () => void
+}) {
+  const entry = ladder?.entry_price ?? null
+  const entryUnits = ladder?.entry_units ?? null
+  const isBuy = ladder?.is_buy !== false
+  const profitSummary = ladder ? ladderOverallProfit(ladder, liveMark) : null
+
+  return (
+    <div className="pos-auto-ladder">
+      <div className="pos-auto-ladder__head">
+        <span className="pos-auto-ladder__label">Auto ladder</span>
+        <div className="pos-auto-ladder__actions">
+          {enabled && ladder && onReset ? (
+            <button
+              type="button"
+              className="pos-auto-ladder__reset"
+              disabled={disabled || saving || resetting}
+              title="Clear hit rungs and re-anchor peak from current price"
+              onClick={onReset}
+            >
+              {resetting ? 'Resetting…' : 'Reset'}
+            </button>
+          ) : null}
+          <EnableToggle
+            enabled={enabled}
+            disabled={disabled || saving || resetting}
+            label={enabled ? 'Disable server auto-ladder' : 'Enable server auto-ladder'}
+            onChange={onChange}
+          />
+        </div>
+      </div>
+      {enabled && ladder ? (
+        <div className="pos-auto-ladder__detail">
+          <span title="Session peak tracked server-side">
+            Peak {ladder.peak_price != null ? formatBrokerMoney('etoro', ladder.peak_price) : '—'}
+          </span>
+          <span title="Original size remaining after partial trims">
+            {Math.round((ladder.remaining_fraction ?? 1) * 100)}% left
+          </span>
+          {profitSummary ? (
+            <span
+              className={`pos-auto-ladder__total${profitSummary.total >= 0 ? ' pos-auto-ladder__total--up' : ' pos-auto-ladder__total--down'}`}
+              title="Secured ladder trims + unrealized on remaining size at current mark"
+            >
+              Est total {fmtSignedMoney(profitSummary.total)}
+              <span className="pos-auto-ladder__total-breakdown">
+                {' '}
+                (sec {fmtSignedMoney(profitSummary.secured)} · open {fmtSignedMoney(profitSummary.unrealized)})
+              </span>
+            </span>
+          ) : null}
+          <ul className="pos-auto-ladder__rungs">
+            {(ladder.levels ?? []).map(level => {
+              const estProfit =
+                entry != null && entryUnits != null
+                  ? ladderLevelEstProfit(level, entry, entryUnits, isBuy)
+                  : null
+              const profitUp = (estProfit ?? 0) >= 0
+              return (
+                <li
+                  key={level.id}
+                  className={`pos-auto-ladder__rung${level.hit ? ' pos-auto-ladder__rung--hit' : ''}`}
+                >
+                  <strong>{level.id}</strong>
+                  <span>{formatBrokerMoney('etoro', level.price)}</span>
+                  {estProfit != null ? (
+                    <span
+                      className={`pos-auto-ladder__rung-pnl${profitUp ? ' pos-auto-ladder__rung-pnl--up' : ' pos-auto-ladder__rung-pnl--down'}`}
+                      title={
+                        level.hit
+                          ? 'Estimated profit secured on this 25% trim'
+                          : 'Estimated profit if this 25% trim executes at this rung'
+                      }
+                    >
+                      {level.hit ? fmtSignedMoney(estProfit) : `est ${fmtSignedMoney(estProfit)}`}
+                    </span>
+                  ) : null}
+                  {level.hit ? <em>hit</em> : null}
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      ) : (
+        <p className="pos-auto-ladder__hint">
+          Server-side L1/L2/L3 partial trims on pullback. Off = use TP/SL only.
+        </p>
+      )}
+    </div>
   )
 }
 
@@ -177,6 +299,7 @@ function BracketCell({
   units,
   isBuy,
   onChange,
+  disabled = false,
 }: {
   kind: 'take_profit' | 'stop_loss'
   settings: PositionBracketSettings
@@ -184,6 +307,7 @@ function BracketCell({
   units: number
   isBuy: boolean
   onChange: (patch: Partial<PositionBracketSettings>) => void
+  disabled?: boolean
 }) {
   const mode = kind === 'take_profit' ? settings.takeProfitMode : settings.stopLossMode
   const value = kind === 'take_profit' ? settings.takeProfitValue : settings.stopLossValue
@@ -207,6 +331,7 @@ function BracketCell({
         type="number"
         className="pos-bracket-input"
         value={value}
+        disabled={disabled}
         step={mode === 'price' ? 0.01 : mode === 'percent' ? 0.1 : 1}
         placeholder={mode === 'price' ? 'Price' : mode === 'percent' ? '%' : 'Amount'}
         onChange={e => {
@@ -243,33 +368,34 @@ const PositionLivePnlCell = memo(function PositionLivePnlCell({
   ticker: string
 }) {
   const { reportPrice } = usePositionsPrice()
-  const { ltp } = useMarketPreviewFeed({
-    broker: 'etoro',
-    token: row.symboltoken || ticker,
-    symbol: row.tradingsymbol || ticker,
-    exchange: 'ETORO',
-    account_env: accountEnv,
-    feed_mode: 'websocket',
-    enabled: Boolean(row.symboltoken || ticker),
+  const quote = usePositionLiveQuote({
+    accountEnv,
+    symboltoken: row.symboltoken,
+    tradingsymbol: row.tradingsymbol,
+    ticker,
+    openRate: row.openRate,
+    quantity: row.quantity,
+    isBuy: row.isBuy,
+    brokerLtp: row.brokerLtp,
+    brokerPnl: row.brokerPnl,
   })
 
   useEffect(() => {
-    reportPrice(row.rowKey, ltp)
-  }, [ltp, reportPrice, row.rowKey])
+    reportPrice(row.rowKey, quote.mark)
+  }, [quote.mark, reportPrice, row.rowKey])
 
-  const live = positionLivePnl(row, ltp)
-  const pnl = live?.pnl ?? row.brokerPnl
-  const pnlPct = live?.pnlPct ?? 0
-  const pnlUp = (pnl ?? 0) >= 0
-  const currentPrice = ltp ?? row.brokerLtp ?? null
+  const pnlUp = (quote.pnl ?? 0) >= 0
 
   return (
     <>
-      <td className="pos-td-num">
-        {currentPrice != null ? formatBrokerMoney('etoro', currentPrice) : '—'}
+      <td className="pos-td-num" title={quote.stale ? quote.statusLabel : undefined}>
+        {quote.mark != null ? formatBrokerMoney('etoro', quote.mark) : '—'}
+        {quote.stale && quote.mark != null ? (
+          <span className="pos-price-stale" aria-label={quote.statusLabel}> ↻</span>
+        ) : null}
       </td>
       <td className={`pos-td-num ${pnlUp ? 'pos-pnl--up' : 'pos-pnl--down'}`}>
-        {pnl != null ? fmtPnl(pnl, pnlPct) : '—'}
+        {quote.pnl != null ? fmtPnl(quote.pnl, quote.pnlPct) : '—'}
       </td>
     </>
   )
@@ -298,17 +424,30 @@ const PositionTableRow = memo(function PositionTableRow({
   accountEnv,
   closing,
   hidden,
+  ladder,
+  ladderSaving,
+  ladderResetting,
   onBracketsUpdated,
+  onLadderToggle,
+  onLadderReset,
   onClose,
 }: {
   prepared: PreparedRow
   accountEnv: AccountEnv
   closing?: boolean
   hidden?: boolean
+  ladder?: PositionLadderState
+  ladderSaving?: boolean
+  ladderResetting?: boolean
   onBracketsUpdated?: () => void
+  onLadderToggle?: (enabled: boolean) => void
+  onLadderReset?: () => void
   onClose?: () => void
 }) {
   const { row, storageKey, ticker, name, visual } = prepared
+  const autoLadder = Boolean(ladder?.auto_ladder_enabled)
+  const { prices } = usePositionsPrice()
+  const liveMark = prices[row.rowKey] ?? row.brokerLtp ?? null
   const [brackets, setBrackets] = useState(() =>
     loadPositionBracketsForRow(accountEnv, storageKey, [row.brokerPositionId, row.positionId, row.symboltoken]),
   )
@@ -326,7 +465,7 @@ const PositionTableRow = memo(function PositionTableRow({
     })
   }, [accountEnv, onBracketsUpdated, storageKey])
 
-  const monitoring = Boolean(
+  const monitoring = autoLadder || Boolean(
     (brackets.takeProfitEnabled && brackets.takeProfitValue.trim())
     || (brackets.stopLossEnabled && brackets.stopLossValue.trim()),
   )
@@ -356,7 +495,11 @@ const PositionTableRow = memo(function PositionTableRow({
           <div className="pos-sym-label">
             <div className="pos-sym-ticker">
               {ticker}
-              {monitoring ? <span className="pos-monitor-badge">Monitoring</span> : null}
+              {monitoring ? (
+                <span className="pos-monitor-badge">
+                  {autoLadder ? 'Auto ladder' : 'Monitoring'}
+                </span>
+              ) : null}
             </div>
             {name ? <div className="pos-sym-name">{name}</div> : null}
             <div className={`pos-side${row.isBuy ? '' : ' pos-side--sell'}`}>
@@ -376,11 +519,13 @@ const PositionTableRow = memo(function PositionTableRow({
           units={row.quantity}
           isBuy={row.isBuy}
           onChange={onBracketsChange}
+          disabled={autoLadder}
         />
       </td>
       <td>
         <EnableToggle
           enabled={brackets.takeProfitEnabled}
+          disabled={autoLadder}
           label="Enable take profit"
           onChange={takeProfitEnabled => onBracketsChange({ takeProfitEnabled })}
         />
@@ -393,13 +538,27 @@ const PositionTableRow = memo(function PositionTableRow({
           units={row.quantity}
           isBuy={row.isBuy}
           onChange={onBracketsChange}
+          disabled={autoLadder}
         />
       </td>
       <td>
         <EnableToggle
           enabled={brackets.stopLossEnabled}
+          disabled={autoLadder}
           label="Enable stop loss"
           onChange={stopLossEnabled => onBracketsChange({ stopLossEnabled })}
+        />
+      </td>
+      <td className="pos-auto-ladder-col">
+        <AutoLadderCell
+          enabled={autoLadder}
+          disabled={!isBrokerClosablePosition(row)}
+          saving={ladderSaving}
+          resetting={ladderResetting}
+          ladder={ladder}
+          liveMark={liveMark}
+          onChange={next => onLadderToggle?.(next)}
+          onReset={onLadderReset}
         />
       </td>
       <td className="pos-td-actions">
@@ -447,7 +606,40 @@ function PositionsTable({
   const [tickerFilter, setTickerFilter] = useState('')
   const [selectedTickers, setSelectedTickers] = useState<Set<string>>(() => new Set())
   const [manualClosingKeys, setManualClosingKeys] = useState<Set<string>>(() => new Set())
+  const [ladderRows, setLadderRows] = useState<PositionLadderState[]>([])
+  const [ladderSavingId, setLadderSavingId] = useState('')
+  const [ladderResettingId, setLadderResettingId] = useState('')
   const bumpBracketRevision = useCallback(() => setBracketRevision(v => v + 1), [])
+
+  const loadLadderStates = useCallback(async () => {
+    try {
+      const rows = await fetchPositionLadderStates(accountEnv)
+      setLadderRows(rows)
+    } catch {
+      // Non-fatal — ladder UI falls back to local toggle only.
+    }
+  }, [accountEnv])
+
+  useEffect(() => {
+    void loadLadderStates()
+    const timer = window.setInterval(() => { void loadLadderStates() }, 8000)
+    return () => window.clearInterval(timer)
+  }, [loadLadderStates])
+
+  const ladderByPositionId = useMemo(
+    () => ladderStateByPositionId(ladderRows),
+    [ladderRows],
+  )
+
+  const autoLadderPositionIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const row of ladderRows) {
+      if (row.auto_ladder_enabled && row.broker_position_id) {
+        ids.add(row.broker_position_id)
+      }
+    }
+    return ids
+  }, [ladderRows])
 
   const tickerOptions = useMemo(
     () => [...new Set(preparedRows.map(row => row.ticker))].sort(),
@@ -506,14 +698,104 @@ function PositionsTable({
     accountEnv,
     rows: monitoredRows,
     prices,
+    autoLadderPositionIds,
     enabled: preparedRows.length > 0,
     onClosed: handlePositionClosed,
   })
 
   const enabledBracketCount = useMemo(
-    () => countEnabledBrackets(accountEnv, monitoredRows),
-    [accountEnv, bracketRevision, monitoredRows],
+    () => countEnabledBrackets(accountEnv, monitoredRows, autoLadderPositionIds),
+    [accountEnv, autoLadderPositionIds, bracketRevision, monitoredRows],
   )
+
+  const handleAutoLadderToggle = useCallback(async (prepared: PreparedRow, enabled: boolean) => {
+    const { row, ticker } = prepared
+    if (!row.brokerPositionId) {
+      showPlatformToast({
+        variant: 'error',
+        title: 'Cannot arm ladder',
+        message: `${ticker}: refresh positions to load broker id first.`,
+        duration: 8000,
+      })
+      return
+    }
+    setLadderSavingId(row.brokerPositionId)
+    try {
+      const instrumentId = Number(row.symboltoken)
+      await setPositionAutoLadder(accountEnv, row.brokerPositionId, {
+        enabled,
+        ticker,
+        instrument_id: Number.isFinite(instrumentId) ? instrumentId : null,
+        entry_price: row.openRate,
+        entry_units: row.quantity,
+        is_buy: row.isBuy,
+      })
+      if (enabled) {
+        savePositionBrackets(accountEnv, prepared.storageKey, {
+          takeProfitEnabled: false,
+          stopLossEnabled: false,
+        })
+        bumpBracketRevision()
+      }
+      await loadLadderStates()
+      showPlatformToast({
+        variant: 'success',
+        title: enabled ? 'Auto ladder armed' : 'Auto ladder off',
+        message: enabled
+          ? `${ticker}: server monitors L1/L2/L3 partial trims (25% each on pullback).`
+          : `${ticker}: back to manual TP/SL.`,
+        duration: 8000,
+      })
+    } catch (err) {
+      showPlatformToast({
+        variant: 'error',
+        title: 'Auto ladder update failed',
+        message: err instanceof Error ? err.message : 'Request failed',
+        duration: 10000,
+      })
+    } finally {
+      setLadderSavingId('')
+    }
+  }, [accountEnv, bumpBracketRevision, loadLadderStates])
+
+  const handleResetLadder = useCallback(async (prepared: PreparedRow) => {
+    const { row, ticker } = prepared
+    if (!row.brokerPositionId) {
+      showPlatformToast({
+        variant: 'error',
+        title: 'Cannot reset ladder',
+        message: `${ticker}: refresh positions to load broker id first.`,
+        duration: 8000,
+      })
+      return
+    }
+    const liveMark = prices[row.rowKey] ?? row.brokerLtp ?? row.openRate
+    setLadderResettingId(row.brokerPositionId)
+    try {
+      await resetPositionLadder(accountEnv, row.brokerPositionId, {
+        ticker,
+        entry_price: row.openRate,
+        entry_units: row.quantity,
+        peak_price: liveMark,
+      })
+      await loadLadderStates()
+      showPlatformToast({
+        variant: 'success',
+        title: 'Ladder reset',
+        message: `${ticker}: rungs cleared, peak re-anchored from current mark.`,
+        duration: 8000,
+      })
+    } catch (err) {
+      showPlatformToast({
+        variant: 'error',
+        title: 'Ladder reset failed',
+        message: err instanceof Error ? err.message : 'Request failed',
+        duration: 10000,
+      })
+    } finally {
+      setLadderResettingId('')
+    }
+  }, [accountEnv, loadLadderStates, prices])
 
   const handleClosePosition = useCallback(async (prepared: PreparedRow) => {
     const { row, ticker, storageKey, name } = prepared
@@ -690,12 +972,12 @@ function PositionsTable({
           className={`pos-toolbar-meta pos-toolbar-meta--monitor${enabledBracketCount > 0 ? '' : ' pos-toolbar-meta--monitor-idle'}`}
           title={
             enabledBracketCount > 0
-              ? 'Live P&L is watched; positions auto-close when TP/SL is hit'
-              : 'Turn on TP or SL with a value to start monitoring'
+              ? 'Client TP/SL or server auto-ladder — armed positions are monitored'
+              : 'Turn on auto-ladder or TP/SL to start monitoring'
           }
         >
           {enabledBracketCount > 0
-            ? `Monitoring ${enabledBracketCount} bracket${enabledBracketCount === 1 ? '' : 's'}`
+            ? `Monitoring ${enabledBracketCount} position${enabledBracketCount === 1 ? '' : 's'}`
             : 'Monitoring idle'}
         </span>
         {refreshedLabel ? (
@@ -730,13 +1012,14 @@ function PositionsTable({
                     <th>TP</th>
                     <th>Stop loss</th>
                     <th>SL</th>
+                    <th>Auto ladder</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {hasActiveFilter && visibleCount === 0 ? (
                     <tr className="pos-filter-empty-row">
-                      <td colSpan={10}>
+                      <td colSpan={11}>
                         <div className="pos-filter-empty">
                           No positions match “{filterLabel}”.
                           <button
@@ -761,7 +1044,22 @@ function PositionsTable({
                         accountEnv={accountEnv}
                         closing={isClosing}
                         hidden={hidden}
+                        ladder={prepared.row.brokerPositionId
+                          ? ladderByPositionId[prepared.row.brokerPositionId]
+                          : undefined}
+                        ladderSaving={Boolean(
+                          prepared.row.brokerPositionId
+                          && ladderSavingId === prepared.row.brokerPositionId,
+                        )}
+                        ladderResetting={Boolean(
+                          prepared.row.brokerPositionId
+                          && ladderResettingId === prepared.row.brokerPositionId,
+                        )}
                         onBracketsUpdated={bumpBracketRevision}
+                        onLadderToggle={enabled => {
+                          void handleAutoLadderToggle(prepared, enabled)
+                        }}
+                        onLadderReset={() => { void handleResetLadder(prepared) }}
                         onClose={() => { void handleClosePosition(prepared) }}
                       />
                     )
@@ -790,6 +1088,19 @@ export default function Positions() {
     () => buildPortfolioSymbolIndex(watchlists, 'etoro', accountEnv),
     [watchlists, accountEnv],
   )
+
+  const positionFeedTargets = useMemo(
+    () =>
+      positions
+        .filter(row => row.symboltoken.trim())
+        .map(row => ({
+          symboltoken: row.symboltoken,
+          tradingsymbol: row.tradingsymbol,
+          symbol: row.displayName,
+        })),
+    [positions],
+  )
+  useEnsurePositionWatchlistFeed(accountEnv, positionFeedTargets)
 
   const preparedRows = useMemo((): PreparedRow[] => {
     return positions.map(row => {
@@ -876,6 +1187,14 @@ export default function Positions() {
 
   useEffect(() => {
     void loadPositions({ refresh: true })
+  }, [loadPositions])
+
+  // eToro /pnl is cached ~10s — keep broker marks fresh when websocket stalls.
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void loadPositions({ refresh: true, silent: true })
+    }, 12000)
+    return () => window.clearInterval(interval)
   }, [loadPositions])
 
   return (

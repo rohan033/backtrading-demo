@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { useWatchlistStream } from '@/context/WatchlistStreamContext'
 import type { AgenticSessionPosition } from '@/lib/agenticSessions'
@@ -14,6 +14,7 @@ import {
 import { addWatchlistSymbol, createWatchlist } from '@/lib/watchlists'
 
 const AGENTIC_FEED_WATCHLIST = 'Agentic feed'
+const WS_STALE_MS = 15000
 
 export type AgenticPositionLiveQuote = {
   mark: number | null
@@ -45,6 +46,24 @@ export function useAgenticPositionLiveFeed(
   const { watchlists, setWatchlists, watchlistsReady, ticks, connected } = useWatchlistStream()
   const attachingRef = useRef(new Set<string>())
   const prevLtpRef = useRef<Record<string, number>>({})
+  const tickSeenAtRef = useRef<Record<string, number>>({})
+  const [nowMs, setNowMs] = useState(() => Date.now())
+
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), 5000)
+    return () => window.clearInterval(id)
+  }, [])
+
+  useEffect(() => {
+    const seenAt = Date.now()
+    for (const position of positions) {
+      const ticker = position.ticker.toUpperCase()
+      const tickKey = resolveEtoroLiveTickKey(watchlists, ticker, accountEnv)
+      if (tickKey && ticks[tickKey]?.ltp != null) {
+        tickSeenAtRef.current[ticker] = seenAt
+      }
+    }
+  }, [accountEnv, positions, ticks, watchlists])
 
   const tickers = useMemo(
     () => [...new Set(positions.map(position => position.ticker.toUpperCase()))],
@@ -122,10 +141,15 @@ export function useAgenticPositionLiveFeed(
       const tickKey = resolveEtoroLiveTickKey(watchlists, ticker, accountEnv)
       const tick = tickKey ? ticks[tickKey] : undefined
       const liveLtp = tick?.ltp ?? null
-      const live = liveLtp != null && connected
+      const seenAt = tickSeenAtRef.current[ticker]
+      const wsFresh =
+        liveLtp != null
+        && seenAt != null
+        && nowMs - seenAt <= WS_STALE_MS
+      const live = wsFresh && connected
 
       let flash: 'up' | 'down' | null = null
-      if (liveLtp != null) {
+      if (wsFresh && liveLtp != null) {
         const prev = prevLtpRef.current[ticker]
         if (prev != null && liveLtp !== prev) {
           flash = liveLtp > prev ? 'up' : 'down'
@@ -133,14 +157,23 @@ export function useAgenticPositionLiveFeed(
         prevLtpRef.current[ticker] = liveLtp
       }
 
-      const mark = liveLtp ?? position.current_price ?? null
+      const mark = wsFresh
+        ? liveLtp
+        : (position.current_price ?? liveLtp ?? null)
       const units = Number(position.units) || 0
       const buy = Number(position.buy_price) || 0
       const unrealizedPnl =
-        mark != null && units > 0 ? (mark - buy) * units : position.unrealized_pnl
+        mark != null && units > 0 && buy > 0
+          ? (mark - buy) * units
+          : position.unrealized_pnl
 
-      map[ticker] = { mark, live, flash, unrealizedPnl }
+      map[ticker] = {
+        mark,
+        live,
+        flash,
+        unrealizedPnl,
+      }
     }
     return map
-  }, [accountEnv, connected, positions, ticks, watchlists])
+  }, [accountEnv, connected, nowMs, positions, ticks, watchlists])
 }

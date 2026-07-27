@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from control_plane.engine_registry import EngineRegistry
-from control_plane.ops_logging import REPO_ROOT, live_engine_log_path
+from control_plane.ops_logging import (
+    REPO_ROOT,
+    agentic_session_etoro_log_path,
+    live_engine_log_path,
+)
 
 ALLOWED_LOG_ROOT = (REPO_ROOT / "logs").resolve()
 DEFAULT_CHUNK_LINES = int(os.getenv("ENGINE_LOG_CHUNK_LINES", "120"))
@@ -37,6 +41,10 @@ def resolve_engine_log_path(registry: EngineRegistry, engine_id: str) -> Path | 
         if safe is not None:
             return safe
     return None
+
+
+def resolve_agentic_etoro_log_path(session_id: str) -> Path | None:
+    return safe_log_path(agentic_session_etoro_log_path(session_id))
 
 
 def safe_log_path(path: Path) -> Path | None:

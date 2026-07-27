@@ -347,8 +347,13 @@ def etoro_position_to_portfolio_row(
     display_name = display.get("instrument_display_name") or symbol
     units = position.get("units") or position.get("Units") or position.get("amount") or 0
     open_rate = position.get("openRate") or position.get("OpenRate") or position.get("open") or 0
+    unrealized = position.get("unrealizedPnL") or position.get("UnrealizedPnL")
+    close_rate = None
+    if isinstance(unrealized, dict):
+        close_rate = unrealized.get("closeRate") or unrealized.get("CloseRate")
     ltp = (
-        position.get("currentRate")
+        close_rate
+        or position.get("currentRate")
         or position.get("CurrentRate")
         or position.get("rate")
         or position.get("openRate")

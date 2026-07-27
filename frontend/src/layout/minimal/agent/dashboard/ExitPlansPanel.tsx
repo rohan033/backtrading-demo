@@ -28,15 +28,49 @@ export default function ExitPlansPanel({
   positions,
   liveByTicker,
   portfolioMonitor,
+  partialProfitsEnabled = false,
+  interactive = false,
+  partialProfitsToggling = false,
+  onTogglePartialProfits,
 }: {
   positions: AgenticSessionPosition[]
   liveByTicker: Record<string, AgenticPositionLiveQuote>
   portfolioMonitor?: AgenticMonitorState
+  partialProfitsEnabled?: boolean
+  interactive?: boolean
+  partialProfitsToggling?: boolean
+  onTogglePartialProfits?: () => void
 }) {
   const monitorLine = portfolioMonitor?.oneline?.trim()
 
   return (
-    <Panel title="Exit plans" count={positions.length} bodyClassName="ags-exitplans__body">
+    <Panel
+      title="Exit plans"
+      count={positions.length}
+      bodyClassName="ags-exitplans__body"
+      actions={
+        interactive && onTogglePartialProfits ? (
+          <button
+            type="button"
+            className={`ags-agents__toggle${partialProfitsEnabled ? ' ags-agents__toggle--resume' : ''}`}
+            disabled={partialProfitsToggling}
+            onClick={onTogglePartialProfits}
+            title={
+              partialProfitsEnabled
+                ? 'Stagnant profitable positions are force-closed (disable for 15% stall trim)'
+                : 'When profit stalls near peak, force-close all profitable positions'
+            }
+          >
+            {partialProfitsToggling ? '…' : partialProfitsEnabled ? 'Partial profits ON' : 'Partial profits'}
+          </button>
+        ) : undefined
+      }
+    >
+      {partialProfitsEnabled ? (
+        <p className="ags-exitplans__banner" role="status">
+          Partial profits on — stagnant profitable positions are force-closed instead of 15% trims.
+        </p>
+      ) : null}
       {monitorLine ? (
         <p className="ags-exitplans__monitor" title="Portfolio monitor">
           <span className="ags-exitplans__monitor-label">Portfolio monitor</span>

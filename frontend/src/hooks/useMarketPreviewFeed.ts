@@ -44,6 +44,8 @@ function watchlistStreamStatus(
 /**
  * Market preview that reuses the shared /ws/watchlist feed when the symbol is
  * already subscribed there, instead of opening a second control-plane socket.
+ * Falls back to a dedicated /ws/control/market socket when the watchlist tick
+ * stops updating (flat price ≠ frozen feed).
  */
 export function useMarketPreviewFeed({
   broker,
@@ -89,7 +91,8 @@ export function useMarketPreviewFeed({
     [reuseWatchlist, watchlists, lookup],
   )
 
-  const watchlistLtp = tickKey ? ticks[tickKey]?.ltp ?? null : null
+  const watchlistTick = tickKey ? ticks[tickKey] : undefined
+  const watchlistLtp = watchlistTick?.ltp ?? null
 
   useEffect(() => {
     setReuseFallback(false)
@@ -105,23 +108,29 @@ export function useMarketPreviewFeed({
     return () => window.clearTimeout(id)
   }, [reuseWatchlist, watchlistLtp, tickKey])
 
+  // Any watchlist message refreshes freshness — not only when LTP changes.
   useEffect(() => {
-    if (watchlistLtp == null) return
+    if (watchlistTick?.ltp == null) return
     setLastTickAt(Date.now())
-  }, [watchlistLtp, tickKey])
+  }, [watchlistTick, tickKey])
 
   useEffect(() => {
-    if (!reuseWatchlist) {
-      return undefined
-    }
+    if (!enabled) return undefined
     const id = window.setInterval(() => setNowMs(Date.now()), 5000)
     return () => window.clearInterval(id)
-  }, [reuseWatchlist])
+  }, [enabled])
+
+  const watchlistStale = Boolean(
+    reuseWatchlist
+    && !reuseFallback
+    && lastTickAt != null
+    && nowMs - lastTickAt > STALE_MS,
+  )
 
   const useDedicatedStream = Boolean(
     enabled
     && symbol
-    && (!reuseWatchlist || reuseFallback),
+    && (!reuseWatchlist || reuseFallback || watchlistStale),
   )
 
   const controlStream = useControlMarketStream(
@@ -139,18 +148,17 @@ export function useMarketPreviewFeed({
     useDedicatedStream,
   )
 
-  useEffect(() => {
-    if (!useDedicatedStream || controlStream.ltp == null) return
-    setLastTickAt(Date.now())
-  }, [useDedicatedStream, controlStream.ltp])
-
-  const effectiveLtp = watchlistLtp ?? (useDedicatedStream ? controlStream.ltp : null)
+  const preferDedicated = reuseFallback || watchlistStale || !reuseWatchlist
+  const dedicatedLtp = useDedicatedStream ? controlStream.ltp : null
+  const effectiveLtp = preferDedicated
+    ? (dedicatedLtp ?? watchlistLtp)
+    : (watchlistLtp ?? dedicatedLtp)
 
   const streamStatus = useMemo((): MarketStreamStatus => {
     if (!enabled || !symbol) {
       return { status: 'idle', label: 'Select a stock to preview', tone: 'muted' }
     }
-    if (reuseWatchlist && !reuseFallback) {
+    if (reuseWatchlist && !reuseFallback && !watchlistStale) {
       if (!connected) {
         return { status: 'connecting', label: 'Connecting to watchlist feed…', tone: 'warn' }
       }
@@ -162,21 +170,24 @@ export function useMarketPreviewFeed({
     return controlStream.streamStatus
   }, [
     enabled,
-    token,
     symbol,
     reuseWatchlist,
     reuseFallback,
+    watchlistStale,
     connected,
     lastTickAt,
     nowMs,
     controlStream.streamStatus,
   ])
 
+  const isLive = streamStatus.status === 'flowing'
+
   return {
     ltp: effectiveLtp,
-    connected: reuseWatchlist && !reuseFallback ? connected : controlStream.connected,
-    marketError: reuseWatchlist && !reuseFallback ? '' : controlStream.error,
+    connected: isLive,
+    marketError: reuseWatchlist && !preferDedicated ? '' : controlStream.error,
     streamStatus,
-    reusingWatchlistFeed: reuseWatchlist && !reuseFallback,
+    reusingWatchlistFeed: reuseWatchlist && !preferDedicated,
+    isLive,
   }
 }

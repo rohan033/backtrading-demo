@@ -49,6 +49,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "profit_trim_fraction": 0.25,          # slice of ORIGINAL size trimmed per rung hit
     "profit_peak_stale_seconds": 90.0,     # no new high for this long => stalled
     "profit_stall_trim_fraction": 0.15,    # one-shot trim when stalled near peak
+    # When True, stall near peak force-closes all profitable positions (vs 15% trim).
+    "partial_profits_enabled": False,
     "profit_rebuy_momentum_closes": 3,
     "profit_rebuy_min_move_pct": 0.5,
     "position_monitor_seconds": 30.0,
@@ -77,6 +79,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # Reconciliation
     "reconcile_interval_seconds": 45.0,
     "reconcile_close_retries": 3,
+    # Halt-resume execution (LULD / trade halts)
+    "resume_cooldown_seconds": 60.0,       # wait after resume before entry (1m candle)
+    "halt_score_bonus_per_hit": 5.0,       # score boost per up-halt this session
+    "halt_score_bonus_cap": 15.0,          # ceiling on halt momentum bonus
     # Cursor agent model for orchestrator + sub-agents (None = SDK default)
     "agent_model": None,
     "agent_model_params": [],

@@ -133,6 +133,7 @@ class WatchlistFeedHub:
         self._watchlist_clients: dict[int, tuple[WebSocket, list[dict[str, Any]]]] = {}
         self._preview_clients: dict[int, tuple[WebSocket, PreviewSubscription | None]] = {}
         self._agentic_subscriptions: dict[str, dict[str, Subscription]] = {}
+        self._positions_subscriptions: dict[str, dict[str, Subscription]] = {}
         self._tick_listeners: list[Any] = []
         self._feeds: dict[str, _BrokerFeed] = {}
         self._previous_ltp: dict[str, float] = {}
@@ -175,6 +176,17 @@ class WatchlistFeedHub:
             }
         await self._rebuild_feeds()
 
+    async def set_positions_subscriptions(
+        self,
+        grouped: dict[str, dict[str, Subscription]],
+    ) -> None:
+        """Server-side eToro websocket subs for open Positions tab holdings."""
+        async with self._lock:
+            self._positions_subscriptions = {
+                key: dict(bucket) for key, bucket in grouped.items()
+            }
+        await self._rebuild_feeds()
+
     def get_last_ltp(self, broker: str, account_env: str, token: str) -> float | None:
         cache_key = _tick_cache_key(broker, account_env, token)
         payload = self._last_tick_payload.get(cache_key)
@@ -189,6 +201,8 @@ class WatchlistFeedHub:
             for key, bucket in _subscriptions_from_watchlists(watchlists).items():
                 grouped.setdefault(key, {}).update(bucket)
         for key, bucket in self._agentic_subscriptions.items():
+            grouped.setdefault(key, {}).update(bucket)
+        for key, bucket in self._positions_subscriptions.items():
             grouped.setdefault(key, {}).update(bucket)
         for _, preview in self._preview_clients.values():
             if preview is None:

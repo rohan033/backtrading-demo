@@ -84,6 +84,32 @@ export function resolveEtoroLiveTickKey(
   })
 }
 
+/** Tick key for Positions — match instrument id on any eToro watchlist, then symbol name. */
+export function resolvePositionTickKey(
+  watchlists: Watchlist[],
+  params: {
+    account_env: 'demo' | 'live'
+    symboltoken?: string | null
+    symbol?: string | null
+  },
+): string | null {
+  const token = String(params.symboltoken || '').trim()
+  if (token) {
+    for (const watchlist of watchlists) {
+      if (normalizeBroker(watchlist.broker) !== 'etoro') continue
+      for (const row of watchlist.symbols) {
+        if (row.symboltoken !== token) continue
+        const env = watchlist.account_env || defaultAccountEnv('etoro')
+        return watchlistTickKey('etoro', env, token)
+      }
+    }
+  }
+
+  const symbol = String(params.symbol || '').trim()
+  if (!symbol) return null
+  return resolveEtoroLiveTickKey(watchlists, symbol, params.account_env)
+}
+
 /** True when the symbol is on a watchlist with matching broker/env (feed may be active). */
 export function isSymbolOnWatchlistFeed(
   watchlists: Watchlist[],

@@ -7,9 +7,11 @@ frontend being built in parallel — do not change field names or shapes.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from control_plane.agentic.config import (
@@ -22,6 +24,12 @@ from control_plane.agentic.market_hunter import get_market_hunter
 from control_plane.agentic.session_engine import get_agentic_session_manager
 from control_plane.agentic.session_store import get_agentic_session_store
 from control_plane.agentic.snapshot import SessionSnapshot
+from control_plane.log_stream import (
+    resolve_agentic_etoro_log_path,
+    sse_encode,
+    stream_engine_log_events,
+)
+from control_plane.ops_logging import agentic_session_etoro_log_path
 
 router = APIRouter(prefix="/api/agentic", tags=["agentic"])
 
@@ -45,6 +53,10 @@ class UpdateAgentModelRequest(BaseModel):
         description="Cursor SDK model id; empty string clears to SDK default",
     )
     agent_model_params: list[dict[str, str]] | None = None
+
+
+class PartialProfitsToggleRequest(BaseModel):
+    enabled: bool
 
 
 def _session_json(session: dict[str, Any]) -> dict[str, Any]:
@@ -81,8 +93,10 @@ def _position_json(position: dict[str, Any]) -> dict[str, Any]:
         "realized_pnl": position["realized_pnl"],
         "unrealized_pnl": position["unrealized_pnl"],
         "intent_id": position["intent_id"],
+        "broker_position_id": position.get("broker_position_id"),
         "opened_at": position["opened_at"],
         "closed_at": position["closed_at"],
+        "meta": position.get("meta") or {},
     }
 
 
@@ -249,6 +263,29 @@ async def resume_subagents(session_id: str):
 
 
 @router.patch(
+    "/sessions/{session_id}/partial-profits",
+    operation_id="toggle_agentic_partial_profits",
+    summary="Enable or disable stagnant-profit force-close for profitable positions",
+)
+async def toggle_partial_profits(session_id: str, req: PartialProfitsToggleRequest):
+    _get_session_or_404(session_id)
+    session = get_agentic_session_manager().set_partial_profits_enabled(
+        session_id, req.enabled
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Agentic session not found")
+    return {
+        "status": True,
+        "data": {
+            "session": _session_json(session),
+            "partial_profits_enabled": bool(
+                (session.get("config") or {}).get("partial_profits_enabled")
+            ),
+        },
+    }
+
+
+@router.patch(
     "/sessions/{session_id}/agent-model",
     operation_id="update_agentic_session_model",
     summary="Update the Cursor model used by the main orchestrator and sub-agents",
@@ -303,6 +340,69 @@ async def list_session_events(
         session_id, after_id=after_id, limit=limit
     )
     return {"status": True, "data": events}
+
+
+@router.get(
+    "/sessions/{session_id}/etoro-logs",
+    operation_id="get_agentic_session_etoro_logs",
+    summary="eToro API trace log metadata for an agentic session",
+)
+async def get_agentic_session_etoro_logs(session_id: str):
+    _get_session_or_404(session_id)
+    log_path = resolve_agentic_etoro_log_path(session_id)
+    if log_path is None:
+        log_path = agentic_session_etoro_log_path(session_id)
+    exists = log_path.exists()
+    size = log_path.stat().st_size if exists else 0
+    return {
+        "status": True,
+        "data": {
+            "session_id": session_id,
+            "path": str(log_path),
+            "exists": exists,
+            "size": size,
+            "log_file": str(log_path),
+        },
+    }
+
+
+@router.get(
+    "/sessions/{session_id}/etoro-logs/stream",
+    operation_id="stream_agentic_session_etoro_logs",
+    summary="SSE stream of eToro API trace JSONL for an agentic session",
+)
+async def stream_agentic_session_etoro_logs(session_id: str, request: Request):
+    _get_session_or_404(session_id)
+    log_path = resolve_agentic_etoro_log_path(session_id)
+    if log_path is None:
+        log_path = agentic_session_etoro_log_path(session_id)
+
+    async def event_stream():
+        try:
+            async for event in stream_engine_log_events(log_path):
+                if await request.is_disconnected():
+                    break
+                yield sse_encode({"session_id": session_id, **event})
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            yield sse_encode(
+                {
+                    "type": "error",
+                    "session_id": session_id,
+                    "message": str(exc),
+                }
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/sessions/{session_id}/positions", operation_id="list_agentic_session_positions", summary="Session positions")

@@ -11,6 +11,7 @@ import {
   pauseAgenticSession,
   resumeAgenticSession,
   resumeAgenticSubagents,
+  setAgenticPartialProfits,
   stopAgenticSession,
   updateAgenticSessionModel,
   type AgenticSession,
@@ -60,6 +61,7 @@ export default function AgenticSessionWorkspace({
   const [stopping, setStopping] = useState(false)
   const [pausing, setPausing] = useState(false)
   const [subagentsToggling, setSubagentsToggling] = useState(false)
+  const [partialProfitsToggling, setPartialProfitsToggling] = useState(false)
   const [closingId, setClosingId] = useState('')
   const [modelSaving, setModelSaving] = useState(false)
   const [modelValue, setModelValue] = useState(() => agentModelFromSessionConfig(undefined))
@@ -170,6 +172,23 @@ export default function AgenticSessionWorkspace({
       setSubagentsToggling(false)
     }
   }, [load, session, snapshot?.agent_state?.subagents_halted])
+
+  const partialProfitsEnabled = Boolean(session?.config?.partial_profits_enabled)
+
+  const togglePartialProfits = useCallback(async () => {
+    if (!session || session.status === 'stopped') return
+    setPartialProfitsToggling(true)
+    setActionError('')
+    try {
+      const result = await setAgenticPartialProfits(session.id, !partialProfitsEnabled)
+      setSession(result.session)
+      await load()
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update partial profits')
+    } finally {
+      setPartialProfitsToggling(false)
+    }
+  }, [load, partialProfitsEnabled, session])
 
   const saveModel = useCallback(async (next: typeof modelValue) => {
     setModelSaving(true)
@@ -302,6 +321,10 @@ export default function AgenticSessionWorkspace({
             positions={positions}
             liveByTicker={livePortfolio.byTicker}
             portfolioMonitor={snapshot.monitors?.portfolio_monitor}
+            partialProfitsEnabled={partialProfitsEnabled}
+            interactive={interactive}
+            partialProfitsToggling={partialProfitsToggling}
+            onTogglePartialProfits={() => void togglePartialProfits()}
           />
         </div>
 

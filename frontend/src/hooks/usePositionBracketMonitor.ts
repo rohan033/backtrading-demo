@@ -28,6 +28,7 @@ type Params = {
   accountEnv: 'demo' | 'live'
   rows: MonitoredPosition[]
   prices: Readonly<Record<string, number>>
+  autoLadderPositionIds?: ReadonlySet<string>
   enabled?: boolean
   onClosed?: (closed: ClosedPositionRef) => void
 }
@@ -36,6 +37,7 @@ export function usePositionBracketMonitor({
   accountEnv,
   rows,
   prices,
+  autoLadderPositionIds = new Set(),
   enabled = true,
   onClosed,
 }: Params) {
@@ -50,6 +52,8 @@ export function usePositionBracketMonitor({
       const { row, storageKey, ticker } = monitored
       const rowKey = row.rowKey
       const positionId = row.brokerPositionId
+
+      if (positionId && autoLadderPositionIds.has(positionId)) continue
 
       if (isBracketCloseInFlight(rowKey)) continue
 
@@ -123,7 +127,7 @@ export function usePositionBracketMonitor({
           })
         })
     }
-  }, [accountEnv, enabled, prices, rows])
+  }, [accountEnv, autoLadderPositionIds, enabled, prices, rows])
 
   return { closingKeys }
 }

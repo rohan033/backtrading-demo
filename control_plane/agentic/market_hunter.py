@@ -21,6 +21,10 @@ from typing import Any
 from control_plane.agentic.broker import fetch_five_minute_candles, fetch_quote
 from control_plane.agentic.config import DEFAULT_CONFIG
 from control_plane.agentic.events import AgentEvent, EventTier, EventType, get_event_bus
+from control_plane.agentic.halt_execution import (
+    get_halt_resume_tracker,
+    reconcile_sessions_for_resumed_tickers,
+)
 from control_plane.agentic.session_store import get_agentic_session_store
 from control_plane.agentic.snapshot import SessionSnapshot
 
@@ -404,12 +408,17 @@ class MarketHunter:
         }
 
         halted = await asyncio.to_thread(self._halted_symbols)
+        tracker = get_halt_resume_tracker()
+        resumed = await asyncio.to_thread(tracker.sync_halts, halted)
+        if resumed:
+            asyncio.create_task(reconcile_sessions_for_resumed_tickers(resumed))
         open_tickers = await asyncio.to_thread(store.open_tickers_for_running_sessions)
 
         emitted: list[dict[str, Any]] = []
         for ticker, candidate in candidates.items():
             price = candidate.get("price")
             change = candidate.get("change_pct")
+            tracker.note_candidate_momentum(ticker, change if change is None else float(change))
             is_manual = candidate.get("source") == "manual"
             # Suspicious rows: no price or non-positive price.
             if price is None or price <= 0:
@@ -443,6 +452,9 @@ class MarketHunter:
                 "spread_pct": None,
                 "generated_at": _now_iso(),
             }
+            suggestion = tracker.decorate_suggestion(
+                suggestion, DEFAULT_CONFIG, candidate=candidate
+            )
             self._last_emitted[ticker] = now_mono
             self._suggestions.append(suggestion)
             emitted.append(suggestion)

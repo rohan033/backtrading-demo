@@ -27,6 +27,7 @@ export function useControlMarketStream(subscribe: ControlMarketSubscribe | null,
   const [connectedAt, setConnectedAt] = useState<number | null>(null)
   const [lastTickAt, setLastTickAt] = useState<number | null>(null)
   const [error, setError] = useState('')
+  const [reconnectKey, setReconnectKey] = useState(0)
   const socketRef = useRef<WebSocket | null>(null)
   const nowMs = useNow(enabled && subscribe ? 5000 : null)
 
@@ -54,6 +55,19 @@ export function useControlMarketStream(subscribe: ControlMarketSubscribe | null,
     }
     return { status: 'flowing', label: 'Live', tone: 'ok' }
   }, [enabled, subscribe?.symbol, error, connected, connectedAt, lastTickAt, nowMs])
+
+  useEffect(() => {
+    if (!enabled || !subscribe?.symbol || !connected) return undefined
+    const ageMs = lastTickAt
+      ? nowMs - lastTickAt
+      : (connectedAt ? nowMs - connectedAt : 0)
+    const shouldReconnect = lastTickAt
+      ? ageMs > STALE_MS
+      : Boolean(connectedAt && ageMs >= FIRST_TICK_MS)
+    if (!shouldReconnect) return undefined
+    const id = window.setTimeout(() => setReconnectKey(key => key + 1), 1500)
+    return () => window.clearTimeout(id)
+  }, [enabled, subscribe?.symbol, connected, connectedAt, lastTickAt, nowMs])
 
   useEffect(() => {
     if (!enabled || !subscribe?.symbol) {
@@ -134,6 +148,7 @@ export function useControlMarketStream(subscribe: ControlMarketSubscribe | null,
     subscribe?.account_env,
     subscribe?.use_fake_client,
     subscribe?.feed_mode,
+    reconnectKey,
   ])
 
   return { ltp, error, streamStatus, connected, lastTickAt }

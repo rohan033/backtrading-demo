@@ -8,6 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONTROL_LOG_DIR = REPO_ROOT / "logs" / "control-plane"
 DEFAULT_LIVE_LOG_DIR = REPO_ROOT / "logs" / "executions"
+DEFAULT_AGENTIC_ETORO_LOG_DIR = REPO_ROOT / "logs" / "agentic"
 UVICORN_LOG_CONFIG_PATH = REPO_ROOT / "logs" / "uvicorn_log_config.json"
 
 # High-frequency control-plane traffic — noisy at INFO in uvicorn access logs.
@@ -173,3 +174,15 @@ def live_engine_log_path(engine_id: str, log_dir: Path | None = None) -> Path:
     safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in engine_id.lower())
     safe = safe.strip("-") or "execution"
     return (target_dir / f"{safe}.log").resolve()
+
+
+def agentic_session_etoro_log_path(session_id: str, log_dir: Path | None = None) -> Path:
+    """JSONL trace file for one agentic session's eToro Public API calls."""
+    target_dir = log_dir or Path(
+        os.getenv("AGENTIC_ETORO_LOG_DIR", DEFAULT_AGENTIC_ETORO_LOG_DIR)
+    )
+    target_dir.mkdir(parents=True, exist_ok=True)
+    safe = "".join(
+        ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in str(session_id).lower()
+    ).strip("-") or "session"
+    return (target_dir / f"{safe}.jsonl").resolve()

@@ -171,6 +171,12 @@ export type AgenticSessionPosition = {
   opened_at: string | null
   closed_at: string | null
   exit_plan?: AgenticExitPlan | null
+  meta?: {
+    broker_synced?: boolean
+    broker_synced_at?: string
+    fill_settled?: boolean
+    [key: string]: unknown
+  }
 }
 
 export type AgenticSuggestion = {
@@ -184,6 +190,9 @@ export type AgenticSuggestion = {
   price: number
   spread_pct: number | null
   generated_at: string
+  resume_halt_count?: number
+  resume_bonus?: number
+  resume_pending?: boolean
 }
 
 export type AgenticHunterStatus = {
@@ -340,6 +349,24 @@ export async function haltAgenticSubagents(id: string): Promise<AgenticSubagents
 export async function resumeAgenticSubagents(id: string): Promise<AgenticSubagentsToggleResult> {
   return parseJson(
     await fetch(`${API}/sessions/${encodeURIComponent(id)}/subagents/resume`, { method: 'POST' }),
+  )
+}
+
+export type AgenticPartialProfitsToggleResult = {
+  session: AgenticSession
+  partial_profits_enabled: boolean
+}
+
+export async function setAgenticPartialProfits(
+  id: string,
+  enabled: boolean,
+): Promise<AgenticPartialProfitsToggleResult> {
+  return parseJson(
+    await fetch(`${API}/sessions/${encodeURIComponent(id)}/partial-profits`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    }),
   )
 }
 

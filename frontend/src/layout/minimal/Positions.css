@@ -131,6 +131,12 @@
   white-space: nowrap;
 }
 
+.pos-price-stale {
+  color: #b45309;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .pos-pnl--up {
   color: #126b3a;
   font-weight: 700;
@@ -251,6 +257,193 @@
 .pos-bracket-hint {
   font-size: 10px;
   color: #4a5568;
+}
+
+.pos-ladder-col {
+  min-width: 88px;
+  vertical-align: top;
+}
+
+.pos-auto-ladder-col {
+  min-width: 188px;
+  vertical-align: top;
+}
+
+.pos-auto-ladder {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color-scheme: light;
+  color: #111;
+  font-size: 11px;
+}
+
+.pos-auto-ladder__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pos-auto-ladder__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pos-auto-ladder__reset {
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  background: #fff;
+  color: #111;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+
+.pos-auto-ladder__reset:hover:not(:disabled) {
+  background: #f6f8fa;
+  border-color: #b45309;
+  color: #92400e;
+}
+
+.pos-auto-ladder__reset:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pos-auto-ladder__label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #4a5568;
+}
+
+.pos-auto-ladder__hint {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.35;
+  color: #4a5568;
+}
+
+.pos-auto-ladder__detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #1a1a1a;
+}
+
+.pos-auto-ladder__detail > span {
+  font-variant-numeric: tabular-nums;
+}
+
+.pos-auto-ladder__rungs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pos-auto-ladder__rung {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  padding: 2px 6px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.pos-auto-ladder__total {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.pos-auto-ladder__total--up {
+  color: #166534;
+}
+
+.pos-auto-ladder__total--down {
+  color: #b42318;
+}
+
+.pos-auto-ladder__total-breakdown {
+  font-weight: 500;
+  color: #4a5568;
+}
+
+.pos-auto-ladder__rung-pnl {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.pos-auto-ladder__rung-pnl--up {
+  color: #166534;
+}
+
+.pos-auto-ladder__rung-pnl--down {
+  color: #b42318;
+}
+
+.pos-auto-ladder__rung--hit {
+  background: #eefaf3;
+  border-color: #9fd4b6;
+}
+
+.pos-auto-ladder__rung strong {
+  font-size: 10px;
+  min-width: 18px;
+}
+
+.pos-auto-ladder__rung em {
+  font-style: normal;
+  font-size: 10px;
+  color: #166534;
+  font-weight: 700;
+}
+
+.pos-ladder-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  color-scheme: light;
+  color: #111;
+}
+
+.pos-ladder-cell__head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.pos-ladder-cell__id {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #111;
+}
+
+.pos-ladder-cell__pct {
+  font-size: 10px;
+  font-weight: 700;
+  color: #4a5568;
+}
+
+.pos-ladder-cell__target {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: #1a1a1a;
+  min-height: 14px;
 }
 
 .pos-toggle {

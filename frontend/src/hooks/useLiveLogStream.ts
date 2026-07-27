@@ -12,10 +12,12 @@ const MAX_RENDERED_LINES = 2500
 const BATCH_FRAME_LINES = 120
 
 export type LiveLogTarget = {
-  /** Data-plane engine id used by /api/control/engines/{id}/logs/stream */
+  /** Stream target id (engine id or agentic session id). */
   id: string
   label: string
   logFile?: string | null
+  /** Override SSE path (defaults to engine log stream). */
+  streamPath?: string | null
   isControlled?: boolean
   /** Controlled execution id for strategy deep links */
   executionId?: string | null
@@ -95,7 +97,8 @@ export function useLiveLogStream(target: LiveLogTarget | null) {
     atBottomRef.current = true
 
     const controller = new AbortController()
-    const streamUrl = `/api/control/engines/${encodeURIComponent(target.id)}/logs/stream`
+    const streamUrl = target.streamPath
+      ?? `/api/control/engines/${encodeURIComponent(target.id)}/logs/stream`
 
     async function consumeStream() {
       try {

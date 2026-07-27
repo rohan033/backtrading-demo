@@ -43,6 +43,16 @@ function readBrokerPnl(raw: Record<string, unknown>): number | null {
   return firstNumber(unrealized)
 }
 
+function readBrokerMark(raw: Record<string, unknown>): number | null {
+  const unrealized = raw.unrealizedPnL
+  if (unrealized && typeof unrealized === 'object') {
+    const nested = unrealized as Record<string, unknown>
+    const closeRate = firstNumber(nested.closeRate ?? nested.CloseRate)
+    if (closeRate != null && closeRate > 0) return closeRate
+  }
+  return firstNumber(raw.currentRate ?? raw.CurrentRate ?? raw.lastRate ?? raw.LastRate)
+}
+
 export function resolveBrokerPositionId(
   raw: Record<string, unknown>,
   row: Record<string, unknown>,
@@ -90,7 +100,7 @@ export function normalizeEtoroPositions(response: EtoroPositionsResponse): Etoro
     const symboltoken = String(row.symboltoken || raw.instrumentID || raw.instrumentId || '')
     const quantity = firstNumber(row.quantity ?? raw.units ?? raw.Units) || 0
     const openRate = firstNumber(row.averageprice ?? raw.openRate ?? raw.OpenRate) || 0
-    const brokerLtp = firstNumber(row.ltp ?? raw.currentRate ?? raw.CurrentRate)
+    const brokerLtp = readBrokerMark(raw) ?? firstNumber(row.ltp)
     const isBuy = raw.isBuy !== false && raw.IsBuy !== false
     const brokerPositionId = resolveBrokerPositionId(raw, row, symboltoken)
     const rowKey = brokerPositionId

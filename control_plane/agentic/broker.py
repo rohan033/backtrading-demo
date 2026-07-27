@@ -286,3 +286,81 @@ async def find_broker_closed_trade(
             exc,
         )
         return None
+
+
+def _broker_float(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    return num if num == num else None
+
+
+def broker_open_position_sync_fields(
+    broker_row: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Map an eToro /pnl position row to agentic position fields (source of truth)."""
+    units = _broker_float(broker_row.get("units") or broker_row.get("Units"))
+    open_rate = _broker_float(
+        broker_row.get("openRate") or broker_row.get("OpenRate")
+    )
+    if units is None or units <= 0:
+        return None
+
+    unrealized = broker_row.get("unrealizedPnL") or broker_row.get("UnrealizedPnL")
+    pnl: float | None = None
+    mark: float | None = None
+    if isinstance(unrealized, dict):
+        pnl = _broker_float(
+            unrealized.get("pnL")
+            if "pnL" in unrealized
+            else unrealized.get("PnL")
+        )
+        mark = _broker_float(
+            unrealized.get("closeRate") or unrealized.get("CloseRate")
+        )
+
+    if mark is None or mark <= 0:
+        for key in ("currentRate", "CurrentRate", "lastRate", "LastRate"):
+            mark = _broker_float(broker_row.get(key))
+            if mark is not None and mark > 0:
+                break
+
+    stop_loss = _broker_float(
+        broker_row.get("stopLossRate")
+        or broker_row.get("StopLossRate")
+        or broker_row.get("stopLoss")
+        or broker_row.get("StopLoss")
+    )
+
+    fields: dict[str, Any] = {"units": round(units, 8)}
+    if open_rate is not None and open_rate > 0:
+        fields["buy_price"] = round(open_rate, 6)
+    if mark is not None and mark > 0:
+        fields["current_price"] = round(mark, 6)
+    if pnl is not None:
+        fields["unrealized_pnl"] = round(pnl, 4)
+    elif mark is not None and open_rate is not None and open_rate > 0:
+        fields["unrealized_pnl"] = round((mark - open_rate) * units, 4)
+    if stop_loss is not None and stop_loss > 0:
+        fields["stop_loss"] = round(stop_loss, 6)
+    return fields
+
+
+async def fetch_broker_position_row(
+    account_env: str,
+    broker_position_id: str | int,
+) -> dict[str, Any] | None:
+    """One open position row from eToro /pnl by positionID."""
+    client = await get_agentic_etoro_client(account_env)
+    try:
+        return await client._find_position(broker_position_id)
+    except Exception as exc:
+        log.debug(
+            "[AGENTIC] broker position lookup failed id=%s: %s",
+            broker_position_id,
+            exc,
+        )
+        return None

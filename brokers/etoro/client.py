@@ -135,13 +135,29 @@ class EtoroClient:
             attempts = 1
 
         last_error: Exception | None = None
+        trace_started = self._trace_call_start()
+        trace_headers: dict[str, Any] | None = None
         for attempt in range(attempts):
             headers = self._headers(include_json_content_type=body is not None)
+            trace_headers = dict(headers)
             request = urllib.request.Request(url, data=body, headers=headers, method=method.upper())
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     raw = response.read().decode("utf-8")
-                    return json.loads(raw) if raw else {}
+                    parsed = json.loads(raw) if raw else {}
+                    self._trace_etoro_call(
+                        method=method,
+                        path=path,
+                        params=params,
+                        json_body=json_body,
+                        headers=trace_headers,
+                        response=parsed,
+                        error=None,
+                        started=trace_started,
+                        trade_execution=trade_execution,
+                        status_code=getattr(response, "status", None),
+                    )
+                    return parsed
             except urllib.error.HTTPError as exc:
                 payload = self._read_error_payload(exc)
                 error = self._api_error(exc.code, payload)
@@ -152,14 +168,96 @@ class EtoroClient:
                 if exc.code >= 500 and not trade_execution and attempt < attempts - 1:
                     time.sleep([0.2, 0.6, 1.5][min(attempt, 2)])
                     continue
+                self._trace_etoro_call(
+                    method=method,
+                    path=path,
+                    params=params,
+                    json_body=json_body,
+                    headers=trace_headers,
+                    response=payload,
+                    error=error,
+                    started=trace_started,
+                    trade_execution=trade_execution,
+                    status_code=exc.code,
+                )
                 raise error from exc
             except (urllib.error.URLError, TimeoutError) as exc:
                 last_error = exc
                 if trade_execution or attempt == attempts - 1:
-                    raise EtoroApiError(f"eToro request failed: {exc}") from exc
+                    wrapped = EtoroApiError(f"eToro request failed: {exc}")
+                    self._trace_etoro_call(
+                        method=method,
+                        path=path,
+                        params=params,
+                        json_body=json_body,
+                        headers=trace_headers,
+                        response=None,
+                        error=wrapped,
+                        started=trace_started,
+                        trade_execution=trade_execution,
+                    )
+                    raise wrapped from exc
                 time.sleep([0.2, 0.6, 1.5][min(attempt, 2)])
 
-        raise EtoroApiError(f"eToro request failed: {last_error}")
+        wrapped = EtoroApiError(f"eToro request failed: {last_error}")
+        self._trace_etoro_call(
+            method=method,
+            path=path,
+            params=params,
+            json_body=json_body,
+            headers=trace_headers,
+            response=None,
+            error=wrapped,
+            started=trace_started,
+            trade_execution=trade_execution,
+        )
+        raise wrapped
+
+    @staticmethod
+    def _trace_call_start() -> float | None:
+        try:
+            from control_plane.agentic.etoro_trace import get_active_trace_context, trace_call_start
+
+            if get_active_trace_context():
+                return trace_call_start()
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _trace_etoro_call(
+        *,
+        method: str,
+        path: str,
+        params: dict[str, Any] | None,
+        json_body: dict[str, Any] | list[Any] | None,
+        headers: dict[str, Any] | None,
+        response: Any,
+        error: BaseException | None,
+        started: float | None,
+        trade_execution: bool,
+        status_code: int | None = None,
+    ) -> None:
+        if started is None:
+            return
+        try:
+            from control_plane.agentic.etoro_trace import record_etoro_call
+
+            duration_ms = (time.monotonic() - started) * 1000.0
+            record_etoro_call(
+                method=method,
+                path=path,
+                params=params,
+                json_body=json_body,
+                headers=headers,
+                response=response,
+                error=error,
+                duration_ms=duration_ms,
+                trade_execution=trade_execution,
+                status_code=status_code,
+            )
+        except Exception:
+            pass
 
     @staticmethod
     def _read_error_payload(exc: urllib.error.HTTPError) -> Any:

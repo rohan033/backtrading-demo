@@ -326,6 +326,7 @@ class TradesPnlStore:
         capital: float | None = None,
         opened_at: str | None = None,
         closed_at: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any] | None:
         """Persist a finalized trade closed by the Positions UI or its automation."""
         position = _clean(position_id)
@@ -348,6 +349,7 @@ class TradesPnlStore:
         qty = _num(quantity)
         cap = _num(capital)
         oid = _clean(order_id)
+        sid = _clean(session_id)
         conn = self._connect()
         existing = conn.execute(
             """
@@ -367,10 +369,10 @@ class TradesPnlStore:
                     id, position_id, source, broker, account_env, symbol,
                     tradingsymbol, exchange, side, quantity, capital,
                     entry_price, exit_price, pnl, pnl_pct, status, close_reason,
-                    order_id, opened_at, closed_at, updated_at
+                    order_id, opened_at, closed_at, updated_at, session_id
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'ETORO', 'buy', ?, ?, ?, ?, ?, ?,
-                        'closed', ?, ?, ?, ?, ?)
+                        'closed', ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row_id,
@@ -391,6 +393,7 @@ class TradesPnlStore:
                     open_ts,
                     close_ts,
                     now,
+                    sid,
                 ),
             )
         else:
@@ -406,6 +409,7 @@ class TradesPnlStore:
                     order_id = COALESCE(?, order_id),
                     opened_at = COALESCE(?, opened_at),
                     closed_at = ?,
+                    session_id = COALESCE(?, session_id),
                     updated_at = ?
                 WHERE id = ?
                 """,
@@ -423,6 +427,7 @@ class TradesPnlStore:
                     oid,
                     open_ts if opened_at else None,
                     close_ts,
+                    sid,
                     now,
                     row_id,
                 ),

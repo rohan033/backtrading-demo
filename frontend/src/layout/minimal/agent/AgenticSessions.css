@@ -3372,6 +3372,17 @@
   color: #4a5568;
 }
 
+.ags-exitplans__banner {
+  margin: 0 0 6px;
+  padding: 5px 8px;
+  border: 1px solid #9fd4b6;
+  border-radius: 8px;
+  background: #e4f5eb;
+  color: #14532d;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 .ags-exitplans {
   list-style: none;
   margin: 0;
@@ -4128,6 +4139,162 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: #4a5568;
+}
+
+/* ── eToro API trace (agentic session JSONL) ── */
+.ags-etoro-trace__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 180px;
+  max-height: 320px;
+  color: #111;
+}
+
+.ags-etoro-trace__phase {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #d0d7de;
+  color: #4a5568;
+  background: #fff;
+}
+
+.ags-etoro-trace__phase--live { color: #17643b; background: #e5f4eb; border-color: #9fd4b6; }
+.ags-etoro-trace__phase--error { color: #842029; background: #fff5f5; border-color: #f5c2c7; }
+.ags-etoro-trace__phase--waiting,
+.ags-etoro-trace__phase--loading { color: #8a5a00; background: #fff8e6; border-color: #f0c470; }
+
+.ags-etoro-trace__toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.ags-etoro-trace__search {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: #111;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 6px 8px;
+  color-scheme: light;
+}
+
+.ags-etoro-trace__tail {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #4a5568;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.ags-etoro-trace__tail--on {
+  color: #17643b;
+  border-color: #9fd4b6;
+  background: #e5f4eb;
+}
+
+.ags-etoro-trace__meta {
+  margin: 0;
+  font-size: 11px;
+  color: #4a5568;
+}
+
+.ags-etoro-trace__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.ags-etoro-trace__empty {
+  margin: 0;
+  padding: 16px 12px;
+  font-size: 12px;
+  color: #4a5568;
+}
+
+.ags-etoro-trace-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ags-etoro-trace-line {
+  border-bottom: 1px solid #e8edf2;
+}
+
+.ags-etoro-trace-line:last-child {
+  border-bottom: none;
+}
+
+.ags-etoro-trace-line__details {
+  margin: 0;
+}
+
+.ags-etoro-trace-line__summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: #111;
+  padding: 8px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ags-etoro-trace-line__summary::-webkit-details-marker {
+  display: none;
+}
+
+.ags-etoro-trace-line__body-wrap {
+  position: relative;
+  padding: 0 10px 10px;
+}
+
+.ags-etoro-trace-line__toggle {
+  position: absolute;
+  top: 0;
+  right: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #4a5568;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.ags-etoro-trace-line__body {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #111;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: #fff;
+  border: 1px solid #e8edf2;
+  border-radius: 6px;
+  padding: 8px;
+  max-height: 240px;
+  overflow: auto;
 }
 
 /* ── Confidence badge ── */

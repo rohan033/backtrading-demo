@@ -114,15 +114,17 @@ async def manage_portfolio_exits(
             price, price_source = _resolve_live_price(session, ticker, position=position)
             if price > 0:
                 tracker.record(session_id, ticker, price, source=price_source)
-                store.update_position(
-                    position_id,
-                    {
-                        "current_price": price,
-                        "unrealized_pnl": (price - float(position["buy_price"] or 0.0))
-                        * float(position["units"] or 0.0),
-                    },
-                )
-                position = store.get_position(position_id) or position
+                broker_synced = bool((position.get("meta") or {}).get("broker_synced"))
+                if not broker_synced:
+                    store.update_position(
+                        position_id,
+                        {
+                            "current_price": price,
+                            "unrealized_pnl": (price - float(position["buy_price"] or 0.0))
+                            * float(position["units"] or 0.0),
+                        },
+                    )
+                    position = store.get_position(position_id) or position
 
             window_stats = tracker.window_stats(
                 session_id,
@@ -249,10 +251,8 @@ async def manage_portfolio_exits(
             if position.get("state") != "open":
                 continue
 
-            # Layer 3 — stall detector: price camped near peak (no new high
-            # for profit_peak_stale_seconds) but never pulled back to a rung.
-            # One-shot trim per stall episode; a new high re-arms it.
-            if evaluate_stall(plan, config=config):
+            # Layer 3 — stall detector (partial trim unless partial_profits mode).
+            if not config.get("partial_profits_enabled") and evaluate_stall(plan, config=config):
                 stall_fraction = float(config.get("profit_stall_trim_fraction", 0.15))
                 updated = await _apply_partial_close(
                     session,
@@ -284,6 +284,60 @@ async def manage_portfolio_exits(
                         dedupe_key=f"profit-stall:{position_id}:{int(time.time() // 60)}",
                     )
                 next_plans[position_id] = plan
+
+    # Partial-profits mode: force-close every open position that is in profit
+    # and has stalled near peak (no new high for profit_peak_stale_seconds).
+    if config.get("partial_profits_enabled"):
+        still_open = store.list_positions(session_id, states=("open",))
+        stall_closes: list[tuple[dict[str, Any], dict[str, Any], float, str]] = []
+        for position in still_open:
+            position_id = position["id"]
+            ticker = str(position["ticker"]).upper()
+            plan = next_plans.get(position_id)
+            if not plan or not plan.get("active"):
+                continue
+            buy_price = float(position.get("buy_price") or 0.0)
+            price, _ = _resolve_live_price(session, ticker, position=position)
+            if price <= buy_price:
+                continue
+            if not evaluate_stall(plan, config=config):
+                continue
+            stall_closes.append((position, plan, price, ticker))
+
+        for position, plan, price, ticker in stall_closes:
+            position_id = position["id"]
+            refreshed = store.get_position(position_id) or position
+            if refreshed.get("state") != "open":
+                continue
+            await close_position_now(
+                session,
+                refreshed,
+                reason="stagnant profit — partial profits force close",
+                exit_price=price,
+            )
+            profit_actions += 1
+            plan["active"] = False
+            plan["remaining_fraction"] = 0.0
+            plan["stall_handled"] = True
+            next_plans[position_id] = plan
+            await publish(
+                EventType.PROFIT_STALL_TRIM,
+                EventTier.FAST,
+                {
+                    "position_id": position_id,
+                    "price": price,
+                    "peak_price": plan.get("peak_price"),
+                    "force_close": True,
+                    "partial_profits_enabled": True,
+                    "reason": (
+                        f"{ticker} profit stagnant near peak "
+                        f"{float(plan.get('peak_price') or price):.4f} — "
+                        f"force closed @ {price:.4f}"
+                    ),
+                },
+                ticker=ticker,
+                dedupe_key=f"profit-stall-close:{position_id}:{int(time.time() // 60)}",
+            )
 
     if open_slots and session.get("status") == "running" and not session.get("stop_reason"):
         for ticker in open_slots[:4]:

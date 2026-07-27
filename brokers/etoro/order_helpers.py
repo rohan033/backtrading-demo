@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any
 
 DEFAULT_BRACKET_STOP_LOSS_AMOUNT = 20.0
@@ -11,7 +12,12 @@ _ETORO_PRICE_KEYS = frozenset({
     "takeProfitRate",
     "StopLossRate",
     "TakeProfitRate",
+})
+
+_ETORO_UNIT_KEYS = frozenset({
     "UnitsToDeduct",
+    "units",
+    "Units",
 })
 
 
@@ -29,6 +35,37 @@ def round_etoro_units(value: float | int | str | None) -> float | None:
     return round(float(value), 6)
 
 
+def round_up_whole_units(value: float | int | str | None) -> int | None:
+    """Round a unit count up to the next whole unit (no fractional partial closes)."""
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0:
+        return None
+    return int(math.ceil(parsed - 1e-9))
+
+
+def resolve_ladder_close_units(
+    units_to_close: float,
+    units_available: float,
+) -> tuple[float | None, bool]:
+    """Size a ladder trim as whole units. Returns (units, full_close).
+
+    When round-up would exceed what's held, use full_close=True (UnitsToDeduct=null).
+    """
+    if units_available <= 0:
+        return None, False
+    target = round_up_whole_units(units_to_close)
+    if target is None:
+        return None, False
+    if target >= units_available - 1e-9:
+        return None, True
+    return float(target), False
+
+
 def normalize_etoro_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Normalize outgoing eToro order payload money/price fields to 2 decimals."""
     normalized = dict(payload)
@@ -37,6 +74,13 @@ def normalize_etoro_order_payload(payload: dict[str, Any]) -> dict[str, Any]:
             continue
         try:
             normalized[key] = round_etoro_price(normalized[key])
+        except (TypeError, ValueError):
+            continue
+    for key in _ETORO_UNIT_KEYS:
+        if key not in normalized or normalized[key] is None:
+            continue
+        try:
+            normalized[key] = round_etoro_units(normalized[key])
         except (TypeError, ValueError):
             continue
     return normalized

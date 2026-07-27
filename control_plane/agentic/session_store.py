@@ -130,6 +130,20 @@ class AgenticSessionStore:
             conn.execute(
                 "ALTER TABLE agentic_sessions ADD COLUMN snapshot_json TEXT NOT NULL DEFAULT '{}'"
             )
+        pos_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(agentic_session_positions)").fetchall()
+        }
+        if "halt_suspended" not in pos_columns:
+            conn.execute(
+                "ALTER TABLE agentic_session_positions "
+                "ADD COLUMN halt_suspended INTEGER NOT NULL DEFAULT 0"
+            )
+        if "meta_json" not in pos_columns:
+            conn.execute(
+                "ALTER TABLE agentic_session_positions "
+                "ADD COLUMN meta_json TEXT NOT NULL DEFAULT '{}'"
+            )
         conn.commit()
         conn.close()
 
@@ -429,6 +443,8 @@ class AgenticSessionStore:
             "unrealized_pnl": float(data.get("unrealized_pnl") or 0.0),
             "intent_id": data.get("intent_id"),
             "broker_position_id": data.get("broker_position_id"),
+            "halt_suspended": bool(data.get("halt_suspended")),
+            "meta": _loads(data.get("meta_json"), {}),
             "opened_at": data.get("opened_at"),
             "closed_at": data.get("closed_at"),
             "updated_at": data.get("updated_at"),
@@ -526,12 +542,21 @@ class AgenticSessionStore:
             "unrealized_pnl",
             "intent_id",
             "broker_position_id",
+            "halt_suspended",
             "opened_at",
             "closed_at",
+            "meta",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
             return self.get_position(position_id)
+        if "meta" in updates:
+            current = self.get_position(position_id) or {}
+            merged = dict(current.get("meta") or {})
+            patch = updates.pop("meta")
+            if isinstance(patch, dict):
+                merged.update(patch)
+            updates["meta_json"] = json.dumps(merged, separators=(",", ":"), default=str)
         updates["updated_at"] = _now_utc()
         columns = ", ".join(f"{key} = ?" for key in updates)
         with self._write_lock:
@@ -587,6 +612,24 @@ class AgenticSessionStore:
         ).fetchall()
         conn.close()
         return [self._position_payload(row) for row in rows]
+
+    def list_closed_needing_settlement(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Closed rows with a broker id that have not yet been settled from trade/history."""
+        rows = self.recent_closed_positions(session_id, limit=limit)
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not row.get("broker_position_id"):
+                continue
+            meta = row.get("meta") or {}
+            if meta.get("fill_settled"):
+                continue
+            out.append(row)
+        return out
 
 
 _store: AgenticSessionStore | None = None

@@ -126,9 +126,15 @@ export function clearBracketCloseInFlight(rowKey: string) {
 export function countEnabledBrackets(
   accountEnv: string,
   rows: MonitoredPosition[],
+  autoLadderIds: ReadonlySet<string> = new Set(),
 ): number {
   let count = 0
   for (const monitored of rows) {
+    const pid = monitored.row.brokerPositionId
+    if (pid && autoLadderIds.has(pid)) {
+      count += 1
+      continue
+    }
     const brackets = loadBracketsForMonitoredRow(accountEnv, monitored)
     if (brackets.takeProfitEnabled && brackets.takeProfitValue.trim()) count += 1
     if (brackets.stopLossEnabled && brackets.stopLossValue.trim()) count += 1

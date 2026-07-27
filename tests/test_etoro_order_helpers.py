@@ -13,8 +13,10 @@ from brokers.etoro.order_helpers import (
     position_ids_from_order_status,
     positions_from_order_lookup,
     resolve_bracket_stop_loss_rate,
+    resolve_ladder_close_units,
     round_etoro_price,
     round_etoro_units,
+    round_up_whole_units,
 )
 
 
@@ -24,6 +26,24 @@ def test_round_etoro_price_normalizes_float_noise():
 
 def test_round_etoro_units_normalizes_to_six_decimals():
     assert round_etoro_units(2.1291234567) == 2.129123
+
+
+def test_round_up_whole_units_ceils_fractional_trims():
+    assert round_up_whole_units(12.5) == 13
+    assert round_up_whole_units(12.0) == 12
+    assert round_up_whole_units(0.4) == 1
+
+
+def test_resolve_ladder_close_units_whole_partial():
+    units, full = resolve_ladder_close_units(12.5, 50.0)
+    assert full is False
+    assert units == 13.0
+
+
+def test_resolve_ladder_close_units_full_when_round_up_exceeds_holdings():
+    units, full = resolve_ladder_close_units(12.5, 12.5)
+    assert full is True
+    assert units is None
 
 
 def test_normalize_etoro_order_payload_rounds_money_fields():
@@ -36,6 +56,14 @@ def test_normalize_etoro_order_payload_rounds_money_fields():
     assert payload["amount"] == 1999.08
     assert payload["stopLossRate"] == 98.0
     assert payload["units"] == 1.269991
+
+
+def test_normalize_etoro_order_payload_rounds_units_to_deduct_to_six_decimals():
+    payload = normalize_etoro_order_payload({
+        "InstrumentID": 123,
+        "UnitsToDeduct": 703.1259876,
+    })
+    assert payload["UnitsToDeduct"] == 703.125988
 
 
 def test_resolve_bracket_stop_loss_rate_uses_explicit_value():

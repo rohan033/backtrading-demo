@@ -417,12 +417,24 @@ async def control_plane_lifespan(_app: FastAPI):
     await get_market_hunter().start()
     await get_agentic_session_manager().startup()
     await get_agentic_reconciler().start()
+    from control_plane.position_ladder_monitor import get_position_ladder_monitor
+
+    await get_position_ladder_monitor().start()
+    from control_plane.positions_live_feed import start_positions_feed_monitor
+
+    await start_positions_feed_monitor()
     from control_plane.etoro_db import get_etoro_db
 
     get_etoro_db().seed_from_watchlists()
     try:
         yield
     finally:
+        from control_plane.position_ladder_monitor import get_position_ladder_monitor
+
+        await get_position_ladder_monitor().stop()
+        from control_plane.positions_live_feed import stop_positions_feed_monitor
+
+        await stop_positions_feed_monitor()
         await get_agentic_reconciler().stop()
         await get_agentic_session_manager().shutdown()
         await get_market_hunter().stop()
@@ -1624,6 +1636,22 @@ class ClosePositionRequest(BaseModel):
     notify: Optional[PositionCloseNotifyContext] = None
 
 
+class PositionLadderToggleRequest(BaseModel):
+    enabled: bool
+    ticker: str
+    instrument_id: Optional[int] = None
+    entry_price: Optional[float] = None
+    entry_units: Optional[float] = None
+    is_buy: bool = True
+
+
+class PositionLadderResetRequest(BaseModel):
+    ticker: str
+    entry_price: Optional[float] = None
+    entry_units: Optional[float] = None
+    peak_price: Optional[float] = None
+
+
 def _etoro_close_error_detail(exc: Exception, request_debug: dict | None = None) -> dict:
     response = getattr(exc, "payload", None)
     if isinstance(response, dict) and "request" in response:
@@ -2450,6 +2478,9 @@ async def control_plane_etoro_positions(
     log.info("[CONTROL_ETORO] positions request env=%s refresh=%s", env, refresh)
     cached_rows, cached_at, cache_fresh = _get_portfolio_cache_entry("etoro", env)
     if cached_rows is not None and cache_fresh and not refresh:
+        from control_plane.positions_live_feed import sync_positions_feed
+
+        await sync_positions_feed(env, cached_rows)
         return {
             "status": True,
             "broker": "etoro",
@@ -2471,6 +2502,9 @@ async def control_plane_etoro_positions(
         _capture_traded_instruments(rows, account_env=env)
         _sync_past_traded_watchlist(broker="etoro", account_env=env)
         _set_portfolio_cache("etoro", env, rows)
+        from control_plane.positions_live_feed import sync_positions_feed
+
+        await sync_positions_feed(env, positions)
         log.info("[CONTROL_ETORO] positions env=%s count=%d", env, len(rows))
         return {
             "status": True,
@@ -2495,6 +2529,100 @@ async def control_plane_etoro_positions(
                 "message": str(e),
             }
         raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@app.get(
+    "/api/control/position-ladder",
+    operation_id="list_position_ladder_states",
+    summary="Auto-ladder runtime for Positions tab (server-side partial trims)",
+)
+async def list_position_ladder_states(account_env: str = "demo"):
+    from control_plane.position_ladder_store import get_position_ladder_store
+
+    env = "demo" if (account_env or "demo").lower() == "demo" else "live"
+    rows = get_position_ladder_store().list_for_env(env)
+    return {"status": True, "account_env": env, "data": rows}
+
+
+@app.put(
+    "/api/control/position-ladder/{broker_position_id}",
+    operation_id="set_position_auto_ladder",
+    summary="Enable or disable server-side auto-ladder for one broker position",
+)
+async def set_position_auto_ladder(
+    broker_position_id: str,
+    account_env: str = "demo",
+    req: PositionLadderToggleRequest = Body(...),
+):
+    from control_plane.position_ladder_store import get_position_ladder_store
+
+    env = "demo" if (account_env or "demo").lower() == "demo" else "live"
+    if not str(broker_position_id or "").strip():
+        raise HTTPException(status_code=400, detail="broker_position_id required")
+    state = get_position_ladder_store().set_auto_ladder(
+        env,
+        str(broker_position_id),
+        enabled=bool(req.enabled),
+        ticker=str(req.ticker or "").upper(),
+        instrument_id=req.instrument_id,
+        entry_price=req.entry_price,
+        entry_units=req.entry_units,
+        is_buy=bool(req.is_buy),
+    )
+    return {"status": True, "data": state}
+
+
+@app.post(
+    "/api/control/position-ladder/{broker_position_id}/reset",
+    operation_id="reset_position_ladder",
+    summary="Reset auto-ladder rungs and peak for one broker position",
+)
+async def reset_position_ladder(
+    broker_position_id: str,
+    account_env: str = "demo",
+    req: PositionLadderResetRequest = Body(...),
+):
+    from control_plane.position_ladder_monitor import _build_levels
+    from control_plane.position_ladder_store import get_position_ladder_store
+
+    env = "demo" if (account_env or "demo").lower() == "demo" else "live"
+    if not str(broker_position_id or "").strip():
+        raise HTTPException(status_code=400, detail="broker_position_id required")
+
+    store = get_position_ladder_store()
+    existing = store.get(env, str(broker_position_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Ladder state not found for this position")
+
+    entry = req.entry_price if req.entry_price is not None else existing.get("entry_price")
+    peak = req.peak_price if req.peak_price is not None else entry
+    try:
+        entry_f = float(entry) if entry is not None else 0.0
+        peak_f = float(peak) if peak is not None else entry_f
+    except (TypeError, ValueError):
+        entry_f = 0.0
+        peak_f = 0.0
+
+    fresh_state = {
+        "l1_hit": False,
+        "l2_hit": False,
+        "l3_hit": False,
+        "is_buy": existing.get("is_buy", True),
+    }
+    levels = _build_levels(fresh_state, entry_f, max(peak_f, entry_f))
+
+    state = store.reset_ladder(
+        env,
+        str(broker_position_id),
+        entry_price=req.entry_price,
+        entry_units=req.entry_units,
+        peak_price=max(peak_f, entry_f),
+        levels=levels,
+    )
+    if not state:
+        raise HTTPException(status_code=404, detail="Ladder reset failed")
+    state["levels"] = levels
+    return {"status": True, "data": state}
 
 
 @app.post(

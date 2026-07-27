@@ -24,12 +24,15 @@ from control_plane.agentic.broker import (
     close_broker_position,
     compute_atr,
     fetch_five_minute_candles,
+    fetch_one_minute_candles,
     fetch_quote,
     last_closed_candle,
     place_market_buy_with_stop,
 )
-from control_plane.agentic.config import DEFAULT_CONFIG
+from control_plane.agentic.config import DEFAULT_CONFIG, patch_config
+from control_plane.agentic.halt_execution import get_halt_resume_tracker
 from control_plane.agentic.market_hunter import MarketHunter, get_market_hunter
+from control_plane.agentic.etoro_trace import agentic_etoro_trace
 from control_plane.agentic.playbooks import create_playbook, rotation_edge
 from control_plane.agentic.snapshot import SessionSnapshot
 from control_plane.agentic.session_store import (
@@ -167,12 +170,20 @@ async def close_position_now(
     # REAL close path.
     store.update_position(position_id, {"state": "pending_close"})
     try:
-        await close_broker_position(
-            session["account_env"],
-            position["ticker"],
-            str(position.get("broker_position_id") or ""),
-            units=None if full_close else units_to_close,
-        )
+        with agentic_etoro_trace(
+            session_id,
+            source="close_position_now",
+            ticker=position["ticker"],
+            position_id=position_id,
+            reason=reason,
+            fraction=fraction,
+        ):
+            await close_broker_position(
+                session["account_env"],
+                position["ticker"],
+                str(position.get("broker_position_id") or ""),
+                units=None if full_close else units_to_close,
+            )
     except Exception as exc:
         store.add_event(
             session_id,
@@ -198,6 +209,18 @@ async def close_position_now(
     if full_close:
         fields["closed_at"] = _now_iso()
     updated = store.update_position(position_id, fields) or position
+    if full_close and not dry_run:
+        store.update_position(
+            position_id,
+            {
+                "meta": {
+                    "fill_settled": False,
+                    "estimated_pnl": round(float(updated.get("realized_pnl") or 0.0), 4),
+                    "close_reason": reason,
+                },
+            },
+        )
+        updated = store.get_position(position_id) or updated
     store.add_event(
         session_id,
         event_type,
@@ -217,6 +240,16 @@ async def close_position_now(
         from control_plane.agentic.reconciliation import _release_hunter_ticker
 
         _release_hunter_ticker(str(position.get("ticker") or ""))
+    elif not dry_run and str(updated.get("broker_position_id") or ""):
+        from control_plane.agentic.reconciliation import refresh_open_position_from_broker
+
+        updated = await refresh_open_position_from_broker(
+            session,
+            updated,
+            store,
+            attempts=6,
+            reason="post-trim sync from eToro",
+        )
     return updated
 
 
@@ -343,6 +376,29 @@ class SessionEngine:
         if not self._debounce_ok(ticker, session):
             return
 
+        if suggestion.get("resume_pending"):
+            one_min = await fetch_one_minute_candles(
+                session["account_env"], ticker, count=8
+            )
+            ready, resume_msg = get_halt_resume_tracker().resume_entry_ready(
+                ticker,
+                one_min,
+                session.get("config") or DEFAULT_CONFIG,
+            )
+            if not ready:
+                self.store.add_event(
+                    self.session_id,
+                    "info",
+                    f"Deferred {ticker} entry after halt resume: {resume_msg}",
+                    ticker=ticker,
+                    meta={
+                        "resume_pending": True,
+                        "resume_halt_count": suggestion.get("resume_halt_count"),
+                        "score": suggestion.get("score"),
+                    },
+                )
+                return
+
         start_balance = float(session["start_balance"] or 0.0)
         per_cap = start_balance * float(_cfg(session, "per_position_cap_pct")) / 100.0
         exposure_cap = start_balance * float(_cfg(session, "total_exposure_cap_pct")) / 100.0
@@ -465,13 +521,20 @@ class SessionEngine:
 
         # REAL order path — stop loss attached at placement, never optional.
         try:
-            result = await place_market_buy_with_stop(
-                session["account_env"],
-                ticker,
-                amount_usd=allocation,
-                reference_price=price,
-                stop_loss=stop_loss,
-            )
+            with agentic_etoro_trace(
+                self.session_id,
+                source="entry",
+                ticker=ticker,
+                position_id=position["id"],
+                intent_id=intent_id,
+            ):
+                result = await place_market_buy_with_stop(
+                    session["account_env"],
+                    ticker,
+                    amount_usd=allocation,
+                    reference_price=price,
+                    stop_loss=stop_loss,
+                )
         except Exception as exc:
             self.store.update_position(position["id"], {"state": "failed"})
             self.store.add_event(
@@ -517,6 +580,25 @@ class SessionEngine:
         if not result.get("broker_position_id"):
             return
         opened = self.store.get_position(position["id"]) or position
+        from control_plane.agentic.reconciliation import refresh_open_position_from_broker
+
+        opened = await refresh_open_position_from_broker(session, opened, self.store)
+        buy = float(opened.get("buy_price") or price)
+        units_filled = float(opened.get("units") or units)
+        self.store.add_event(
+            self.session_id,
+            "info",
+            f"{ticker} broker fill: {units_filled:.4f}u @ {buy:.4f} "
+            f"(quote was {price:.4f})",
+            ticker=ticker,
+            meta=_orch_meta({
+                "position_id": position["id"],
+                "quote_price": price,
+                "fill_price": buy,
+                "units": units_filled,
+                "broker_synced": bool((opened.get("meta") or {}).get("broker_synced")),
+            }),
+        )
         self._persist_playbook(opened, suggestion, atr)
 
     def _persist_playbook(
@@ -603,32 +685,33 @@ class SessionEngine:
     # ── Exit state machine ──
 
     async def _manage_exits(self, session: dict[str, Any]) -> None:
-        open_positions = self.store.list_positions(self.session_id, states=("open",))
-        if not open_positions:
-            return
+        with agentic_etoro_trace(self.session_id, source="manage_exits"):
+            open_positions = self.store.list_positions(self.session_id, states=("open",))
+            if not open_positions:
+                return
 
-        halted_down = await asyncio.to_thread(self._down_halted_symbols)
+            halted_down = await asyncio.to_thread(self._down_halted_symbols)
 
-        candle_batches = await asyncio.gather(
-            *(
-                fetch_five_minute_candles(
-                    session["account_env"], p["ticker"], count=CANDLE_FETCH_COUNT
+            candle_batches = await asyncio.gather(
+                *(
+                    fetch_five_minute_candles(
+                        session["account_env"], p["ticker"], count=CANDLE_FETCH_COUNT
+                    )
+                    for p in open_positions
                 )
-                for p in open_positions
             )
-        )
-        for position, candles in zip(open_positions, candle_batches):
-            try:
-                await self._evaluate_position(session, position, candles, halted_down)
-            except Exception as exc:
-                log.error(
-                    "[AGENTIC_ENGINE] Evaluate failed %s/%s: %s",
-                    self.session_id,
-                    position["ticker"],
-                    exc,
-                    exc_info=True,
-                )
-        self._check_autonomous_stop(session)
+            for position, candles in zip(open_positions, candle_batches):
+                try:
+                    await self._evaluate_position(session, position, candles, halted_down)
+                except Exception as exc:
+                    log.error(
+                        "[AGENTIC_ENGINE] Evaluate failed %s/%s: %s",
+                        self.session_id,
+                        position["ticker"],
+                        exc,
+                        exc_info=True,
+                    )
+            self._check_autonomous_stop(session)
 
     def _down_halted_symbols(self) -> set[str]:
         """Currently-halted symbols whose recent tape points down (fast-path exits)."""
@@ -675,14 +758,16 @@ class SessionEngine:
         get_profit_price_tracker().record(self.session_id, ticker, price, source="websocket")
         buy_price = float(position["buy_price"] or 0.0)
         units = float(position["units"] or 0.0)
-        store.update_position(
-            position_id,
-            {
-                "current_price": price,
-                "unrealized_pnl": (price - buy_price) * units,
-            },
-        )
-        position = store.get_position(position_id) or position
+        broker_synced = bool((position.get("meta") or {}).get("broker_synced"))
+        if not broker_synced:
+            store.update_position(
+                position_id,
+                {
+                    "current_price": price,
+                    "unrealized_pnl": (price - buy_price) * units,
+                },
+            )
+            position = store.get_position(position_id) or position
 
         # Halt fast-path: down-halt while held -> direct Exit, no candle wait.
         if ticker in halted_symbols and self._is_downtrending(candles):
@@ -1030,6 +1115,33 @@ class AgenticSessionManager:
         )
         return store.get_session(session_id)
 
+    def set_partial_profits_enabled(
+        self, session_id: str, enabled: bool
+    ) -> dict[str, Any] | None:
+        """Toggle stagnant-profit force-close (vs default 15% stall trim)."""
+        import json
+
+        store = get_agentic_session_store()
+        session = store.get_session(session_id)
+        if session is None or session["status"] == "stopped":
+            return session
+        config = patch_config(session.get("config") or {}, {"partial_profits_enabled": enabled})
+        updated = store.update_session(
+            session_id,
+            {"config_json": json.dumps(config, separators=(",", ":"), default=str)},
+        )
+        store.add_event(
+            session_id,
+            "info",
+            (
+                "Partial profits enabled: stagnant profitable positions will be force-closed."
+                if enabled
+                else "Partial profits disabled: stall guard trims 15% instead of full close."
+            ),
+            meta={"provenance": "user", "partial_profits_enabled": enabled},
+        )
+        return updated
+
     def pause_session(self, session_id: str) -> dict[str, Any] | None:
         store = get_agentic_session_store()
         session = store.get_session(session_id)
@@ -1077,16 +1189,21 @@ class AgenticSessionManager:
             return None
         if position["state"] != "open":
             return position
-        quote = await fetch_quote(session["account_env"], position["ticker"])
-        exit_price = (quote or {}).get("price")
-        return await close_position_now(
-            session,
-            position,
-            fraction=1.0,
-            reason="manual close",
-            exit_price=float(exit_price) if exit_price else None,
-        )
-
+        with agentic_etoro_trace(
+            session_id,
+            source="force_close",
+            ticker=position["ticker"],
+            position_id=position_id,
+        ):
+            quote = await fetch_quote(session["account_env"], position["ticker"])
+            exit_price = (quote or {}).get("price")
+            return await close_position_now(
+                session,
+                position,
+                fraction=1.0,
+                reason="manual close",
+                exit_price=float(exit_price) if exit_price else None,
+            )
 
 _manager: AgenticSessionManager | None = None
 
