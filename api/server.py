@@ -1643,6 +1643,13 @@ class PositionLadderToggleRequest(BaseModel):
     entry_price: Optional[float] = None
     entry_units: Optional[float] = None
     is_buy: bool = True
+    gain_fractions: Optional[list[float]] = None
+    trim_fraction: Optional[float] = None
+
+
+class PositionLadderConfigRequest(BaseModel):
+    gain_fractions: Optional[list[float]] = None
+    trim_fraction: Optional[float] = None
 
 
 class PositionLadderResetRequest(BaseModel):
@@ -2568,7 +2575,49 @@ async def set_position_auto_ladder(
         entry_price=req.entry_price,
         entry_units=req.entry_units,
         is_buy=bool(req.is_buy),
+        gain_fractions=req.gain_fractions,
+        trim_fraction=req.trim_fraction,
     )
+    return {"status": True, "data": state}
+
+
+@app.patch(
+    "/api/control/position-ladder/{broker_position_id}/config",
+    operation_id="update_position_ladder_config",
+    summary="Update editable take-profit ladder rungs for one broker position",
+)
+async def update_position_ladder_config(
+    broker_position_id: str,
+    account_env: str = "demo",
+    req: PositionLadderConfigRequest = Body(...),
+):
+    from control_plane.position_ladder_monitor import _build_levels
+    from control_plane.position_ladder_store import get_position_ladder_store
+
+    env = "demo" if (account_env or "demo").lower() == "demo" else "live"
+    if not str(broker_position_id or "").strip():
+        raise HTTPException(status_code=400, detail="broker_position_id required")
+
+    store = get_position_ladder_store()
+    existing = store.get(env, str(broker_position_id))
+    if not existing:
+        raise HTTPException(status_code=404, detail="Ladder state not found for this position")
+
+    state = store.update_config(
+        env,
+        str(broker_position_id),
+        gain_fractions=req.gain_fractions,
+        trim_fraction=req.trim_fraction,
+    )
+    if not state:
+        raise HTTPException(status_code=404, detail="Ladder config update failed")
+
+    entry = float(state.get("entry_price") or 0.0)
+    peak = float(state.get("peak_price") or entry or 0.0)
+    levels = _build_levels(state, entry, max(peak, entry))
+    store.update_runtime(env, str(broker_position_id), levels_json=json.dumps(levels))
+    state = store.get(env, str(broker_position_id)) or state
+    state["levels"] = levels
     return {"status": True, "data": state}
 
 

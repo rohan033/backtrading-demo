@@ -460,7 +460,9 @@ class SessionSnapshot:
         session = self.store.get_session(self.session_id)
         if session is None:
             raise KeyError(self.session_id)
-        positions = self.store.list_positions(self.session_id)
+        positions = self.store.list_positions(
+            self.session_id, states=("pending_open", "open", "pending_close")
+        )
         stats = self.store.session_stats(self.session_id)
         events = [
             event

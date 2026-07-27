@@ -131,6 +131,27 @@
   white-space: nowrap;
 }
 
+.pos-price-box {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+.pos-price-box--buy {
+  background: #fef9c3;
+  color: #111;
+  border: 1px solid #fde68a;
+}
+
+.pos-price-box--current {
+  background: #dbeafe;
+  color: #111;
+  border: 1px solid #bfdbfe;
+}
+
 .pos-price-stale {
   color: #b45309;
   font-size: 10px;
@@ -201,7 +222,7 @@
 }
 
 .pos-bracket-cell {
-  min-width: 130px;
+  min-width: 168px;
 }
 
 .pos-bracket-stack {
@@ -257,6 +278,11 @@
 .pos-bracket-hint {
   font-size: 10px;
   color: #4a5568;
+}
+
+.pos-bracket-hint--warn {
+  color: #b45309;
+  font-weight: 600;
 }
 
 .pos-ladder-col {
@@ -329,6 +355,43 @@
   color: #4a5568;
 }
 
+.pos-tp-ladder__trim {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #111;
+}
+
+.pos-tp-ladder__pct {
+  width: 52px;
+  min-width: 52px;
+  padding: 0 6px;
+  text-align: right;
+}
+
+.pos-tp-ladder__rungs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pos-tp-ladder__rung {
+  display: grid;
+  grid-template-columns: 28px 52px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #111;
+}
+
+.pos-tp-ladder__rung strong {
+  font-weight: 800;
+}
+
 .pos-auto-ladder__detail {
   display: flex;
   flex-direction: column;
@@ -347,6 +410,8 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
+  max-height: 140px;
+  overflow-y: auto;
 }
 
 .pos-auto-ladder__rung {

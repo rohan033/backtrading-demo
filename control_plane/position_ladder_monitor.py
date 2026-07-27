@@ -1,4 +1,4 @@
-"""Server-side auto-ladder for Positions tab — partial trims on L1/L2/L3 pullback."""
+"""Server-side auto-ladder for Positions tab — partial trims on pullback."""
 
 from __future__ import annotations
 
@@ -14,10 +14,11 @@ from brokers.etoro.order_helpers import (
     resolve_ladder_close_units,
 )
 from control_plane.agentic.profit_planner import evaluate_ladder
+from control_plane.ladder_levels import build_ladder_levels
 from control_plane.position_ladder_store import (
-    LADDER_FRACTIONS,
-    LEVEL_IDS,
     TRIM_FRACTION,
+    _normalize_gain_fractions,
+    _normalize_trim_fraction,
     get_position_ladder_store,
 )
 
@@ -32,28 +33,23 @@ ORDER_VERIFY_POLL_SEC = 2.0
 _last_trim_at: dict[str, float] = {}
 
 
-def _build_levels(state: dict[str, Any], buy: float, peak: float) -> list[dict[str, Any]]:
-    peak_gain = peak - buy if state.get("is_buy", True) else buy - peak
-    if peak_gain <= 0:
-        return []
-    hit_map = {"L1": state.get("l1_hit"), "L2": state.get("l2_hit"), "L3": state.get("l3_hit")}
-    levels: list[dict[str, Any]] = []
-    for index, fraction in enumerate(LADDER_FRACTIONS, start=1):
-        level_id = LEVEL_IDS[index - 1]
-        target = buy + peak_gain * fraction if state.get("is_buy", True) else buy - peak_gain * fraction
-        levels.append(
-            {
-                "id": level_id,
-                "gain_fraction": float(fraction),
-                "price": round(target, 6),
-                "fraction": TRIM_FRACTION,
-                "label": f"{int(fraction * 100)}% of peak gain",
-                "hit": bool(hit_map.get(level_id)),
-                "hit_price": None,
-                "hit_at": None,
-            }
-        )
-    return levels
+def _build_levels(
+    state: dict[str, Any],
+    buy: float,
+    peak: float,
+    *,
+    gain_fractions: list[float] | None = None,
+    trim_fraction: float | None = None,
+) -> list[dict[str, Any]]:
+    fractions = gain_fractions or _normalize_gain_fractions(state.get("gain_fractions"))
+    trim = trim_fraction if trim_fraction is not None else _normalize_trim_fraction(state.get("trim_fraction"))
+    return build_ladder_levels(
+        state,
+        buy,
+        peak,
+        gain_fractions=fractions,
+        trim_fraction=trim,
+    )
 
 
 def _plan_from_state(state: dict[str, Any], buy: float, peak: float, *, active: bool) -> dict[str, Any]:
@@ -339,16 +335,19 @@ async def evaluate_armed_position(state: dict[str, Any]) -> dict[str, Any] | Non
 
     remaining = float(plan.get("remaining_fraction") or 1.0)
     last_hit = state.get("last_hit_price")
+    trim_fraction = _normalize_trim_fraction(state.get("trim_fraction"))
 
     for level in triggered:
         level_id = str(level.get("id") or "")
-        trim_of_original = min(TRIM_FRACTION, remaining)
-        if trim_of_original < MIN_TRIM_UNITS:
+        trim_of_original = min(trim_fraction, remaining)
+        if trim_of_original <= 0:
             continue
         units_to_close = min(units_now * (trim_of_original / remaining), entry_units * trim_of_original)
         units_to_close = min(units_to_close, units_now)
         close_units, full_close = resolve_ladder_close_units(units_to_close, units_now)
         if not full_close and close_units is None:
+            continue
+        if not full_close and (close_units or 0) < MIN_TRIM_UNITS:
             continue
         ok = await _partial_close(
             account_env,
@@ -373,11 +372,18 @@ async def evaluate_armed_position(state: dict[str, Any]) -> dict[str, Any] | Non
             "L2": "l2_hit",
             "L3": "l3_hit",
         }.get(level_id)
+        state_after = store.get(account_env, pid) or state
+        if hit_patch:
+            state_after = {**state_after, hit_patch: True}
+        merged_state = {
+            **state_after,
+            "levels_json": json.dumps(plan.get("levels") or []),
+        }
         runtime_patch: dict[str, Any] = {
             "peak_price": peak,
             "remaining_fraction": round(remaining, 6),
             "last_hit_price": last_hit,
-            "levels_json": json.dumps(plan.get("levels") or []),
+            "levels_json": json.dumps(_build_levels(merged_state, open_rate, peak)),
         }
         if hit_patch:
             runtime_patch[hit_patch] = True

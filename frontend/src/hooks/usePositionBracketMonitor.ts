@@ -53,8 +53,6 @@ export function usePositionBracketMonitor({
       const rowKey = row.rowKey
       const positionId = row.brokerPositionId
 
-      if (positionId && autoLadderPositionIds.has(positionId)) continue
-
       if (isBracketCloseInFlight(rowKey)) continue
 
       const livePrice = prices[rowKey]

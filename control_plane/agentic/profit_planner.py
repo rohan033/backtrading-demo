@@ -13,6 +13,7 @@ Exit layers per position (evaluated in this order each monitor tick):
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -199,35 +200,22 @@ def compute_exit_plan(
         }
     )
 
-    # Ladder rungs: carry hit state across ticks; only un-hit rungs re-target
-    # off the live (ratcheting) peak gain. Hit rungs stay frozen for the UI.
-    prior_levels = {
-        str(level.get("id")): level
-        for level in ((prior or {}).get("levels") or [])
-        if isinstance(level, dict)
+    # Ladder rungs: carry hit state across ticks; un-hit rungs re-target off the
+    # live (ratcheting) peak gain. Hit rungs stay frozen; higher rungs extend with peak.
+    from control_plane.ladder_levels import build_ladder_levels
+
+    pseudo_state: dict[str, Any] = {
+        "is_buy": True,
+        "gain_fractions": config.get("profit_level_fractions") or [0.35, 0.60, 0.85],
+        "levels_json": json.dumps((prior or {}).get("levels") or []),
     }
-    level_fracs = config.get("profit_level_fractions") or [0.35, 0.60, 0.85]
     trim_fraction = float(config.get("profit_trim_fraction", 0.25))
-    levels: list[dict[str, Any]] = []
-    for index, fraction in enumerate(level_fracs, start=1):
-        level_id = f"L{index}"
-        prior_level = prior_levels.get(level_id)
-        if prior_level and prior_level.get("hit"):
-            levels.append(dict(prior_level))
-            continue
-        target = buy + peak_gain * float(fraction)
-        levels.append(
-            {
-                "id": level_id,
-                "gain_fraction": float(fraction),
-                "price": round(target, 6),
-                "fraction": trim_fraction,
-                "label": f"{int(float(fraction) * 100)}% of peak gain",
-                "hit": False,
-                "hit_price": None,
-                "hit_at": None,
-            }
-        )
+    levels = build_ladder_levels(
+        pseudo_state,
+        buy,
+        peak_price,
+        trim_fraction=trim_fraction,
+    )
     plan["levels"] = levels
     plan["levels_hit"] = sorted(
         level["id"] for level in levels if level.get("hit")

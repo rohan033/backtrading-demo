@@ -3170,6 +3170,83 @@
   color: #4a5568;
 }
 
+.ags-create-wire__section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.ags-create-wire__section-head .ags-field__label {
+  margin: 0;
+}
+
+.ags-create-wire__section-link {
+  font-size: 11px;
+  font-weight: 600;
+  color: #1565c0;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.ags-create-wire__section-link:hover {
+  text-decoration: underline;
+}
+
+.ags-create-wire__field-hint {
+  margin: 0 0 6px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #4a5568;
+}
+
+.ags-create-wire__watch-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ags-create-wire__watch-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ags-create-wire__watch-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #111;
+  cursor: pointer;
+}
+
+.ags-create-wire__watch-group-head strong {
+  flex: 1;
+  font-weight: 700;
+}
+
+.ags-create-wire__watch-group-head span {
+  font-size: 10px;
+  font-weight: 700;
+  color: #4a5568;
+  font-variant-numeric: tabular-nums;
+}
+
+.ags-create-wire__watch-group-head input {
+  margin: 0;
+  accent-color: #1565c0;
+}
+
+.ags-create-wire__screener-checks {
+  max-height: 148px;
+}
+
+.ags-create-wire__watch-chips {
+  margin-bottom: 6px;
+}
+
 .ags-create-wire__review {
   display: flex;
   flex-direction: column;

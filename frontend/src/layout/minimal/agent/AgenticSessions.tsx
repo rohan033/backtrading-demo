@@ -20,12 +20,14 @@ import {
   homeMoverPctTone,
 } from '@/lib/homeMarketMovers'
 import type { OverviewScreenerPick, OverviewTradeSignal } from '@/lib/overviewSignals'
+import { fetchScreeners, type Screener } from '@/lib/screenerApi'
 import {
   pickWatchlistSymbolMatch,
   searchWatchlistSymbol,
   type WatchlistSymbolHit,
 } from '@/lib/watchlistBrokers'
-import { useUrlState } from '../useUrlState'
+import { fetchWatchlists, type Watchlist } from '@/lib/watchlists'
+import { buildShellUrl, useUrlState } from '../useUrlState'
 import '../HomeMarketMoversPanel.css'
 import '../Overview.css'
 import AgentModelPicker, { useAgentModelPickerState } from './dashboard/AgentModelPicker'
@@ -36,6 +38,51 @@ import './AgenticSessions.css'
 function formatSignedMoney(value: number): string {
   const sign = value > 0 ? '+' : value < 0 ? '-' : ''
   return `${sign}$${Math.abs(value).toFixed(2)}`
+}
+
+function toggleInList(list: string[], value: string): string[] {
+  return list.includes(value) ? list.filter(item => item !== value) : [...list, value]
+}
+
+function watchlistTickerRoot(symbol: { tradingsymbol?: string; symbol?: string }): string {
+  const raw = String(symbol.tradingsymbol || symbol.symbol || '').trim().toUpperCase()
+  return raw.split('.', 1)[0]
+}
+
+function mergeTickerLists(...groups: string[][]): string[] {
+  const out: string[] = []
+  for (const group of groups) {
+    for (const raw of group) {
+      const sym = String(raw || '').trim().toUpperCase().split('.', 1)[0]
+      if (!sym || out.includes(sym)) continue
+      out.push(sym)
+    }
+  }
+  return out
+}
+
+function describeAgenticUniverse(
+  tickers: string[],
+  screenerIds: string[],
+  screenerNames: string[],
+): string {
+  if (!tickers.length && !screenerIds.length) return 'All screeners (discovery)'
+  const parts: string[] = []
+  if (screenerIds.length) {
+    parts.push(
+      screenerNames.length
+        ? `${screenerNames.length} screener(s): ${screenerNames.join(', ')}`
+        : `${screenerIds.length} screener(s)`,
+    )
+  }
+  if (tickers.length) {
+    parts.push(
+      screenerIds.length
+        ? `${tickers.length} watchlist ticker(s)`
+        : `Watchlist only (${tickers.length})`,
+    )
+  }
+  return parts.join(' · ')
 }
 
 export default function AgenticSessions() {
@@ -247,12 +294,21 @@ function AgenticCreateForm({ onCreated }: { onCreated: (session: AgenticSession)
   const [confidenceThreshold, setConfidenceThreshold] = useState('40')
   const [prompt, setPrompt] = useState('')
   const [selectedTickers, setSelectedTickers] = useState<string[]>([])
+  const [watchlistTickers, setWatchlistTickers] = useState<string[]>([])
+  const [selectedScreenerIds, setSelectedScreenerIds] = useState<string[]>([])
+  const [watchlists, setWatchlists] = useState<Watchlist[]>([])
+  const [savedScreeners, setSavedScreeners] = useState<Screener[]>([])
+  const [watchlistsLoading, setWatchlistsLoading] = useState(false)
+  const [screenersLoading, setScreenersLoading] = useState(false)
   const [tickerQuery, setTickerQuery] = useState('')
   const [tickerHits, setTickerHits] = useState<WatchlistSymbolHit[]>([])
   const [tickerSearching, setTickerSearching] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
   const modelPicker = useAgentModelPickerState()
+
+  const screenerHref = buildShellUrl({ tab: 'screener' })
+  const watchTradeHref = buildShellUrl({ tab: 'watch-trade' })
 
   const {
     signals: suggestedSignals,
@@ -266,6 +322,70 @@ function AgenticCreateForm({ onCreated }: { onCreated: (session: AgenticSession)
     for (const pick of screenerPicks) map.set(pick.symbol, pick)
     return map
   }, [screenerPicks])
+
+  useEffect(() => {
+    let cancelled = false
+    setWatchlistsLoading(true)
+    setScreenersLoading(true)
+    void Promise.all([
+      fetchWatchlists().catch(() => [] as Watchlist[]),
+      fetchScreeners(false).catch(() => [] as Screener[]),
+    ]).then(([watchlistRows, screenerRows]) => {
+      if (cancelled) return
+      setWatchlists(watchlistRows)
+      setSavedScreeners(screenerRows)
+      setWatchlistsLoading(false)
+      setScreenersLoading(false)
+    })
+    return () => { cancelled = true }
+  }, [])
+
+  const etoroWatchlists = useMemo(
+    () => watchlists.filter(row => row.broker === 'etoro' && row.account_env === accountEnv),
+    [watchlists, accountEnv],
+  )
+
+  const watchlistGroups = useMemo(
+    () =>
+      etoroWatchlists
+        .map(list => ({
+          id: list.id,
+          name: list.name,
+          tickers: (list.symbols || [])
+            .map(symbol => watchlistTickerRoot(symbol))
+            .filter(Boolean)
+            .filter((ticker, index, arr) => arr.indexOf(ticker) === index),
+        }))
+        .filter(group => group.tickers.length > 0),
+    [etoroWatchlists],
+  )
+
+  const allSessionTickers = useMemo(
+    () => mergeTickerLists(watchlistTickers, selectedTickers),
+    [watchlistTickers, selectedTickers],
+  )
+
+  const selectedScreenerNames = useMemo(
+    () =>
+      selectedScreenerIds
+        .map(id => savedScreeners.find(row => row.id === id)?.name || id)
+        .filter(Boolean),
+    [savedScreeners, selectedScreenerIds],
+  )
+
+  useEffect(() => {
+    const allowed = new Set<string>()
+    for (const group of watchlistGroups) {
+      for (const ticker of group.tickers) allowed.add(ticker)
+    }
+    setWatchlistTickers(prev => {
+      const next = prev.filter(ticker => allowed.has(ticker))
+      if (next.length === prev.length && next.every((ticker, index) => ticker === prev[index])) {
+        return prev
+      }
+      return next
+    })
+  }, [watchlistGroups])
 
   useEffect(() => {
     const q = tickerQuery.trim()
@@ -312,6 +432,29 @@ function AgenticCreateForm({ onCreated }: { onCreated: (session: AgenticSession)
     )
   }, [])
 
+  const toggleWatchlistTicker = useCallback((symbol: string) => {
+    const normalized = symbol.trim().toUpperCase()
+    if (!normalized) return
+    setWatchlistTickers(prev => toggleInList(prev, normalized))
+  }, [])
+
+  const toggleWatchlistGroup = useCallback((tickers: string[]) => {
+    setWatchlistTickers(prev => {
+      const normalized = tickers.map(ticker => ticker.toUpperCase())
+      const allSelected = normalized.length > 0 && normalized.every(ticker => prev.includes(ticker))
+      if (allSelected) return prev.filter(ticker => !normalized.includes(ticker))
+      const next = [...prev]
+      for (const ticker of normalized) {
+        if (!next.includes(ticker)) next.push(ticker)
+      }
+      return next
+    })
+  }, [])
+
+  const toggleScreener = useCallback((screenerId: string) => {
+    setSelectedScreenerIds(prev => toggleInList(prev, screenerId))
+  }, [])
+
   const handleSubmit = useCallback(async () => {
     setSubmitting(true)
     setError('')
@@ -330,7 +473,8 @@ function AgenticCreateForm({ onCreated }: { onCreated: (session: AgenticSession)
     const config: Record<string, unknown> = {
       confidence_threshold: confidence,
     }
-    if (selectedTickers.length) config.tickers = selectedTickers
+    if (allSessionTickers.length) config.tickers = allSessionTickers
+    if (selectedScreenerIds.length) config.screener_ids = selectedScreenerIds
     try {
       const session = await createAgenticSession({
         name: name.trim() || undefined,
@@ -351,10 +495,11 @@ function AgenticCreateForm({ onCreated }: { onCreated: (session: AgenticSession)
     }
   }, [
     accountEnv,
+    allSessionTickers,
     name,
     onCreated,
     prompt,
-    selectedTickers,
+    selectedScreenerIds,
     startBalance,
     confidenceThreshold,
     modelPicker.agentModelId,
@@ -503,29 +648,118 @@ function AgenticCreateForm({ onCreated }: { onCreated: (session: AgenticSession)
           </label>
 
           <div className="ags-create-wire__field">
-            <span className="ags-field__label">Additional watchlists</span>
-            <div className="ags-create-wire__watchbox">
-              {selectedTickers.length ? (
-                <div className="ags-ms__chips ags-create-wire__watch-chips">
-                  {selectedTickers.map(symbol => (
-                    <button
-                      key={symbol}
-                      type="button"
-                      className="ags-ms__chip"
-                      onClick={() => toggleTicker(symbol)}
-                      aria-label={`Remove ${symbol}`}
-                    >
-                      <strong>{symbol}</strong>
-                      <span aria-hidden="true">×</span>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <span className="ags-create-wire__watch-empty">
-                  Click suggested tickers or search above to add watchlist names.
-                </span>
-              )}
+            <div className="ags-create-wire__section-head">
+              <span className="ags-field__label">Additional watchlists</span>
+              <a className="ags-create-wire__section-link" href={watchTradeHref}>
+                Watch &amp; Trade
+              </a>
             </div>
+            {watchlistTickers.length ? (
+              <div className="ags-ms__chips ags-create-wire__watch-chips">
+                {watchlistTickers.map(symbol => (
+                  <button
+                    key={symbol}
+                    type="button"
+                    className="ags-ms__chip"
+                    onClick={() => toggleWatchlistTicker(symbol)}
+                    aria-label={`Remove ${symbol}`}
+                  >
+                    <strong>{symbol}</strong>
+                    <span aria-hidden="true">×</span>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="ags-ms__clear"
+                  onClick={() => setWatchlistTickers([])}
+                >
+                  Clear
+                </button>
+              </div>
+            ) : null}
+            {watchlistsLoading ? (
+              <div className="ags-ms-empty">Loading watchlists…</div>
+            ) : watchlistGroups.length === 0 ? (
+              <div className="ags-ms-empty">
+                No eToro {accountEnv} watchlists yet.{' '}
+                <a href={watchTradeHref}>Add symbols in Watch &amp; Trade</a>.
+              </div>
+            ) : (
+              <div className="ags-create-wire__watch-groups">
+                {watchlistGroups.map(group => {
+                  const selectedCount = group.tickers.filter(ticker => watchlistTickers.includes(ticker)).length
+                  const allSelected = selectedCount === group.tickers.length
+                  const someSelected = selectedCount > 0 && !allSelected
+                  return (
+                    <section key={group.id} className="ags-create-wire__watch-group">
+                      <label className="ags-create-wire__watch-group-head">
+                        <input
+                          type="checkbox"
+                          checked={allSelected}
+                          ref={element => {
+                            if (element) element.indeterminate = someSelected
+                          }}
+                          onChange={() => toggleWatchlistGroup(group.tickers)}
+                        />
+                        <strong>{group.name}</strong>
+                        <span>{selectedCount}/{group.tickers.length}</span>
+                      </label>
+                      <ul className="ags-ms-checklist ags-ms-checklist--compact">
+                        {group.tickers.map(ticker => (
+                          <li key={`${group.id}:${ticker}`}>
+                            <label className="ags-ms-check">
+                              <input
+                                type="checkbox"
+                                checked={watchlistTickers.includes(ticker)}
+                                onChange={() => toggleWatchlistTicker(ticker)}
+                              />
+                              <strong>{ticker}</strong>
+                            </label>
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="ags-create-wire__field">
+            <div className="ags-create-wire__section-head">
+              <span className="ags-field__label">Additional screeners</span>
+              <a className="ags-create-wire__section-link" href={screenerHref}>
+                Screener
+              </a>
+            </div>
+            <p className="ags-create-wire__field-hint">
+              Leave empty to scan all screeners. Pick specific ones to narrow discovery.
+            </p>
+            {screenersLoading ? (
+              <div className="ags-ms-empty">Loading screeners…</div>
+            ) : savedScreeners.length === 0 ? (
+              <div className="ags-ms-empty">
+                No saved screeners yet. <a href={screenerHref}>Create one in Screener</a>.
+              </div>
+            ) : (
+              <ul className="ags-ms-checklist ags-ms-checklist--compact ags-create-wire__screener-checks">
+                {savedScreeners.map(screener => (
+                  <li key={screener.id}>
+                    <label className="ags-ms-check">
+                      <input
+                        type="checkbox"
+                        checked={selectedScreenerIds.includes(screener.id)}
+                        onChange={() => toggleScreener(screener.id)}
+                      />
+                      <span>
+                        <strong>{screener.name}</strong>
+                        <small>{screener.total_count} cached rows</small>
+                      </span>
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
 
@@ -550,6 +784,30 @@ function AgenticCreateForm({ onCreated }: { onCreated: (session: AgenticSession)
               )}
             </section>
             <section className="ags-create-wire__review-block">
+              <h3 className="ags-create-wire__review-label">Watchlist symbols</h3>
+              {watchlistTickers.length ? (
+                <ul className="ags-create-wire__review-tickers">
+                  {watchlistTickers.map(symbol => (
+                    <li key={symbol}>{symbol}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="ags-create-wire__review-muted">None selected</p>
+              )}
+            </section>
+            <section className="ags-create-wire__review-block">
+              <h3 className="ags-create-wire__review-label">Screeners</h3>
+              {selectedScreenerIds.length ? (
+                <ul className="ags-create-wire__review-tickers">
+                  {selectedScreenerNames.map(name => (
+                    <li key={name}>{name}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="ags-create-wire__review-muted">All screeners (discovery)</p>
+              )}
+            </section>
+            <section className="ags-create-wire__review-block">
               <h3 className="ags-create-wire__review-label">Session info</h3>
               <dl className="ags-create-wire__review-dl">
                 <div><dt>Name</dt><dd>{name.trim() || 'Untitled'}</dd></div>
@@ -560,9 +818,11 @@ function AgenticCreateForm({ onCreated }: { onCreated: (session: AgenticSession)
                 <div>
                   <dt>Universe</dt>
                   <dd>
-                    {selectedTickers.length
-                      ? `Watchlist only (${selectedTickers.length})`
-                      : 'All screeners'}
+                    {describeAgenticUniverse(
+                      allSessionTickers,
+                      selectedScreenerIds,
+                      selectedScreenerNames,
+                    )}
                   </dd>
                 </div>
               </dl>

@@ -1,9 +1,13 @@
 export type BracketValueMode = 'price' | 'amount' | 'percent'
+export type TakeProfitStyle = 'single' | 'ladder'
 
 export type PositionBracketSettings = {
   takeProfitEnabled: boolean
   takeProfitValue: string
   takeProfitMode: BracketValueMode
+  takeProfitStyle: TakeProfitStyle
+  ladderGainPcts: string[]
+  ladderTrimPct: string
   stopLossEnabled: boolean
   stopLossValue: string
   stopLossMode: BracketValueMode
@@ -17,6 +21,9 @@ export const DEFAULT_POSITION_BRACKETS: PositionBracketSettings = {
   takeProfitEnabled: false,
   takeProfitValue: '',
   takeProfitMode: 'price',
+  takeProfitStyle: 'single',
+  ladderGainPcts: ['35', '60', '85'],
+  ladderTrimPct: '25',
   stopLossEnabled: false,
   stopLossValue: '',
   stopLossMode: 'amount',
@@ -51,6 +58,9 @@ export function loadPositionBrackets(
   return {
     ...DEFAULT_POSITION_BRACKETS,
     ...row,
+    ladderGainPcts: row.ladderGainPcts?.length
+      ? row.ladderGainPcts.slice(0, 3)
+      : DEFAULT_POSITION_BRACKETS.ladderGainPcts,
   }
 }
 

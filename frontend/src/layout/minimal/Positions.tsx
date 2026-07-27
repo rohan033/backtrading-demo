@@ -285,7 +285,8 @@ function AutoLadderCell({
         </div>
       ) : (
         <p className="pos-auto-ladder__hint">
-          Server-side L1/L2/L3 partial trims on pullback. Off = use TP/SL only.
+          Server-side partial trims on pullback — rungs extend with peak (L4+ at higher gains).
+          Works alongside single TP.
         </p>
       )}
     </div>
@@ -298,6 +299,7 @@ function BracketCell({
   openRate,
   units,
   isBuy,
+  liveMark,
   onChange,
   disabled = false,
 }: {
@@ -306,6 +308,7 @@ function BracketCell({
   openRate: number
   units: number
   isBuy: boolean
+  liveMark?: number | null
   onChange: (patch: Partial<PositionBracketSettings>) => void
   disabled?: boolean
 }) {
@@ -318,6 +321,11 @@ function BracketCell({
   const targetPnl = hasValue
     ? bracketTargetPnl(mode, value, openRate, units, isBuy, kind)
     : null
+  const tpBelowMarket = kind === 'take_profit'
+    && targetPrice != null
+    && liveMark != null
+    && liveMark > 0
+    && (isBuy ? targetPrice <= liveMark : targetPrice >= liveMark)
 
   return (
     <div className="pos-bracket-stack">
@@ -344,7 +352,7 @@ function BracketCell({
         }}
       />
       {hasValue && targetPrice != null ? (
-        <div className="pos-bracket-hint">
+        <div className={`pos-bracket-hint${tpBelowMarket ? ' pos-bracket-hint--warn' : ''}`}>
           {mode === 'amount'
             ? `Target ${formatBrokerMoney('etoro', targetPrice)}`
             : mode === 'percent'
@@ -352,6 +360,17 @@ function BracketCell({
               : targetPnl != null
                 ? `P&L ${fmtSignedMoney(targetPnl)}`
                 : null}
+          {tpBelowMarket ? (
+            <span>
+              {' '}
+              · must be {isBuy ? 'above' : 'below'} current{' '}
+              {formatBrokerMoney('etoro', liveMark!)}
+            </span>
+          ) : null}
+        </div>
+      ) : kind === 'take_profit' && liveMark != null && liveMark > 0 ? (
+        <div className="pos-bracket-hint">
+          Set TP {isBuy ? 'above' : 'below'} current {formatBrokerMoney('etoro', liveMark)}
         </div>
       ) : null}
     </div>
@@ -389,7 +408,9 @@ const PositionLivePnlCell = memo(function PositionLivePnlCell({
   return (
     <>
       <td className="pos-td-num" title={quote.stale ? quote.statusLabel : undefined}>
-        {quote.mark != null ? formatBrokerMoney('etoro', quote.mark) : '—'}
+        <span className="pos-price-box pos-price-box--current">
+          {quote.mark != null ? formatBrokerMoney('etoro', quote.mark) : '—'}
+        </span>
         {quote.stale && quote.mark != null ? (
           <span className="pos-price-stale" aria-label={quote.statusLabel}> ↻</span>
         ) : null}
@@ -459,7 +480,6 @@ const PositionTableRow = memo(function PositionTableRow({
   const onBracketsChange = useCallback((patch: Partial<PositionBracketSettings>) => {
     setBrackets(prev => {
       const next = savePositionBrackets(accountEnv, storageKey, patch, prev)
-      // Defer: do not nest parent setState inside this updater (toolbar count).
       queueMicrotask(() => onBracketsUpdated?.())
       return next
     })
@@ -509,7 +529,11 @@ const PositionTableRow = memo(function PositionTableRow({
         </div>
       </td>
       <td className="pos-td-num">{row.quantity.toLocaleString()}</td>
-      <td className="pos-td-num">{formatBrokerMoney('etoro', row.openRate)}</td>
+      <td className="pos-td-num">
+        <span className="pos-price-box pos-price-box--buy">
+          {formatBrokerMoney('etoro', row.openRate)}
+        </span>
+      </td>
       <PositionLivePnlCell row={row} accountEnv={accountEnv} ticker={ticker} />
       <td className="pos-bracket-cell">
         <BracketCell
@@ -518,14 +542,13 @@ const PositionTableRow = memo(function PositionTableRow({
           openRate={row.openRate}
           units={row.quantity}
           isBuy={row.isBuy}
+          liveMark={liveMark}
           onChange={onBracketsChange}
-          disabled={autoLadder}
         />
       </td>
       <td>
         <EnableToggle
           enabled={brackets.takeProfitEnabled}
-          disabled={autoLadder}
           label="Enable take profit"
           onChange={takeProfitEnabled => onBracketsChange({ takeProfitEnabled })}
         />
@@ -538,13 +561,11 @@ const PositionTableRow = memo(function PositionTableRow({
           units={row.quantity}
           isBuy={row.isBuy}
           onChange={onBracketsChange}
-          disabled={autoLadder}
         />
       </td>
       <td>
         <EnableToggle
           enabled={brackets.stopLossEnabled}
-          disabled={autoLadder}
           label="Enable stop loss"
           onChange={stopLossEnabled => onBracketsChange({ stopLossEnabled })}
         />
@@ -730,20 +751,13 @@ function PositionsTable({
         entry_units: row.quantity,
         is_buy: row.isBuy,
       })
-      if (enabled) {
-        savePositionBrackets(accountEnv, prepared.storageKey, {
-          takeProfitEnabled: false,
-          stopLossEnabled: false,
-        })
-        bumpBracketRevision()
-      }
       await loadLadderStates()
       showPlatformToast({
         variant: 'success',
         title: enabled ? 'Auto ladder armed' : 'Auto ladder off',
         message: enabled
-          ? `${ticker}: server monitors L1/L2/L3 partial trims (25% each on pullback).`
-          : `${ticker}: back to manual TP/SL.`,
+          ? `${ticker}: server monitors partial trims on pullback (rungs extend with peak).`
+          : `${ticker}: ladder monitoring stopped.`,
         duration: 8000,
       })
     } catch (err) {
@@ -756,7 +770,7 @@ function PositionsTable({
     } finally {
       setLadderSavingId('')
     }
-  }, [accountEnv, bumpBracketRevision, loadLadderStates])
+  }, [accountEnv, loadLadderStates])
 
   const handleResetLadder = useCallback(async (prepared: PreparedRow) => {
     const { row, ticker } = prepared

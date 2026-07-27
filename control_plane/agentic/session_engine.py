@@ -117,8 +117,65 @@ async def close_position_now(
     session_id = session["id"]
     position_id = position["id"]
     fraction = min(1.0, max(0.0, float(fraction)))
-    if fraction <= 0 or position["state"] not in ("open",):
+    if fraction <= 0:
         return position
+    if position["state"] not in ("open", "pending_close"):
+        return position
+
+    from control_plane.agentic.broker import (
+        broker_position_is_open,
+        link_position_to_broker,
+    )
+    from control_plane.agentic.reconciliation import _settle_broker_closed
+
+    position = await link_position_to_broker(session["account_env"], position, store)
+    position = store.get_position(position_id) or position
+    broker_id = str(position.get("broker_position_id") or "")
+    dry_run = bool(_cfg(session, "dry_run"))
+    ticker_upper = str(position.get("ticker") or "").upper()
+
+    if not dry_run and not broker_id and ticker_upper:
+        from control_plane.agentic.broker import fetch_broker_open_index
+
+        index = await fetch_broker_open_index(session["account_env"])
+        rows = (index.get("by_ticker") or {}).get(ticker_upper) or []
+        if not rows:
+            await _settle_broker_closed(
+                session,
+                position,
+                store,
+                close_retries={},
+                reason="already closed at broker",
+            )
+            return store.get_position(position_id) or position
+        if len(rows) == 1:
+            pid = str(rows[0].get("positionID") or rows[0].get("positionId") or "")
+            if pid:
+                store.update_position(position_id, {"broker_position_id": pid})
+                position = store.get_position(position_id) or position
+                broker_id = pid
+        else:
+            store.add_event(
+                session_id,
+                "error",
+                f"Cannot close {position['ticker']}: multiple open broker positions — "
+                "link broker_position_id first",
+                ticker=position["ticker"],
+                meta={"position_id": position_id, "reason": reason},
+            )
+            return position
+
+    if not dry_run and broker_id:
+        still_open = await broker_position_is_open(session["account_env"], broker_id)
+        if not still_open:
+            await _settle_broker_closed(
+                session,
+                position,
+                store,
+                close_retries={},
+                reason="already closed at broker",
+            )
+            return store.get_position(position_id) or position
 
     units_total = float(position["units"] or 0.0)
     units_to_close = units_total if fraction >= 0.999 else units_total * fraction
@@ -128,7 +185,6 @@ async def close_position_now(
         if exit_price is not None
         else (position.get("current_price") or buy_price)
     )
-    dry_run = bool(_cfg(session, "dry_run"))
     full_close = units_to_close >= units_total - 1e-9
     event_type = "exit" if full_close else "trim"
 
@@ -185,6 +241,7 @@ async def close_position_now(
                 units=None if full_close else units_to_close,
             )
     except Exception as exc:
+        store.update_position(position_id, {"state": "open"})
         store.add_event(
             session_id,
             "error",
@@ -192,7 +249,7 @@ async def close_position_now(
             ticker=position["ticker"],
             meta={"position_id": position_id, "reason": reason},
         )
-        # Leave in pending_close; the reconciliation loop retries and alerts.
+        # Leave open for retry; reconciliation will settle if broker already closed.
         return store.get_position(position_id) or position
 
     # Estimate realized PnL at the observed price; reconciliation replaces this
@@ -1187,8 +1244,20 @@ class AgenticSessionManager:
         position = store.get_position(position_id)
         if session is None or position is None or position["session_id"] != session_id:
             return None
-        if position["state"] != "open":
+        if position["state"] in ("closed", "failed"):
             return position
+        if position["state"] not in ("open", "pending_close"):
+            return position
+
+        from control_plane.agentic.reconciliation import reconcile_session_positions
+
+        await reconcile_session_positions(session, store)
+        position = store.get_position(position_id)
+        if position is None:
+            return None
+        if position["state"] in ("closed", "failed"):
+            return position
+
         with agentic_etoro_trace(
             session_id,
             source="force_close",

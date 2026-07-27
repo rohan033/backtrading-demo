@@ -1,5 +1,6 @@
 import {
   bracketTargetPnl,
+  bracketTargetPrice,
   loadPositionBracketsForRow,
   savePositionBrackets,
   type PositionBracketSettings,
@@ -72,7 +73,22 @@ export function checkBracketOnTick(
 
   if (pnl > 0 && brackets.takeProfitEnabled) {
     const targetProfit = assignedTakeProfit(row, brackets)
-    if (targetProfit != null && pnl >= targetProfit) return 'take_profit'
+    if (targetProfit != null && pnl >= targetProfit) {
+      const mode = brackets.takeProfitMode
+      const targetPrice = bracketTargetPrice(
+        mode,
+        brackets.takeProfitValue,
+        row.openRate,
+        row.quantity,
+        row.isBuy,
+        'take_profit',
+      )
+      if (targetPrice != null && livePrice > 0) {
+        const validSide = row.isBuy ? targetPrice > livePrice : targetPrice < livePrice
+        if (!validSide) return null
+      }
+      return 'take_profit'
+    }
   }
 
   return null
@@ -131,10 +147,7 @@ export function countEnabledBrackets(
   let count = 0
   for (const monitored of rows) {
     const pid = monitored.row.brokerPositionId
-    if (pid && autoLadderIds.has(pid)) {
-      count += 1
-      continue
-    }
+    if (pid && autoLadderIds.has(pid)) count += 1
     const brackets = loadBracketsForMonitoredRow(accountEnv, monitored)
     if (brackets.takeProfitEnabled && brackets.takeProfitValue.trim()) count += 1
     if (brackets.stopLossEnabled && brackets.stopLossValue.trim()) count += 1

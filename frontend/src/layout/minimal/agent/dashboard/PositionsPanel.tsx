@@ -260,9 +260,13 @@ export default function PositionsPanel({
                       onClose(position)
                     }}
                     aria-label={`Close ${position.ticker}`}
-                    title="Close at market (sent at most once)"
+                    title={
+                      position.state === 'pending_close'
+                        ? 'Close in progress — click to retry sync'
+                        : 'Close at market'
+                    }
                   >
-                    {closingId === position.id ? '…' : '×'}
+                    {closingId === position.id || position.state === 'pending_close' ? '…' : '×'}
                   </button>
                 </div>
 

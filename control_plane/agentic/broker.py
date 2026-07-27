@@ -270,6 +270,43 @@ async def fetch_broker_open_index(account_env: str) -> dict[str, Any]:
     return {"by_id": by_id, "by_ticker": by_ticker, "rows": rows}
 
 
+def _broker_row_id(row: dict[str, Any]) -> str:
+    pid = row.get("positionID") or row.get("positionId")
+    return str(pid) if pid is not None else ""
+
+
+async def link_position_to_broker(
+    account_env: str,
+    position: dict[str, Any],
+    store: Any,
+) -> dict[str, Any]:
+    """Attach broker_position_id when missing but exactly one broker row matches ticker."""
+    if str(position.get("broker_position_id") or "").strip():
+        return position
+    ticker = str(position.get("ticker") or "").upper()
+    if not ticker:
+        return position
+    index = await fetch_broker_open_index(account_env)
+    rows = index.get("by_ticker", {}).get(ticker) or []
+    if len(rows) != 1:
+        return position
+    pid = _broker_row_id(rows[0])
+    if not pid:
+        return position
+    store.update_position(
+        position["id"],
+        {"broker_position_id": pid, "state": "open" if position.get("state") == "pending_open" else position.get("state")},
+    )
+    return store.get_position(position["id"]) or {**position, "broker_position_id": pid}
+
+
+async def broker_position_is_open(account_env: str, broker_position_id: str) -> bool:
+    if not broker_position_id:
+        return False
+    index = await fetch_broker_open_index(account_env)
+    return broker_position_id in (index.get("by_id") or {})
+
+
 async def find_broker_closed_trade(
     account_env: str,
     *,

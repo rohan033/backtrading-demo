@@ -179,6 +179,9 @@ async def get_session(session_id: str):
 )
 async def get_session_snapshot(session_id: str):
     _get_session_or_404(session_id)
+    from control_plane.agentic.reconciliation import maybe_reconcile_for_snapshot
+
+    await maybe_reconcile_for_snapshot(session_id)
     snapshot = SessionSnapshot(get_agentic_session_store(), session_id).hydrate()
     return {"status": True, "data": snapshot}
 
@@ -429,7 +432,13 @@ async def close_session_position(session_id: str, position_id: str):
     )
     if updated is None:
         raise HTTPException(status_code=404, detail="Position not found in this session")
-    return {"status": True, "data": _position_json(updated)}
+    from control_plane.agentic.reconciliation import reconcile_session_positions
+
+    session = get_agentic_session_store().get_session(session_id)
+    if session is not None:
+        await reconcile_session_positions(session)
+    refreshed = get_agentic_session_store().get_position(position_id) or updated
+    return {"status": True, "data": _position_json(refreshed)}
 
 
 @router.get("/suggestions", operation_id="list_agentic_suggestions", summary="Latest market hunter suggestions (newest first)")

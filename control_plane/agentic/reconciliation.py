@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -75,11 +76,14 @@ def _position_at_broker(
     broker_id = str(position.get("broker_position_id") or "")
     by_id: dict[str, dict[str, Any]] = broker_index.get("by_id") or {}
     by_ticker: dict[str, list[dict[str, Any]]] = broker_index.get("by_ticker") or {}
-    if broker_id and broker_id in by_id:
-        return by_id[broker_id]
+    # When we know the broker position id, only trust an exact id match.
+    # Ticker fallback wrongly treats a different open row as "still open".
+    if broker_id:
+        return by_id.get(broker_id)
     ticker = str(position.get("ticker") or "").upper()
     rows = by_ticker.get(ticker) or []
-    return rows[0] if rows else None
+    # Ambiguous when several broker rows share a ticker — do not guess.
+    return rows[0] if len(rows) == 1 else None
 
 
 def _release_hunter_ticker(ticker: str) -> None:
@@ -757,6 +761,22 @@ class AgenticReconciler:
 
 
 _reconciler: AgenticReconciler | None = None
+_snapshot_reconcile_last: dict[str, float] = {}
+SNAPSHOT_RECONCILE_MIN_INTERVAL = 5.0
+
+
+async def maybe_reconcile_for_snapshot(session_id: str) -> None:
+    """Light broker sync before dashboard reads (throttled per session)."""
+    now = time.monotonic()
+    last = _snapshot_reconcile_last.get(session_id, 0.0)
+    if now - last < SNAPSHOT_RECONCILE_MIN_INTERVAL:
+        return
+    _snapshot_reconcile_last[session_id] = now
+    store = get_agentic_session_store()
+    session = store.get_session(session_id)
+    if session is None:
+        return
+    await reconcile_session_positions(session, store)
 
 
 def get_agentic_reconciler() -> AgenticReconciler:

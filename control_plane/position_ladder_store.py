@@ -16,6 +16,42 @@ DB_PATH = os.path.join(
 LADDER_FRACTIONS = (0.35, 0.60, 0.85)
 TRIM_FRACTION = 0.25
 LEVEL_IDS = ("L1", "L2", "L3")
+DEFAULT_GAIN_FRACTIONS_JSON = json.dumps(list(LADDER_FRACTIONS))
+
+
+def _normalize_gain_fractions(value: Any) -> list[float]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return list(LADDER_FRACTIONS)
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        return list(LADDER_FRACTIONS)
+    out: list[float] = []
+    for item in value[:3]:
+        try:
+            parsed = float(item)
+        except (TypeError, ValueError):
+            continue
+        if 0 < parsed <= 1:
+            out.append(parsed)
+        elif 0 < parsed <= 100:
+            out.append(parsed / 100.0)
+    if len(out) < 3:
+        return list(LADDER_FRACTIONS)
+    return out
+
+
+def _normalize_trim_fraction(value: Any) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return TRIM_FRACTION
+    if parsed <= 0:
+        return TRIM_FRACTION
+    if parsed > 1:
+        parsed = parsed / 100.0
+    return min(1.0, parsed)
 
 
 def _now_utc() -> str:
@@ -63,8 +99,26 @@ class PositionLadderStore:
                 )
                 """
             )
+            self._migrate_columns(conn)
             conn.commit()
             conn.close()
+
+    def _migrate_columns(self, conn: sqlite3.Connection) -> None:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(position_ladder_state)")}
+        if "gain_fractions_json" not in cols:
+            conn.execute(
+                f"""
+                ALTER TABLE position_ladder_state
+                ADD COLUMN gain_fractions_json TEXT NOT NULL DEFAULT '{DEFAULT_GAIN_FRACTIONS_JSON}'
+                """
+            )
+        if "trim_fraction" not in cols:
+            conn.execute(
+                """
+                ALTER TABLE position_ladder_state
+                ADD COLUMN trim_fraction REAL NOT NULL DEFAULT 0.25
+                """
+            )
 
     @staticmethod
     def _payload(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -74,6 +128,10 @@ class PositionLadderStore:
             parsed_levels = json.loads(levels) if isinstance(levels, str) else levels
         except json.JSONDecodeError:
             parsed_levels = []
+        gain_fractions = _normalize_gain_fractions(
+            data.get("gain_fractions_json") or data.get("gain_fractions")
+        )
+        trim_fraction = _normalize_trim_fraction(data.get("trim_fraction"))
         return {
             "account_env": data["account_env"],
             "broker_position_id": data["broker_position_id"],
@@ -91,6 +149,8 @@ class PositionLadderStore:
             "last_hit_price": float(data["last_hit_price"])
             if data.get("last_hit_price") is not None
             else None,
+            "gain_fractions": gain_fractions,
+            "trim_fraction": trim_fraction,
             "levels": parsed_levels if isinstance(parsed_levels, list) else [],
             "updated_at": data.get("updated_at"),
         }
@@ -146,11 +206,15 @@ class PositionLadderStore:
         entry_price: float | None = None,
         entry_units: float | None = None,
         is_buy: bool = True,
+        gain_fractions: list[float] | None = None,
+        trim_fraction: float | None = None,
     ) -> dict[str, Any]:
         env = _normalize_env(account_env)
         now = _now_utc()
         pid = str(broker_position_id)
         ticker_u = str(ticker or "").upper()
+        gain_json = json.dumps(_normalize_gain_fractions(gain_fractions or LADDER_FRACTIONS))
+        trim = _normalize_trim_fraction(trim_fraction if trim_fraction is not None else TRIM_FRACTION)
         with self._lock:
             conn = self._connect()
             existing = conn.execute(
@@ -170,6 +234,8 @@ class PositionLadderStore:
                         entry_price = COALESCE(?, entry_price),
                         entry_units = COALESCE(?, entry_units),
                         is_buy = ?,
+                        gain_fractions_json = COALESCE(?, gain_fractions_json),
+                        trim_fraction = COALESCE(?, trim_fraction),
                         updated_at = ?
                     WHERE account_env = ? AND broker_position_id = ?
                     """,
@@ -180,6 +246,8 @@ class PositionLadderStore:
                         entry_price,
                         entry_units,
                         1 if is_buy else 0,
+                        gain_json if gain_fractions is not None else None,
+                        trim if trim_fraction is not None else None,
                         now,
                         env,
                         pid,
@@ -193,8 +261,8 @@ class PositionLadderStore:
                         auto_ladder_enabled, is_buy, entry_price, entry_units,
                         remaining_fraction, peak_price,
                         l1_hit, l2_hit, l3_hit, last_hit_price,
-                        levels_json, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?, 0, 0, 0, NULL, '[]', ?)
+                        levels_json, gain_fractions_json, trim_fraction, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1.0, ?, 0, 0, 0, NULL, '[]', ?, ?, ?)
                     """,
                     (
                         env,
@@ -206,6 +274,8 @@ class PositionLadderStore:
                         entry_price,
                         entry_units,
                         entry_price,
+                        gain_json,
+                        trim,
                         now,
                     ),
                 )
@@ -232,6 +302,8 @@ class PositionLadderStore:
             "last_hit_price",
             "levels_json",
             "instrument_id",
+            "gain_fractions_json",
+            "trim_fraction",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if not updates:
@@ -317,6 +389,29 @@ class PositionLadderStore:
             ).fetchone()
             conn.close()
         return self._payload(row) if row else None
+
+    def update_config(
+        self,
+        account_env: str,
+        broker_position_id: str,
+        *,
+        gain_fractions: list[float] | None = None,
+        trim_fraction: float | None = None,
+    ) -> dict[str, Any] | None:
+        env = _normalize_env(account_env)
+        pid = str(broker_position_id)
+        existing = self.get(env, pid)
+        if not existing:
+            return None
+        patch: dict[str, Any] = {}
+        if gain_fractions is not None:
+            patch["gain_fractions_json"] = json.dumps(_normalize_gain_fractions(gain_fractions))
+        if trim_fraction is not None:
+            patch["trim_fraction"] = _normalize_trim_fraction(trim_fraction)
+        if not patch:
+            return existing
+        self.update_runtime(env, pid, **patch)
+        return self.get(env, pid)
 
 
 _store: PositionLadderStore | None = None
