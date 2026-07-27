@@ -140,12 +140,12 @@ async def create_session(req: CreateSessionRequest):
             f"Session prompt: {prompt}",
             meta={"prompt": prompt, "derived_config_overrides": prompt_overrides},
         )
+    fill_mode = ", simulated fills" if config.get("dry_run") else ", broker orders"
+    model_suffix = f", model={config['agent_model']}" if config.get("agent_model") else ""
     store.add_event(
         session["id"],
         "info",
-        f"Session started ({req.account_env}, ${start_balance:.2f}"
-        f"{', simulated fills' if config.get('dry_run') else ', broker orders'}"
-        f"{f', model={config.get('agent_model')}' if config.get('agent_model') else ''})",
+        f"Session started ({req.account_env}, ${start_balance:.2f}{fill_mode}{model_suffix})",
         meta={"config": config},
     )
     screener_ids = config.get("screener_ids") or []
