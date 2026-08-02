@@ -73,22 +73,26 @@ export function checkBracketOnTick(
 
   if (pnl > 0 && brackets.takeProfitEnabled) {
     const targetProfit = assignedTakeProfit(row, brackets)
-    if (targetProfit != null && pnl >= targetProfit) {
-      const mode = brackets.takeProfitMode
+    if (targetProfit == null || pnl < targetProfit) return null
+
+    // Price-mode TP: require live to have reached/crossed the target price.
+    // Amount/% modes key off P&L only — do NOT require targetPrice > liveMark,
+    // or a surpassed $ target can never fire (catch-22 once price runs past it).
+    if (brackets.takeProfitMode === 'price') {
       const targetPrice = bracketTargetPrice(
-        mode,
+        'price',
         brackets.takeProfitValue,
         row.openRate,
         row.quantity,
         row.isBuy,
         'take_profit',
       )
-      if (targetPrice != null && livePrice > 0) {
-        const validSide = row.isBuy ? targetPrice > livePrice : targetPrice < livePrice
-        if (!validSide) return null
-      }
-      return 'take_profit'
+      if (targetPrice == null || !(livePrice > 0)) return null
+      const reached = row.isBuy ? livePrice >= targetPrice : livePrice <= targetPrice
+      if (!reached) return null
     }
+
+    return 'take_profit'
   }
 
   return null
