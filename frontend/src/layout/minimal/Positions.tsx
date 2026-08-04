@@ -326,6 +326,12 @@ function BracketCell({
     && liveMark != null
     && liveMark > 0
     && (isBuy ? targetPrice <= liveMark : targetPrice >= liveMark)
+  const slBeyondMarket = kind === 'stop_loss'
+    && targetPrice != null
+    && liveMark != null
+    && liveMark > 0
+    && (isBuy ? targetPrice >= liveMark : targetPrice <= liveMark)
+  const bracketReached = tpBelowMarket || slBeyondMarket
 
   return (
     <div className="pos-bracket-stack">
@@ -352,7 +358,7 @@ function BracketCell({
         }}
       />
       {hasValue && targetPrice != null ? (
-        <div className={`pos-bracket-hint${tpBelowMarket ? ' pos-bracket-hint--warn' : ''}`}>
+        <div className={`pos-bracket-hint${bracketReached ? ' pos-bracket-hint--warn' : ''}`}>
           {mode === 'amount'
             ? `Target ${formatBrokerMoney('etoro', targetPrice)}`
             : mode === 'percent'
@@ -360,11 +366,10 @@ function BracketCell({
               : targetPnl != null
                 ? `P&L ${fmtSignedMoney(targetPnl)}`
                 : null}
-          {tpBelowMarket ? (
+          {bracketReached ? (
             <span>
               {' '}
-              · must be {isBuy ? 'above' : 'below'} current{' '}
-              {formatBrokerMoney('etoro', liveMark!)}
+              · {kind === 'take_profit' ? 'target reached' : 'stop reached'} — monitoring will close
             </span>
           ) : null}
         </div>
@@ -560,6 +565,7 @@ const PositionTableRow = memo(function PositionTableRow({
           openRate={row.openRate}
           units={row.quantity}
           isBuy={row.isBuy}
+          liveMark={liveMark}
           onChange={onBracketsChange}
         />
       </td>

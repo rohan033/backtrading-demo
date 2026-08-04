@@ -3,6 +3,7 @@ import {
   bracketTargetPrice,
   loadPositionBracketsForRow,
   savePositionBrackets,
+  type BracketValueMode,
   type PositionBracketSettings,
 } from './positionBrackets'
 import { positionLivePnl, isVerifiedBrokerPositionId, type EtoroPositionRow } from './etoroPositions'
@@ -17,6 +18,19 @@ export type MonitoredPosition = {
 
 export function isBrokerClosablePosition(row: EtoroPositionRow): boolean {
   return isVerifiedBrokerPositionId(row)
+}
+
+/** True when live price has reached/crossed a price-mode bracket target. */
+export function bracketPriceCrossed(
+  isBuy: boolean,
+  livePrice: number,
+  targetPrice: number,
+  kind: 'take_profit' | 'stop_loss',
+): boolean {
+  if (kind === 'take_profit') {
+    return isBuy ? livePrice >= targetPrice : livePrice <= targetPrice
+  }
+  return isBuy ? livePrice <= targetPrice : livePrice >= targetPrice
 }
 
 function assignedTakeProfit(row: EtoroPositionRow, brackets: PositionBracketSettings): number | null {
@@ -55,6 +69,58 @@ function assignedStopLoss(row: EtoroPositionRow, brackets: PositionBracketSettin
   return pnl != null ? Math.abs(pnl) : null
 }
 
+function priceModeTargetCrossed(
+  row: EtoroPositionRow,
+  livePrice: number,
+  mode: BracketValueMode,
+  rawValue: string,
+  kind: 'take_profit' | 'stop_loss',
+): boolean {
+  if (mode !== 'price') return true
+  const targetPrice = bracketTargetPrice(
+    'price',
+    rawValue,
+    row.openRate,
+    row.quantity,
+    row.isBuy,
+    kind,
+  )
+  if (targetPrice == null || !(livePrice > 0)) return false
+  return bracketPriceCrossed(row.isBuy, livePrice, targetPrice, kind)
+}
+
+function shouldTriggerStopLoss(
+  row: EtoroPositionRow,
+  brackets: PositionBracketSettings,
+  pnl: number,
+  livePrice: number,
+): boolean {
+  if (pnl >= 0 || !brackets.stopLossEnabled) return false
+
+  const maxLoss = assignedStopLoss(row, brackets)
+  if (maxLoss == null || Math.abs(pnl) < maxLoss) return false
+
+  // Amount/% modes: P&L threshold only — never gate on implied price vs liveMark,
+  // or a surpassed $/%% stop can never fire once price gaps past it.
+  return priceModeTargetCrossed(row, livePrice, brackets.stopLossMode, brackets.stopLossValue, 'stop_loss')
+}
+
+function shouldTriggerTakeProfit(
+  row: EtoroPositionRow,
+  brackets: PositionBracketSettings,
+  pnl: number,
+  livePrice: number,
+): boolean {
+  if (pnl <= 0 || !brackets.takeProfitEnabled) return false
+
+  const targetProfit = assignedTakeProfit(row, brackets)
+  if (targetProfit == null || pnl < targetProfit) return false
+
+  // Amount/% modes: P&L threshold only — never gate on implied price vs liveMark,
+  // or a surpassed $/%% target can never fire once price runs past it.
+  return priceModeTargetCrossed(row, livePrice, brackets.takeProfitMode, brackets.takeProfitValue, 'take_profit')
+}
+
 /** Each tick: loss → SL, profit → TP. Returns why to close, or null. */
 export function checkBracketOnTick(
   row: EtoroPositionRow,
@@ -66,34 +132,8 @@ export function checkBracketOnTick(
 
   const { pnl } = live
 
-  if (pnl < 0 && brackets.stopLossEnabled) {
-    const maxLoss = assignedStopLoss(row, brackets)
-    if (maxLoss != null && Math.abs(pnl) >= maxLoss) return 'stop_loss'
-  }
-
-  if (pnl > 0 && brackets.takeProfitEnabled) {
-    const targetProfit = assignedTakeProfit(row, brackets)
-    if (targetProfit == null || pnl < targetProfit) return null
-
-    // Price-mode TP: require live to have reached/crossed the target price.
-    // Amount/% modes key off P&L only — do NOT require targetPrice > liveMark,
-    // or a surpassed $ target can never fire (catch-22 once price runs past it).
-    if (brackets.takeProfitMode === 'price') {
-      const targetPrice = bracketTargetPrice(
-        'price',
-        brackets.takeProfitValue,
-        row.openRate,
-        row.quantity,
-        row.isBuy,
-        'take_profit',
-      )
-      if (targetPrice == null || !(livePrice > 0)) return null
-      const reached = row.isBuy ? livePrice >= targetPrice : livePrice <= targetPrice
-      if (!reached) return null
-    }
-
-    return 'take_profit'
-  }
+  if (shouldTriggerStopLoss(row, brackets, pnl, livePrice)) return 'stop_loss'
+  if (shouldTriggerTakeProfit(row, brackets, pnl, livePrice)) return 'take_profit'
 
   return null
 }
